@@ -11,7 +11,12 @@ UTerraDyneSettings::UTerraDyneSettings()
 	// the host project. They read /Game/TerraDyne/... for a long time, which resolves to nothing
 	// unless a project happens to have its own Content/TerraDyne/ folder, so both loads silently
 	// returned null and every dependent fallback quietly did nothing.
-	MasterMaterialPath = FSoftObjectPath(TEXT("/TerraDyne/Materials/VHFM/M_TerraDyne_Master.M_TerraDyne_Master"));
+	//
+	// The terrain default is the INSTANCE, not M_TerraDyne_Master. The master leaves every ground
+	// texture parameter (Grass/Dirt/Rock/Stones/Snow) null, and a null texture parameter samples as
+	// the engine checkerboard — so defaulting to the master tiles the whole landscape with grey
+	// squares. MI_TerraDyne_Terrain is the same material with those five textures actually assigned.
+	MasterMaterialPath = FSoftObjectPath(TEXT("/TerraDyne/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain"));
 	HeightBrushMaterialPath = FSoftObjectPath(TEXT("/TerraDyne/Materials/Tools/M_HeightBrush.M_HeightBrush"));
 	HUDWidgetPath = FSoftObjectPath();
 

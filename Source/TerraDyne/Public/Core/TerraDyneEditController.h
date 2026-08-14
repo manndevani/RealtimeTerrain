@@ -86,6 +86,21 @@ private:
 	void OnRedoPressed();
 	void PerformToolAction();
 
+	/**
+	 * Building tools act once per press, not once per frame like the sculpt brushes — placing a
+	 * building every tick while the button is held would carpet the terrain.
+	 *
+	 * Selection is client-local and placement only ever runs here on the authority: the tool panel
+	 * is built solely for IsInstructor() (local AND authoritative), so there is no client path to
+	 * route. Replicating placed buildings out to other machines is phase 6.
+	 */
+	void HandleBuildingClick();
+
+	/** Traces the cursor against terrain and buildings. Returns false when nothing was hit. */
+	bool TraceUnderCursor(FHitResult& OutHit) const;
+
+	class UTerraDyneToolWidget* GetToolWidget() const;
+
 	UFUNCTION(Server, Reliable)
 	void Server_BeginStroke(FVector WorldLocation, float Radius);
 

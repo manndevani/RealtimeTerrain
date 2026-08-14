@@ -148,7 +148,7 @@ bool FTerraDyneShowcaseMaterialSelectionTest::RunTest(const FString& Parameters)
 	TestEqual(
 		TEXT("Showcase uses the TerraDyne mesh-compatible terrain material"),
 		Manager->MasterMaterial->GetPathName(),
-		FString(TEXT("/TerraDyne/Materials/VHFM/M_TerraDyne_Master.M_TerraDyne_Master")));
+		FString(TEXT("/TerraDyne/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain")));
 
 	ATerraDyneChunk* Chunk = Manager->GetChunkAtCoord(FIntPoint::ZeroValue);
 	TestNotNull("Showcase authored chunk spawned", Chunk);
@@ -184,7 +184,7 @@ bool FTerraDyneChunkMaterialBindingTest::RunTest(const FString& Parameters)
 	Chunk->BrushMaterialBase = LoadObject<UMaterialInterface>(nullptr,
 		TEXT("/TerraDyne/Materials/Tools/M_HeightBrush.M_HeightBrush"));
 	UMaterialInterface* MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
-		TEXT("/TerraDyne/Materials/VHFM/M_TerraDyne_Master.M_TerraDyne_Master"));
+		TEXT("/TerraDyne/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain"));
 	TestNotNull("Height brush material", Chunk->BrushMaterialBase.Get());
 	TestNotNull("Master material", MasterMaterial);
 	if (!Chunk->BrushMaterialBase || !MasterMaterial)

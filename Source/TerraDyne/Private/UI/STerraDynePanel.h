@@ -31,6 +31,13 @@ private:
 	bool bIsDragging = false;
 	FVector2D DragOffset;
 	FVector2D WindowPosition = FVector2D(50, 50);
+
+	/**
+	 * The panel's visible box. Kept so OnMouseButtonDown can tell whether a click landed on the
+	 * panel and absorb it — the widget's own slot spans the whole viewport, so its geometry says
+	 * nothing about where the panel actually is.
+	 */
+	TSharedPtr<class SBox> PanelBox;
 	
 	// Helper to get the Orchestrator from the World
 	class ATerraDyneOrchestrator* GetOrchestrator() const;
@@ -65,6 +72,16 @@ private:
 	FReply SaveToFile();
 	FReply LoadFromFile();
 	FText GetExportStatusText() const;
+
+	// Buildings
+	class ATerraDyneBuildingActor* GetSelectedBuilding() const;
+	FText GetSelectedBuildingText() const;
+	FText GetFloorCountText() const;
+	bool IsBuildingSelected() const;
+	FReply OnAddFloorClicked();
+	FReply OnRemoveFloorClicked();
+	FReply OnRelevelClicked();
+	FReply OnDeleteBuildingClicked();
 
 	// Visualization
 	FText GetStatsText() const;
