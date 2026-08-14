@@ -3,6 +3,7 @@
 #include "UI/TerraDyneToolWidget.h"
 #include "Core/TerraDyneManager.h"
 #include "World/TerraDyneOrchestrator.h"
+#include "Building/TerraDyneBuildingActor.h"
 #include "Kismet/GameplayStatics.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
@@ -43,7 +44,7 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Top)
 		.HAlign(HAlign_Left)
 		[
-			SNew(SBox)
+			SAssignNew(PanelBox, SBox)
 			.WidthOverride(300.0f)
 			[
 				SNew(SBorder)
@@ -288,6 +289,109 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						]
 					]
 
+					//--- BUILDINGS SECTION ---
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0, 5)
+					[
+						SNew(SBorder)
+						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+						.BorderBackgroundColor(SectionBGColor)
+						.Padding(8.0f)
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
+							[
+								SNew(STextBlock).Text(LOCTEXT("BuildingHeader", "BUILDINGS")).Font(HeaderFont)
+							]
+
+							// Arm placement / selection. These are tool modes like the sculpt
+							// buttons, so the same highlight shows which one is live.
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 5)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("ModePlaceBuilding", "Place"))
+									.ToolTipText(LOCTEXT("TipPlaceBuilding", "Click the terrain to drop a building there."))
+									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::PlaceBuilding); })
+									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::PlaceBuilding)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("ModeSelectBuilding", "Select"))
+									.ToolTipText(LOCTEXT("TipSelectBuilding", "Click a building to edit it without placing new ones."))
+									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::SelectBuilding); })
+									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::SelectBuilding)
+									.HAlign(HAlign_Center)
+								]
+							]
+
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+							[
+								SNew(STextBlock)
+								.Text(this, &STerraDynePanel::GetSelectedBuildingText)
+								.Font(LabelFont)
+								.ColorAndOpacity(FLinearColor(0.25f, 0.5f, 1.0f))
+							]
+
+							// Floor counter
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+								[
+									SNew(STextBlock).Text(LOCTEXT("LblFloors", "Floors: ")).Font(LabelFont)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+								[
+									SNew(STextBlock)
+									.Text(this, &STerraDynePanel::GetFloorCountText)
+									.ColorAndOpacity(FLinearColor(0.25f, 0.5f, 1.0f))
+								]
+								+ SHorizontalBox::Slot().AutoWidth().Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnFloorMinus", " - "))
+									.OnClicked(this, &STerraDynePanel::OnRemoveFloorClicked)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().AutoWidth().Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnFloorPlus", " + "))
+									.OnClicked(this, &STerraDynePanel::OnAddFloorClicked)
+									.HAlign(HAlign_Center)
+								]
+							]
+
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnRelevel", "Re-level"))
+									.ToolTipText(LOCTEXT("TipRelevel", "Re-sample the ground under the footprint and reset the pad height."))
+									.IsEnabled(this, &STerraDynePanel::IsBuildingSelected)
+									.OnClicked(this, &STerraDynePanel::OnRelevelClicked)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnDeleteBuilding", "Delete"))
+									.IsEnabled(this, &STerraDynePanel::IsBuildingSelected)
+									.OnClicked(this, &STerraDynePanel::OnDeleteBuildingClicked)
+									.HAlign(HAlign_Center)
+								]
+							]
+						]
+					]
+
 					//--- TELEMETRY SECTION ---
 					+ SVerticalBox::Slot()
 					.AutoHeight()
@@ -343,6 +447,17 @@ FReply STerraDynePanel::OnMouseButtonDown(const FGeometry& MyGeometry, const FPo
 			DragOffset = RelativeMouse;
 			return FReply::Handled().CaptureMouse(SharedThis(this));
 		}
+
+		// Absorb anything else that lands on the panel. This handler only runs when no child
+		// widget took the click, i.e. the gaps between buttons and the border around them —
+		// returning Unhandled there let the click fall straight through to the world, so clicking
+		// panel background sculpted the terrain behind it, and with the building tools armed it
+		// would drop a building behind the panel.
+		if (PanelBox.IsValid() &&
+			PanelBox->GetTickSpaceGeometry().IsUnderLocation(MouseEvent.GetScreenSpacePosition()))
+		{
+			return FReply::Handled();
+		}
 	}
 	return FReply::Unhandled();
 }
@@ -383,6 +498,102 @@ ATerraDyneOrchestrator* STerraDynePanel::GetOrchestrator() const
 		return Cast<ATerraDyneOrchestrator>(UGameplayStatics::GetActorOfClass(OwnerWidget->GetWorld(), ATerraDyneOrchestrator::StaticClass()));
 	}
 	return nullptr;
+}
+
+//--- Buildings ---
+
+ATerraDyneBuildingActor* STerraDynePanel::GetSelectedBuilding() const
+{
+	return OwnerWidget.IsValid() ? OwnerWidget->SelectedBuilding.Get() : nullptr;
+}
+
+bool STerraDynePanel::IsBuildingSelected() const
+{
+	return GetSelectedBuilding() != nullptr;
+}
+
+FText STerraDynePanel::GetSelectedBuildingText() const
+{
+	if (const ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		return FText::FromString(FString::Printf(
+			TEXT("Selected: %s  (%.0f m tall)"),
+			*Building->GetName(),
+			Building->GetBuildingHeight() / 100.0f));
+	}
+
+	return LOCTEXT("NoBuildingSelected", "No building selected");
+}
+
+FText STerraDynePanel::GetFloorCountText() const
+{
+	// Falls back to the pending count so the counter still reads sensibly with nothing selected —
+	// that value is what the next placed building will get.
+	const int32 Floors = GetSelectedBuilding()
+		? GetSelectedBuilding()->FloorCount
+		: (OwnerWidget.IsValid() ? OwnerWidget->PendingFloorCount : 0);
+
+	return FText::FromString(FString::Printf(TEXT("%d"), Floors));
+}
+
+FReply STerraDynePanel::OnAddFloorClicked()
+{
+	if (!OwnerWidget.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	OwnerWidget->PendingFloorCount = FMath::Clamp(OwnerWidget->PendingFloorCount + 1, 1, 50);
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		Building->SetFloorCount(OwnerWidget->PendingFloorCount);
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnRemoveFloorClicked()
+{
+	if (!OwnerWidget.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	OwnerWidget->PendingFloorCount = FMath::Clamp(OwnerWidget->PendingFloorCount - 1, 1, 50);
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		Building->SetFloorCount(OwnerWidget->PendingFloorCount);
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnRelevelClicked()
+{
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		Building->RelevelToTerrain();
+		Building->SnapToPadHeight();
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+FReply STerraDynePanel::OnDeleteBuildingClicked()
+{
+	ATerraDyneBuildingActor* Building = GetSelectedBuilding();
+	if (!Building)
+	{
+		return FReply::Unhandled();
+	}
+
+	// Clear the selection first: Destroy() runs EndPlay, which unregisters the building and
+	// rebuilds the terrain pads, and the panel must not be holding it while that happens.
+	if (OwnerWidget.IsValid())
+	{
+		OwnerWidget->SelectedBuilding = nullptr;
+	}
+	Building->Destroy();
+
+	return FReply::Handled();
 }
 
 ATerraDyneManager* STerraDynePanel::GetManager() const

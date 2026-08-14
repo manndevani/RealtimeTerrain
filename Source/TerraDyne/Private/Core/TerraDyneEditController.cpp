@@ -3,6 +3,8 @@
 #include "Core/TerraDyneManager.h"
 #include "Core/TerraDyneSubsystem.h"
 #include "World/TerraDyneChunk.h"
+#include "Building/TerraDyneBuildingActor.h"
+#include "TerraDyneModule.h"
 #include "Engine/World.h"
 #include "UI/TerraDyneToolWidget.h"
 #include "Blueprint/UserWidget.h"
@@ -76,10 +78,108 @@ void ATerraDyneEditController::SetupInputComponent()
 	InputComponent->BindAction("TerraDyneRedo", IE_Pressed, this, &ATerraDyneEditController::OnRedoPressed);
 }
 
+UTerraDyneToolWidget* ATerraDyneEditController::GetToolWidget() const
+{
+	return Cast<UTerraDyneToolWidget>(ActiveUI);
+}
+
+bool ATerraDyneEditController::TraceUnderCursor(FHitResult& OutHit) const
+{
+	FVector WorldLoc, WorldDir;
+	if (!const_cast<ATerraDyneEditController*>(this)->DeprojectMousePositionToWorld(WorldLoc, WorldDir))
+	{
+		return false;
+	}
+
+	FCollisionQueryParams TraceParams;
+	TraceParams.bTraceComplex = true;
+	if (APawn* MyPawn = GetPawn())
+	{
+		TraceParams.AddIgnoredActor(MyPawn);
+	}
+
+	return GetWorld()->LineTraceSingleByChannel(
+		OutHit, WorldLoc, WorldLoc + WorldDir * 200000.0f, ECC_WorldStatic, TraceParams);
+}
+
 void ATerraDyneEditController::OnLeftClickStart()
 {
-	bIsClicking = true;
 	bFlattenHeightLocked = false;
+
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (ToolUI && IsBuildingToolMode(ToolUI->CurrentTool))
+	{
+		// Deliberately does NOT set bIsClicking: that flag is what makes Tick keep re-applying the
+		// action, which is right for a brush and wrong for placing an actor.
+		HandleBuildingClick();
+		return;
+	}
+
+	bIsClicking = true;
+}
+
+void ATerraDyneEditController::HandleBuildingClick()
+{
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (!ToolUI)
+	{
+		return;
+	}
+
+	FHitResult Hit;
+	if (!TraceUnderCursor(Hit))
+	{
+		return;
+	}
+
+	// Clicking an existing building always selects it, whichever building tool is active — it would
+	// be perverse for "place" mode to drop a second building on top of the one under the cursor.
+	AActor* HitActor = Hit.GetActor();
+	if (ATerraDyneBuildingActor* HitBuilding = Cast<ATerraDyneBuildingActor>(HitActor))
+	{
+		ToolUI->SelectedBuilding = HitBuilding;
+		ToolUI->PendingFloorCount = HitBuilding->FloorCount;
+		return;
+	}
+
+	if (ToolUI->CurrentTool != ETerraDyneToolMode::PlaceBuilding)
+	{
+		ToolUI->SelectedBuilding = nullptr;
+		return;
+	}
+
+	if (!Cast<ATerraDyneChunk>(HitActor))
+	{
+		// Only terrain is a valid foundation; ignore clicks on props, sky, whatever else.
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
+		ATerraDyneBuildingActor::StaticClass(), FTransform(Hit.Location), SpawnParams);
+
+	if (!NewBuilding)
+	{
+		UE_LOG(LogTerraDyne, Warning, TEXT("PlaceBuilding: spawn failed at %s"), *Hit.Location.ToString());
+		return;
+	}
+
+	// Floors before the pad: RegenerateBuilding runs inside SetFloorCount, and doing it in this
+	// order means the building is only rebuilt once rather than at two different heights.
+	NewBuilding->SetFloorCount(FMath::Max(1, ToolUI->PendingFloorCount));
+	NewBuilding->SnapToPadHeight();
+
+	ToolUI->SelectedBuilding = NewBuilding;
+
+	UE_LOG(LogTerraDyne, Log, TEXT("Placed building at %s (%d floors)"),
+		*NewBuilding->GetActorLocation().ToString(), NewBuilding->FloorCount);
 }
 
 void ATerraDyneEditController::OnLeftClickStop()
@@ -98,21 +198,25 @@ void ATerraDyneEditController::OnRedoPressed() { RequestRedo(); }
 
 void ATerraDyneEditController::PerformToolAction()
 {
-	FVector WorldLoc, WorldDir;
-	if (!DeprojectMousePositionToWorld(WorldLoc, WorldDir))
+	float Radius = 2000.0f;
+	float Strength = 1000.0f;
+	ETerraDyneToolMode Mode = ETerraDyneToolMode::SculptRaise;
+	if (UTerraDyneToolWidget* ToolUI = GetToolWidget())
+	{
+		Radius = ToolUI->BrushRadius;
+		Strength = ToolUI->BrushStrength * 2500.0f;
+		Mode = ToolUI->CurrentTool;
+	}
+
+	// Switching to a building tool mid-drag would otherwise keep sculpting until the button comes
+	// up, because bIsClicking was latched by the press that started under a sculpt tool.
+	if (IsBuildingToolMode(Mode))
 	{
 		return;
 	}
 
 	FHitResult Hit;
-	FCollisionQueryParams TraceParams;
-	TraceParams.bTraceComplex = true;
-	if (APawn* MyPawn = GetPawn())
-	{
-		TraceParams.AddIgnoredActor(MyPawn);
-	}
-
-	if (!GetWorld()->LineTraceSingleByChannel(Hit, WorldLoc, WorldLoc + WorldDir * 200000.0f, ECC_WorldStatic, TraceParams))
+	if (!TraceUnderCursor(Hit))
 	{
 		return;
 	}
@@ -121,16 +225,6 @@ void ATerraDyneEditController::PerformToolAction()
 	if (!Manager)
 	{
 		return;
-	}
-
-	float Radius = 2000.0f;
-	float Strength = 1000.0f;
-	ETerraDyneToolMode Mode = ETerraDyneToolMode::SculptRaise;
-	if (UTerraDyneToolWidget* ToolUI = Cast<UTerraDyneToolWidget>(ActiveUI))
-	{
-		Radius = ToolUI->BrushRadius;
-		Strength = ToolUI->BrushStrength * 2500.0f;
-		Mode = ToolUI->CurrentTool;
 	}
 
 	if (!bStrokeBegun)
