@@ -193,11 +193,25 @@ bool FTerraDyneChunkMaterialBindingTest::RunTest(const FString& Parameters)
 	}
 
 	Chunk->Initialize(32, 2048.0f);
-	if (!Chunk->IsUsingGPU())
+
+	// The chunk feeds the material its height data from one of two textures, and which one is not
+	// about the RHI: ATerraDyneChunk::Initialize() deliberately does not call SetupGPU() (see the
+	// comment there — it built render targets and stalled on a readback to serve ApplyBrushGPU,
+	// which nothing invokes), so bUseGPU is currently always false and HeightRT is always null.
+	// Assert against whichever texture is actually live rather than assuming the GPU one, so this
+	// test keeps verifying the binding instead of just failing on the path not taken.
+	UTexture* ExpectedHeightTexture = nullptr;
+	if (Chunk->IsUsingGPU())
 	{
-		AddInfo(TEXT("GPU terrain path unavailable under the current automation RHI; validating material bindings with CPU fallback."));
+		AddInfo(TEXT("GPU terrain path active; validating material bindings against HeightRT."));
+		ExpectedHeightTexture = Chunk->HeightRT;
 	}
-	TestNotNull("Height RT created", Chunk->HeightRT.Get());
+	else
+	{
+		AddInfo(TEXT("GPU terrain path inactive (SetupGPU is not called); validating material bindings against CPUHeightTexture."));
+		ExpectedHeightTexture = Chunk->CPUHeightTexture;
+	}
+	TestNotNull("Chunk height texture created", ExpectedHeightTexture);
 
 	Chunk->SetMaterial(MasterMaterial);
 	UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Chunk->DynamicMeshComp->GetMaterial(0));
@@ -207,7 +221,8 @@ bool FTerraDyneChunkMaterialBindingTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	TestEqual("HeightMap bound to chunk RT", MID->K2_GetTextureParameterValue(TEXT("HeightMap")), static_cast<UTexture*>(Chunk->HeightRT));
+	TestEqual("HeightMap bound to the chunk's live height texture",
+		MID->K2_GetTextureParameterValue(TEXT("HeightMap")), ExpectedHeightTexture);
 	TestTrue("WorldSize scalar synced",
 		FMath::IsNearlyEqual(MID->K2_GetScalarParameterValue(TEXT("WorldSize")), Chunk->WorldSize, KINDA_SMALL_NUMBER));
 	TestTrue("ZScale scalar synced",
