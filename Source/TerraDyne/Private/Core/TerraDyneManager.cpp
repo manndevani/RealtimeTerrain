@@ -1,0 +1,3242 @@
+// Copyright (c) 2026 GregOrigin. All Rights Reserved.
+#include "Core/TerraDyneManager.h"
+#include "Core/TerraDyneSubsystem.h"
+#include "Core/TerraDyneEditController.h"
+#include "Core/TerraDyneSaveGame.h"
+#include "Core/TerraDyneWorldPreset.h"
+#include "Settings/TerraDyneSettings.h"
+#include "World/TerraDyneChunk.h"
+#include "World/TerraDyneOrchestrator.h"
+#include "Building/TerraDyneBuildingActor.h"
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/Pawn.h"
+#include "Engine/World.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/SkyLight.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "DrawDebugHelpers.h"
+#include "Net/UnrealNetwork.h"
+#include "NavigationSystem.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/MemoryWriter.h"
+#include "Serialization/MemoryReader.h"
+#include "HAL/FileManager.h"
+#include "Misc/Compression.h"
+#include "Engine/StaticMeshActor.h"
+
+#if WITH_EDITOR
+#include "LandscapeProxy.h"
+#include "LandscapeComponent.h"
+#include "LandscapeLayerInfoObject.h"
+#include "LandscapeInfo.h"
+#include "LandscapeEdit.h"
+#include "LandscapeDataAccess.h"
+#include "InstancedFoliageActor.h"
+#include "FoliageType_Actor.h"
+#include "FoliageType_InstancedStaticMesh.h"
+#endif
+
+namespace TerraDyneWorldFramework
+{
+	static FBox MakeChunkBounds(const ATerraDyneManager& Manager, const FIntPoint Coord, float ChunkSize, float ZExtent = 4000.0f)
+	{
+		const FVector Center = Manager.GetActorLocation() + FVector(Coord.X * ChunkSize, Coord.Y * ChunkSize, 0.0f);
+		return FBox::BuildAABB(Center, FVector(ChunkSize * 0.5f, ChunkSize * 0.5f, ZExtent));
+	}
+
+	static FTransform MakeWorldTransform(const FTransform& LocalTransform, const FTransform& ParentTransform)
+	{
+		return LocalTransform * ParentTransform;
+	}
+
+	static int32 ChunkIndexFromLocalAxis(float LocalAxis, float ChunkSize)
+	{
+		if (ChunkSize <= KINDA_SMALL_NUMBER)
+		{
+			return 0;
+		}
+
+		return FMath::FloorToInt((LocalAxis + (ChunkSize * 0.5f)) / ChunkSize);
+	}
+}
+
+// Landscape migration still records which paint layers the source landscape had, purely as
+// metadata — TerraDyne itself no longer has paint layers to import them into.
+static constexpr int32 MaxCapturedLandscapeLayerMappings = 4;
+
+ATerraDyneManager::ATerraDyneManager()
+{
+	PrimaryActorTick.bCanEverTick = true;
+	bReplicates = true;
+	bAlwaysRelevant = true;
+	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
+	SetRootComponent(SceneRoot);
+	GlobalChunkSize = 10000.0f;
+	ChunkClass = ATerraDyneChunk::StaticClass();
+	bAutoImportAtRuntime = false;
+	bSpawnDefaultChunksOnBeginPlay = false;
+	bSetupDefaultLightingOnBeginPlay = false;
+	bSpawnShowcaseOnBeginPlay = false;
+	PopulationMaintenanceTimer = 0.25f;
+}
+
+void ATerraDyneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ATerraDyneManager, GlobalChunkSize);
+	DOREPLIFETIME(ATerraDyneManager, ChunkClass);
+	DOREPLIFETIME(ATerraDyneManager, ActiveLayer);
+	DOREPLIFETIME(ATerraDyneManager, MasterMaterial);
+	DOREPLIFETIME(ATerraDyneManager, LandscapeMigrationState);
+	DOREPLIFETIME(ATerraDyneManager, ProceduralWorldSettings);
+	DOREPLIFETIME(ATerraDyneManager, BiomeOverlays);
+	DOREPLIFETIME(ATerraDyneManager, AISpawnZones);
+	DOREPLIFETIME(ATerraDyneManager, BuildPermissionZones);
+}
+
+void ATerraDyneManager::BeginPlay()
+{
+	Super::BeginPlay();
+
+	UE_LOG(LogTemp, Log, TEXT("TerraDyneManager: Starting initialization..."));
+
+	// Register with subsystem
+	if (UTerraDyneSubsystem* Subsystem = GetWorld()->GetSubsystem<UTerraDyneSubsystem>())
+	{
+		Subsystem->RegisterManager(this);
+	}
+
+	if (WorldPreset)
+	{
+		ApplyWorldPreset(WorldPreset);
+	}
+
+	// Load materials (needed on all roles for rendering)
+	LoadMaterials();
+
+	// Capture any pre-placed chunks before bootstrap logic runs.
+	RebuildChunkMap();
+	if (LandscapeMigrationState.bWasImportedFromLandscape && ImportedChunkCoords.Num() == 0)
+	{
+		for (const auto& Pair : ActiveChunkMap)
+		{
+			ImportedChunkCoords.Add(Pair.Key);
+		}
+	}
+	ApplyMaterialToActiveChunks();
+	RebuildWorldStateIndices();
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			EnsureChunkFrameworkState(Pair.Key, Pair.Value);
+		}
+	}
+
+	// Only the server spawns world actors — clients receive them via replication
+	if (HasAuthority())
+	{
+		bool bChunkMapDirty = false;
+#if WITH_EDITOR
+		if (bAutoImportAtRuntime && TargetLandscapeSource)
+		{
+			ImportInternal(TargetLandscapeSource, LandscapeMigrationOptions);
+			bChunkMapDirty = true;
+		}
+		else
+#endif
+		if (bSpawnDefaultChunksOnBeginPlay && ActiveChunkMap.Num() == 0)
+		{
+			SpawnDefaultSandboxChunk();
+			bChunkMapDirty = true;
+		}
+
+		if (bSetupDefaultLightingOnBeginPlay)
+		{
+			SetupLighting();
+		}
+
+		if (bSpawnShowcaseOnBeginPlay)
+		{
+			TArray<AActor*> ExistingOrch;
+			UGameplayStatics::GetAllActorsOfClass(GetWorld(), ATerraDyneOrchestrator::StaticClass(), ExistingOrch);
+			if (ExistingOrch.Num() == 0)
+			{
+				GetWorld()->SpawnActor<ATerraDyneOrchestrator>(ATerraDyneOrchestrator::StaticClass(), FVector(0, 0, 5000), FRotator::ZeroRotator);
+			}
+		}
+
+		if (bChunkMapDirty)
+		{
+			RebuildChunkMap();
+			ApplyMaterialToActiveChunks();
+		}
+
+		RefreshPopulationForLoadedChunks();
+	}
+
+	// Debug: List all chunks
+	UE_LOG(LogTemp, Log, TEXT("Active chunks: %d"), ActiveChunkMap.Num());
+	
+	UE_LOG(LogTemp, Log, TEXT("TerraDyneManager: Initialization complete"));
+}
+
+void ATerraDyneManager::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	if (HasAuthority())
+	{
+		PopulationMaintenanceTimer -= DeltaTime;
+		if (PopulationMaintenanceTimer <= 0.0f)
+		{
+			TickPopulationState(0.25f);
+			PopulationMaintenanceTimer = 0.25f;
+		}
+	}
+
+	// Periodic update (every ~0.25s)
+	LODTimer -= DeltaTime;
+
+	if (LODTimer <= 0.0f)
+	{
+		LODTimer = 0.25f;
+
+		// Gather all player positions
+		TArray<FVector> PlayerPositions;
+		if (UWorld* World = GetWorld())
+		{
+			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+			{
+				APlayerController* PC = It->Get();
+				if (!PC) continue;
+
+				FVector Pos = FVector::ZeroVector;
+				if (APawn* Pawn = PC->GetPawn())
+				{
+					Pos = Pawn->GetActorLocation();
+				}
+				else if (PC->GetViewTarget())
+				{
+					Pos = PC->GetViewTarget()->GetActorLocation();
+				}
+				PlayerPositions.Add(Pos);
+			}
+		}
+
+		if (PlayerPositions.Num() == 0)
+		{
+			PlayerPositions.Add(FVector::ZeroVector);
+		}
+
+		// Streaming (server only) — uses union of all player positions
+		if (HasAuthority())
+		{
+			UpdateStreaming(PlayerPositions);
+		}
+
+		// LOD (all roles) — each chunk uses nearest player
+		for (auto& Pair : ActiveChunkMap)
+		{
+			if (!Pair.Value) continue;
+
+			float MinDistSq = MAX_FLT;
+			FVector NearestPos = PlayerPositions[0];
+			for (const FVector& Pos : PlayerPositions)
+			{
+				float DistSq = FVector::DistSquared(Pos, Pair.Value->GetActorLocation());
+				if (DistSq < MinDistSq)
+				{
+					MinDistSq = DistSq;
+					NearestPos = Pos;
+				}
+			}
+			Pair.Value->UpdateLOD(NearestPos);
+		}
+	}
+}
+
+void ATerraDyneManager::LoadMaterials()
+{
+	if (bMaterialsLoaded) return;
+
+	UE_LOG(LogTemp, Log, TEXT("Loading TerraDyne materials..."));
+
+	// [N-2] Guard: CDO lookup can return nullptr during hot-reload edge cases
+	const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>();
+	if (!Settings)
+	{
+		UE_LOG(LogTemp, Error, TEXT("TerraDyneSettings CDO not found"));
+		return;
+	}
+
+	// 1. Try explicit settings path first.
+	if (!MasterMaterial && Settings->MasterMaterialPath.IsValid())
+	{
+		MasterMaterial = Cast<UMaterialInterface>(Settings->MasterMaterialPath.TryLoad());
+	}
+
+	// Final fallback
+	if (MasterMaterial)
+	{
+		UE_LOG(LogTemp, Log, TEXT("MasterMaterial loaded: %s"), *MasterMaterial->GetName());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Failed to load MasterMaterial, using Engine Basic Shape"));
+		MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
+			TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	}
+	
+	// Height Brush
+	if (!HeightBrushMaterial && Settings->HeightBrushMaterialPath.IsValid())
+	{
+		HeightBrushMaterial = Cast<UMaterialInterface>(Settings->HeightBrushMaterialPath.TryLoad());
+	}
+
+	bMaterialsLoaded = true;
+}
+
+void ATerraDyneManager::SetupLighting()
+{
+	// [N-4] Early-return if a DirectionalLight already exists — prevents duplicates on re-entry
+	TArray<AActor*> Lights;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ADirectionalLight::StaticClass(), Lights);
+	if (Lights.Num() > 0) return;
+
+	ADirectionalLight* Sun = GetWorld()->SpawnActor<ADirectionalLight>(
+		ADirectionalLight::StaticClass(), 
+		FVector(0, 0, 5000), 
+		FRotator(-45, -45, 0));
+	
+	if (Sun && Sun->GetLightComponent())
+	{
+		Sun->GetLightComponent()->SetIntensity(10.0f);
+		Sun->GetLightComponent()->SetMobility(EComponentMobility::Movable);
+	}
+
+	ASkyLight* Sky = GetWorld()->SpawnActor<ASkyLight>(
+		ASkyLight::StaticClass(), 
+		FVector::ZeroVector, 
+		FRotator::ZeroRotator);
+	
+	if (Sky && Sky->GetLightComponent())
+	{
+		Sky->GetLightComponent()->SetIntensity(1.0f);
+		Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
+		Sky->GetLightComponent()->bRealTimeCapture = true;
+	}
+}
+
+void ATerraDyneManager::SpawnDefaultSandboxChunk()
+{
+	UE_LOG(LogTemp, Log, TEXT("Spawning 3x3 chunk grid..."));
+	
+	for (int32 X = -1; X <= 1; X++)
+	{
+		for (int32 Y = -1; Y <= 1; Y++)
+		{
+			FIntPoint GridCoord(X, Y);
+
+			ATerraDyneChunk* Chunk = SpawnConfiguredChunk(GridCoord);
+			if (Chunk)
+			{
+				// Debug box to show chunk bounds
+				DrawDebugBox(GetWorld(), Chunk->GetActorLocation(), FVector(GlobalChunkSize/2, GlobalChunkSize/2, 1000), 
+					FColor::Green, true, 10.0f, 0, 10.0f);
+				
+				UE_LOG(LogTemp, Log, TEXT("Spawned chunk [%d,%d] at %s"), X, Y, *Chunk->GetActorLocation().ToString());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("FAILED to spawn chunk [%d,%d]"), X, Y);
+			}
+		}
+	}
+}
+
+void ATerraDyneManager::ApplyGlobalBrush(FVector WorldLocation, float Radius, float Strength,
+	ETerraDyneBrushMode BrushMode, float FlattenHeight)
+{
+	UE_LOG(LogTemp, Verbose, TEXT("ApplyGlobalBrush: Loc=%s R=%.0f S=%.0f Mode=%d"),
+		*WorldLocation.ToString(), Radius, Strength, (int32)BrushMode);
+
+	TArray<FIntPoint> ChangedCoords;
+	const float RadiusWorld = Radius + GlobalChunkSize * 0.5f;
+	const float ProbeInset = 0.01f;
+	const FIntPoint MinCoord = WorldToChunkCoord(WorldLocation - FVector(RadiusWorld, RadiusWorld, 0.0f));
+	const FIntPoint MaxCoord = WorldToChunkCoord(
+		WorldLocation + FVector(RadiusWorld - ProbeInset, RadiusWorld - ProbeInset, 0.0f));
+
+	for (int32 X = MinCoord.X; X <= MaxCoord.X; X++)
+	{
+		for (int32 Y = MinCoord.Y; Y <= MaxCoord.Y; Y++)
+		{
+			FIntPoint Coord(X, Y);
+			if (ATerraDyneChunk** FoundChunk = ActiveChunkMap.Find(Coord))
+			{
+				if (ATerraDyneChunk* Chunk = *FoundChunk)
+				{
+					FVector RelativePos = WorldLocation - Chunk->GetActorLocation();
+					Chunk->ApplyLocalIdempotentEdit(RelativePos, Radius, Strength, BrushMode, FlattenHeight);
+					MarkChunkDirty(Coord);
+					ChangedCoords.AddUnique(Coord);
+				}
+			}
+		}
+	}
+
+	if (ChangedCoords.Num() > 0)
+	{
+		BroadcastTerrainChanged(ChangedCoords);
+		BroadcastFoliageChanged(ChangedCoords);
+		if (HasAuthority())
+		{
+			for (const FIntPoint& Coord : ChangedCoords)
+			{
+				SyncPopulationForChunk(Coord);
+			}
+		}
+	}
+}
+
+ATerraDyneChunk* ATerraDyneManager::GetChunkAtLocation(FVector WorldLocation) const
+{
+	if (ATerraDyneChunk* const* Chunk = ActiveChunkMap.Find(WorldToChunkCoord(WorldLocation))) return *Chunk;
+	return nullptr;
+}
+
+FBox2D ATerraDyneManager::GetChunkBoundsXY(const ATerraDyneChunk* Chunk) const
+{
+	if (!Chunk)
+	{
+		return FBox2D(ForceInit);
+	}
+
+	const FVector Origin = Chunk->GetActorLocation();
+	const float Half = (Chunk->WorldSize > 0.0f ? Chunk->WorldSize : GlobalChunkSize) * 0.5f;
+	return FBox2D(
+		FVector2D(Origin.X - Half, Origin.Y - Half),
+		FVector2D(Origin.X + Half, Origin.Y + Half));
+}
+
+TArray<ATerraDyneChunk*> ATerraDyneManager::GetChunksInBoxXY(const FBox2D& WorldAreaXY) const
+{
+	TArray<ATerraDyneChunk*> Result;
+	if (!WorldAreaXY.bIsValid)
+	{
+		return Result;
+	}
+
+	for (const TPair<FIntPoint, ATerraDyneChunk*>& Pair : ActiveChunkMap)
+	{
+		ATerraDyneChunk* Chunk = Pair.Value;
+		if (!Chunk)
+		{
+			continue;
+		}
+
+		const FBox2D ChunkBox = GetChunkBoundsXY(Chunk);
+		if (ChunkBox.bIsValid && ChunkBox.Intersect(WorldAreaXY))
+		{
+			Result.Add(Chunk);
+		}
+	}
+
+	return Result;
+}
+
+bool ATerraDyneManager::GetNaturalTerrainHeightAtXY(FVector2D WorldXY, float& OutWorldZ) const
+{
+	const FVector Probe(WorldXY.X, WorldXY.Y, 0.0f);
+	const ATerraDyneChunk* Chunk = GetChunkAtLocation(Probe);
+	if (!Chunk)
+	{
+		return false;
+	}
+
+	const FVector ChunkOrigin = Chunk->GetActorLocation();
+	OutWorldZ = ChunkOrigin.Z + Chunk->GetNaturalHeightAtLocation(Probe - ChunkOrigin);
+	return true;
+}
+
+void ATerraDyneManager::RegisterBuilding(ATerraDyneBuildingActor* Building)
+{
+	if (!Building)
+	{
+		return;
+	}
+
+	RegisteredBuildings.RemoveAll([](const TWeakObjectPtr<ATerraDyneBuildingActor>& Entry)
+	{
+		return !Entry.IsValid();
+	});
+
+	RegisteredBuildings.AddUnique(Building);
+}
+
+void ATerraDyneManager::UnregisterBuilding(ATerraDyneBuildingActor* Building)
+{
+	if (!Building)
+	{
+		return;
+	}
+
+	// Recompute the ground it was standing on before dropping it, otherwise its pad stays stamped
+	// into every chunk it overlapped for as long as those chunks remain loaded.
+	const FBox2D Area = Building->GetFootprintBoundsWorld(Building->PadFalloff);
+
+	RegisteredBuildings.RemoveAll([Building](const TWeakObjectPtr<ATerraDyneBuildingActor>& Entry)
+	{
+		return !Entry.IsValid() || Entry.Get() == Building;
+	});
+
+	RefreshBuildingPads(Area);
+}
+
+void ATerraDyneManager::RefreshBuildingPads(const FBox2D& WorldAreaXY)
+{
+	if (!WorldAreaXY.bIsValid)
+	{
+		return;
+	}
+
+	TArray<FIntPoint> ChangedCoords;
+	for (ATerraDyneChunk* Chunk : GetChunksInBoxXY(WorldAreaXY))
+	{
+		RefreshBuildingPadsForChunk(Chunk);
+		if (Chunk)
+		{
+			ChangedCoords.Add(Chunk->GridCoordinate);
+			MarkChunkDirty(Chunk->GridCoordinate);
+		}
+	}
+
+	if (ChangedCoords.Num() > 0)
+	{
+		BroadcastTerrainChanged(ChangedCoords);
+	}
+}
+
+void ATerraDyneManager::RefreshBuildingPadsForChunk(ATerraDyneChunk* Chunk)
+{
+	if (!Chunk)
+	{
+		return;
+	}
+
+	const FBox2D ChunkBox = GetChunkBoundsXY(Chunk);
+	if (!ChunkBox.bIsValid)
+	{
+		return;
+	}
+
+	// Which buildings actually reach this chunk. Gathered first so the common case — no buildings
+	// anywhere near — costs one bounds test each and then stops, rather than clearing and
+	// recomposing a chunk that has nothing to do with any building.
+	TArray<ATerraDyneBuildingActor*> Overlapping;
+	for (const TWeakObjectPtr<ATerraDyneBuildingActor>& Entry : RegisteredBuildings)
+	{
+		ATerraDyneBuildingActor* Building = Entry.Get();
+		if (!Building || !Building->bFlattenTerrain)
+		{
+			continue;
+		}
+
+		const FBox2D BuildingBox = Building->GetFootprintBoundsWorld(Building->PadFalloff);
+		if (BuildingBox.bIsValid && BuildingBox.Intersect(ChunkBox))
+		{
+			Overlapping.Add(Building);
+		}
+	}
+
+	const bool bHadPad = Chunk->HasBuildingPad();
+	if (Overlapping.Num() == 0 && !bHadPad)
+	{
+		return;
+	}
+
+	Chunk->ClearBuildingPad();
+
+	const FVector ChunkOrigin = Chunk->GetActorLocation();
+	for (ATerraDyneBuildingActor* Building : Overlapping)
+	{
+		const TArray<FVector2D> WorldPolygon = Building->GetFootprintPolygonWorld();
+		if (WorldPolygon.Num() < 3)
+		{
+			continue;
+		}
+
+		TArray<FVector2D> LocalPolygon;
+		LocalPolygon.Reserve(WorldPolygon.Num());
+		for (const FVector2D& P : WorldPolygon)
+		{
+			LocalPolygon.Emplace(P.X - ChunkOrigin.X, P.Y - ChunkOrigin.Y);
+		}
+
+		const float TargetLocalZ = Building->ResolvePadTargetWorldZ() - ChunkOrigin.Z;
+		Chunk->StampBuildingPad(LocalPolygon, TargetLocalZ, Building->PadFalloff);
+	}
+
+	Chunk->RecomputeHeightFromLayers();
+	Chunk->NotifyHeightBufferChanged();
+	Chunk->MarkLayerWeightsDirty();
+}
+
+TArray<ATerraDyneChunk*> ATerraDyneManager::GetChunksInRadius(FVector WorldLocation, float Radius)
+{
+	TArray<ATerraDyneChunk*> Result;
+	const float RadiusWorld = Radius + GlobalChunkSize * 0.5f;
+	const float ProbeInset = 0.01f;
+	const FIntPoint MinCoord = WorldToChunkCoord(WorldLocation - FVector(RadiusWorld, RadiusWorld, 0.0f));
+	const FIntPoint MaxCoord = WorldToChunkCoord(
+		WorldLocation + FVector(RadiusWorld - ProbeInset, RadiusWorld - ProbeInset, 0.0f));
+	for (int32 X = MinCoord.X; X <= MaxCoord.X; X++)
+	{
+		for (int32 Y = MinCoord.Y; Y <= MaxCoord.Y; Y++)
+		{
+			if (ATerraDyneChunk** Found = ActiveChunkMap.Find(FIntPoint(X, Y)))
+			{
+				if (*Found) Result.Add(*Found);
+			}
+		}
+	}
+	return Result;
+}
+
+ATerraDyneChunk* ATerraDyneManager::GetChunkAtCoord(FIntPoint Coord) const
+{
+	ATerraDyneChunk* const* Found = ActiveChunkMap.Find(Coord);
+	return Found ? *Found : nullptr;
+}
+
+void ATerraDyneManager::RegisterChunk(ATerraDyneChunk* Chunk)
+{
+	if (!Chunk)
+	{
+		return;
+	}
+
+	ActiveChunkMap.Add(Chunk->GridCoordinate, Chunk);
+	Chunk->SetMaterial(MasterMaterial);
+	Chunk->SetTransferredFoliageFollowsTerrain(LandscapeMigrationState.bTransferredFoliageFollowsTerrain);
+	EnsureChunkFrameworkState(Chunk->GridCoordinate, Chunk);
+	// A chunk streaming back in under an existing building has to get its pad re-stamped, or the
+	// ground reverts to its natural shape and the building floats. No-op when nothing overlaps.
+	RefreshBuildingPadsForChunk(Chunk);
+	if (HasAuthority())
+	{
+		SyncPopulationForChunk(Chunk->GridCoordinate);
+	}
+}
+
+void ATerraDyneManager::UnregisterChunk(ATerraDyneChunk* Chunk)
+{
+	if (!Chunk)
+	{
+		return;
+	}
+
+	if (ATerraDyneChunk** Found = ActiveChunkMap.Find(Chunk->GridCoordinate))
+	{
+		if (*Found == Chunk)
+		{
+			ActiveChunkMap.Remove(Chunk->GridCoordinate);
+		}
+	}
+}
+
+void ATerraDyneManager::BeginStroke(FVector WorldLocation, float Radius, APlayerController* Controller)
+{
+	if (PendingStroke.IsSet() && PendingStrokeOwner != Controller)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("BeginStroke: overwriting pending stroke from %s with stroke from %s — previous stroke discarded"),
+			*PendingStrokeOwner->GetName(), *Controller->GetName());
+	}
+	PendingStroke.Reset();
+	PendingStrokeOwner = Controller;
+
+	FTerraDyneUndoEntry Entry;
+	for (ATerraDyneChunk* Chunk : GetChunksInRadius(WorldLocation, Radius))
+	{
+		FTerraDyneChunkSnapshot Snap;
+		Snap.Coordinate = Chunk->GridCoordinate;
+		Snap.SculptBuffer = Chunk->SculptBuffer;
+		Entry.Snapshots.Add(Chunk->GridCoordinate, MoveTemp(Snap));
+	}
+	PendingStroke = MoveTemp(Entry);
+}
+
+void ATerraDyneManager::CommitStroke(APlayerController* Controller)
+{
+	if (!PendingStroke.IsSet() || PendingStrokeOwner != Controller) return;
+
+	TArray<FTerraDyneUndoEntry>& Stack = UndoStacks.FindOrAdd(Controller);
+	Stack.Add(MoveTemp(PendingStroke.GetValue()));
+	PendingStroke.Reset();
+	PendingStrokeOwner = nullptr;
+
+	int32 MaxHistory = 20;
+	if (const UTerraDyneSettings* S = GetDefault<UTerraDyneSettings>())
+	{
+		MaxHistory = S->MaxUndoHistory;
+	}
+	if (Stack.Num() > MaxHistory)
+		Stack.RemoveAt(0, Stack.Num() - MaxHistory);
+
+	// New stroke clears redo for this player
+	RedoStacks.Remove(Controller);
+}
+
+void ATerraDyneManager::RestoreSnapshots(const FTerraDyneUndoEntry& Entry)
+{
+	TArray<FIntPoint> RestoredCoords;
+	for (const auto& Pair : Entry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		const FTerraDyneChunkSnapshot& Snap = Pair.Value;
+
+		Chunk->SculptBuffer = Snap.SculptBuffer;
+		// Undo restores the sculpt layer only. The building pad is derived state and is left
+		// untouched, so undoing a brush stroke under a building cannot dig a hole through its pad.
+		Chunk->RecomputeHeightFromLayers();
+
+		const int32 MeshSamples = Chunk->Resolution * Chunk->Resolution;
+		if (MeshSamples > 0 && Chunk->HeightBuffer.Num() == MeshSamples)
+		{
+			Chunk->RebuildPhysicsMesh();
+			Chunk->RequestTransferredFoliageRefresh();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("RestoreSnapshots: chunk %s has invalid terrain sample count (%d vs %d); skipping rebuild."),
+				*Snap.Coordinate.ToString(), Chunk->HeightBuffer.Num(), MeshSamples);
+		}
+
+		RestoredCoords.AddUnique(Pair.Key);
+	}
+
+	if (RestoredCoords.Num() > 0)
+	{
+		BroadcastTerrainChanged(RestoredCoords);
+		BroadcastFoliageChanged(RestoredCoords);
+		if (HasAuthority())
+		{
+			for (const FIntPoint& Coord : RestoredCoords)
+			{
+				SyncPopulationForChunk(Coord);
+			}
+		}
+	}
+}
+
+void ATerraDyneManager::Undo(APlayerController* Controller)
+{
+	TArray<FTerraDyneUndoEntry>* Stack = UndoStacks.Find(Controller);
+	if (!Stack || Stack->Num() == 0) return;
+
+	FTerraDyneUndoEntry UndoEntry = Stack->Pop();
+
+	// Snapshot current state for redo
+	FTerraDyneUndoEntry RedoEntry;
+	for (const auto& Pair : UndoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		FTerraDyneChunkSnapshot CurrentSnap;
+		CurrentSnap.Coordinate = Chunk->GridCoordinate;
+		CurrentSnap.SculptBuffer = Chunk->SculptBuffer;
+		RedoEntry.Snapshots.Add(Pair.Key, MoveTemp(CurrentSnap));
+	}
+	RedoStacks.FindOrAdd(Controller).Add(MoveTemp(RedoEntry));
+
+	RestoreSnapshots(UndoEntry);
+
+	// Multicast affected chunks to remote clients
+	for (const auto& Pair : UndoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		SendChunkSculptSync(Chunk);
+	}
+}
+
+void ATerraDyneManager::Redo(APlayerController* Controller)
+{
+	TArray<FTerraDyneUndoEntry>* Stack = RedoStacks.Find(Controller);
+	if (!Stack || Stack->Num() == 0) return;
+
+	FTerraDyneUndoEntry RedoEntry = Stack->Pop();
+
+	// Snapshot current state back to undo
+	FTerraDyneUndoEntry UndoEntry;
+	for (const auto& Pair : RedoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		FTerraDyneChunkSnapshot CurrentSnap;
+		CurrentSnap.Coordinate = Chunk->GridCoordinate;
+		CurrentSnap.SculptBuffer = Chunk->SculptBuffer;
+		UndoEntry.Snapshots.Add(Pair.Key, MoveTemp(CurrentSnap));
+	}
+	UndoStacks.FindOrAdd(Controller).Add(MoveTemp(UndoEntry));
+
+	RestoreSnapshots(RedoEntry);
+
+	// Multicast affected chunks to remote clients
+	for (const auto& Pair : RedoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		SendChunkSculptSync(Chunk);
+	}
+}
+
+void ATerraDyneManager::ApplyGlobalNoise(float Strength, float Frequency, float Seed)
+{
+	UE_LOG(LogTemp, Warning, TEXT("ApplyGlobalNoise not implemented"));
+}
+
+UTerraDyneSaveGame* ATerraDyneManager::BuildSaveGameInstance()
+{
+	UTerraDyneSaveGame* SaveInst = Cast<UTerraDyneSaveGame>(UGameplayStatics::CreateSaveGameObject(UTerraDyneSaveGame::StaticClass()));
+	if (!SaveInst) return nullptr;
+
+	SaveInst->Timestamp = FDateTime::Now();
+	SaveInst->ManagerLocation = GetActorLocation();
+	SaveInst->SavedGlobalChunkSize = GlobalChunkSize;
+	SaveInst->LandscapeMigration = LandscapeMigrationState;
+	SaveInst->ProceduralWorldSettings = ProceduralWorldSettings;
+	SaveInst->BiomeOverlays = BiomeOverlays;
+	SaveInst->PopulationSpawnRules = PopulationSpawnRules;
+	SaveInst->AISpawnZones = AISpawnZones;
+	SaveInst->BuildPermissionZones = BuildPermissionZones;
+	SaveInst->ProceduralChunks = ProceduralChunkStates;
+	SaveInst->PersistentPopulationEntries = PersistentPopulationEntries;
+	SaveInst->AuthoredChunkCoords.Reset(ImportedChunkCoords.Num());
+	for (const FIntPoint& Coord : ImportedChunkCoords)
+	{
+		SaveInst->AuthoredChunkCoords.Add(Coord);
+	}
+
+	if (MasterMaterial)
+	{
+		const FString MaterialPath = MasterMaterial->GetPathName();
+		if (!MaterialPath.StartsWith(TEXT("/Engine/Transient")))
+		{
+			SaveInst->MasterMaterialPath = MaterialPath;
+		}
+	}
+
+	for (auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			SaveInst->Chunks.Add(Pair.Key, Pair.Value->GetSerializedData());
+		}
+	}
+
+	return SaveInst;
+}
+
+void ATerraDyneManager::SaveWorld(FString SlotName)
+{
+	if (SlotName.IsEmpty()) SlotName = TEXT("TerraDyneSave");
+
+	UTerraDyneSaveGame* SaveInst = BuildSaveGameInstance();
+	if (!SaveInst) return;
+
+	if (UGameplayStatics::SaveGameToSlot(SaveInst, SlotName, 0))
+	{
+		UE_LOG(LogTemp, Log, TEXT("TerraDyne: World saved to slot '%s' with %d chunks."), *SlotName, SaveInst->Chunks.Num());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("TerraDyne: Failed to save to slot '%s'"), *SlotName);
+	}
+}
+
+bool ATerraDyneManager::SaveWorldToFile(const FString& FilePath)
+{
+	UTerraDyneSaveGame* SaveInst = BuildSaveGameInstance();
+	if (!SaveInst) return false;
+
+	TArray<uint8> Bytes;
+	if (!UGameplayStatics::SaveGameToMemory(SaveInst, Bytes))
+	{
+		UE_LOG(LogTemp, Error, TEXT("TerraDyne: Failed to serialize world for export to '%s'"), *FilePath);
+		return false;
+	}
+
+	if (!FFileHelper::SaveArrayToFile(Bytes, *FilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("TerraDyne: Failed to write world file '%s'"), *FilePath);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("TerraDyne: World exported to '%s' with %d chunks."), *FilePath, SaveInst->Chunks.Num());
+	return true;
+}
+
+void ATerraDyneManager::LoadWorld(FString SlotName)
+{
+	if (SlotName.IsEmpty()) SlotName = TEXT("TerraDyneSave");
+
+	if (!UGameplayStatics::DoesSaveGameExist(SlotName, 0))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyne: No save game found at slot '%s'"), *SlotName);
+		return;
+	}
+
+	UTerraDyneSaveGame* LoadInst = Cast<UTerraDyneSaveGame>(UGameplayStatics::LoadGameFromSlot(SlotName, 0));
+	if (!LoadInst) return;
+
+	ApplyLoadedSaveGame(LoadInst, FString::Printf(TEXT("slot '%s'"), *SlotName));
+}
+
+bool ATerraDyneManager::LoadWorldFromFile(const FString& FilePath)
+{
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *FilePath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyne: World file not found or unreadable: '%s'"), *FilePath);
+		return false;
+	}
+
+	UTerraDyneSaveGame* LoadInst = Cast<UTerraDyneSaveGame>(UGameplayStatics::LoadGameFromMemory(Bytes));
+	if (!LoadInst)
+	{
+		UE_LOG(LogTemp, Error, TEXT("TerraDyne: Failed to deserialize world file '%s'"), *FilePath);
+		return false;
+	}
+
+	ApplyLoadedSaveGame(LoadInst, FString::Printf(TEXT("file '%s'"), *FilePath));
+	return true;
+}
+
+void ATerraDyneManager::ApplyLoadedSaveGame(UTerraDyneSaveGame* LoadInst, const FString& SourceLabel)
+{
+	// Clear streaming state — full world load resets everything
+	PendingLoadQueue.Empty();
+	PendingUnloadQueue.Empty();
+	DirtyChunkSet.Empty();
+	ImportedChunkCoords.Empty();
+	LastStreamingHash = 0;
+	ClearUndoRedoState();
+	DestroyTrackedPopulationActors();
+	PersistentPopulationEntries.Reset();
+	ProceduralChunkStates.Reset();
+	BiomeOverlays.Reset();
+	PopulationSpawnRules.Reset();
+	AISpawnZones.Reset();
+	BuildPermissionZones.Reset();
+	RebuildWorldStateIndices();
+
+	UE_LOG(LogTemp, Log, TEXT("TerraDyne: Loading world from %s..."), *SourceLabel);
+
+	SetActorLocation(LoadInst->ManagerLocation);
+	if (LoadInst->SavedGlobalChunkSize > KINDA_SMALL_NUMBER)
+	{
+		GlobalChunkSize = LoadInst->SavedGlobalChunkSize;
+	}
+
+	LandscapeMigrationState = LoadInst->LandscapeMigration;
+	ProceduralWorldSettings = LoadInst->ProceduralWorldSettings;
+	BiomeOverlays = LoadInst->BiomeOverlays;
+	PopulationSpawnRules = LoadInst->PopulationSpawnRules;
+	AISpawnZones = LoadInst->AISpawnZones;
+	BuildPermissionZones = LoadInst->BuildPermissionZones;
+	ProceduralChunkStates = LoadInst->ProceduralChunks;
+	PersistentPopulationEntries = LoadInst->PersistentPopulationEntries;
+	for (const FIntPoint& Coord : LoadInst->AuthoredChunkCoords)
+	{
+		ImportedChunkCoords.Add(Coord);
+	}
+	RebuildWorldStateIndices();
+	if (!LoadInst->MasterMaterialPath.IsEmpty())
+	{
+		if (UMaterialInterface* LoadedMaterial = LoadObject<UMaterialInterface>(nullptr, *LoadInst->MasterMaterialPath))
+		{
+			MasterMaterial = LoadedMaterial;
+		}
+	}
+
+	TSet<FIntPoint> SavedCoords;
+	for (const auto& Pair : LoadInst->Chunks)
+	{
+		SavedCoords.Add(Pair.Key);
+	}
+
+	TArray<FIntPoint> ExistingCoords;
+	ActiveChunkMap.GetKeys(ExistingCoords);
+	for (const FIntPoint& Coord : ExistingCoords)
+	{
+		if (!SavedCoords.Contains(Coord))
+		{
+			if (ATerraDyneChunk* Chunk = GetChunkAtCoord(Coord))
+			{
+				ActiveChunkMap.Remove(Coord);
+				Chunk->Destroy();
+			}
+		}
+	}
+
+	for (const auto& Pair : LoadInst->Chunks)
+	{
+		FIntPoint Coord = Pair.Key;
+		const FTerraDyneChunkData& Data = Pair.Value;
+		if (LoadInst->AuthoredChunkCoords.Num() == 0 && LandscapeMigrationState.bWasImportedFromLandscape)
+		{
+			ImportedChunkCoords.Add(Coord);
+		}
+
+		ATerraDyneChunk* Chunk = nullptr;
+
+		if (ActiveChunkMap.Contains(Coord))
+		{
+			Chunk = ActiveChunkMap[Coord];
+		}
+		else
+		{
+			Chunk = SpawnConfiguredChunk(Coord, Data.Resolution);
+		}
+
+		if (Chunk)
+		{
+			Chunk->LoadFromData(Data);
+		}
+	}
+
+	RebuildChunkMap();
+	ApplyMaterialToActiveChunks();
+	OnRep_FrameworkConfig();
+	RefreshPopulationForLoadedChunks();
+}
+
+void ATerraDyneManager::SetAuthoredChunkCoordinates(
+	const TArray<FIntPoint>& ChunkCoords,
+	bool bWasImportedFromLandscape)
+{
+	ImportedChunkCoords.Empty();
+	for (const FIntPoint& Coord : ChunkCoords)
+	{
+		ImportedChunkCoords.Add(Coord);
+	}
+
+	LandscapeMigrationState.bWasImportedFromLandscape =
+		bWasImportedFromLandscape && ImportedChunkCoords.Num() > 0;
+	LandscapeMigrationState.ImportedComponentCount = ImportedChunkCoords.Num();
+	LandscapeMigrationState.ImportedChunkSize = GlobalChunkSize;
+	LandscapeMigrationState.RuntimeManagerLocation = GetActorLocation();
+
+	OnRep_LandscapeMigrationState();
+}
+
+void ATerraDyneManager::RebuildChunkMap()
+{
+	ActiveChunkMap.Reset();
+	TArray<AActor*> FoundActors;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ATerraDyneChunk::StaticClass(), FoundActors);
+	for (AActor* Actor : FoundActors)
+	{
+		if (ATerraDyneChunk* Chunk = Cast<ATerraDyneChunk>(Actor))
+		{
+			if (Chunk->IsActorBeingDestroyed())
+			{
+				continue;
+			}
+			ActiveChunkMap.Add(Chunk->GridCoordinate, Chunk);
+		}
+	}
+
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			EnsureChunkFrameworkState(Pair.Key, Pair.Value);
+		}
+	}
+}
+
+void ATerraDyneManager::ApplyMaterialToActiveChunks()
+{
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->SetMaterial(MasterMaterial);
+		}
+	}
+}
+
+void ATerraDyneManager::DestroyTrackedPopulationActors()
+{
+	TArray<TObjectPtr<AActor>> ActorsToDestroy;
+	ActorsToDestroy.Reserve(PopulationActorById.Num());
+	for (const auto& Pair : PopulationActorById)
+	{
+		if (AActor* Actor = Pair.Value.Get())
+		{
+			ActorsToDestroy.Add(Actor);
+		}
+	}
+
+	PopulationIdByActor.Reset();
+	PopulationActorById.Reset();
+	PopulationDestroyInProgress.Reset();
+
+	for (AActor* Actor : ActorsToDestroy)
+	{
+		if (IsValid(Actor))
+		{
+			Actor->Destroy();
+		}
+	}
+}
+
+void ATerraDyneManager::ClearUndoRedoState()
+{
+	UndoStacks.Reset();
+	RedoStacks.Reset();
+	PendingStroke.Reset();
+	PendingStrokeOwner = nullptr;
+}
+
+bool ATerraDyneManager::IsImportedChunkCoord(FIntPoint Coord) const
+{
+	return ImportedChunkCoords.Contains(Coord);
+}
+
+bool ATerraDyneManager::ShouldAllowChunkCoord(FIntPoint Coord) const
+{
+	if (ImportedChunkCoords.Contains(Coord))
+	{
+		return true;
+	}
+
+	if (ImportedChunkCoords.Num() == 0)
+	{
+		if (ProceduralWorldSettings.bEnableInfiniteEdgeGrowth)
+		{
+			return true;
+		}
+
+		if (const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>())
+		{
+			return FMath::Abs(Coord.X) <= Settings->GridExtent && FMath::Abs(Coord.Y) <= Settings->GridExtent;
+		}
+
+		return true;
+	}
+
+	if (!ProceduralWorldSettings.bEnableSeededOutskirts)
+	{
+		return false;
+	}
+
+	if (ProceduralWorldSettings.bEnableInfiniteEdgeGrowth)
+	{
+		return true;
+	}
+
+	return GetDistanceFromAuthoredChunks(Coord) <= FMath::Max(0, ProceduralWorldSettings.ProceduralOutskirtsExtent);
+}
+
+int32 ATerraDyneManager::GetDistanceFromAuthoredChunks(FIntPoint Coord) const
+{
+	if (ImportedChunkCoords.Num() == 0)
+	{
+		return FMath::Max(FMath::Abs(Coord.X), FMath::Abs(Coord.Y));
+	}
+
+	int32 MinDistance = TNumericLimits<int32>::Max();
+	for (const FIntPoint& AuthoredCoord : ImportedChunkCoords)
+	{
+		MinDistance = FMath::Min(
+			MinDistance,
+			FMath::Abs(Coord.X - AuthoredCoord.X) + FMath::Abs(Coord.Y - AuthoredCoord.Y));
+	}
+
+	return MinDistance == TNumericLimits<int32>::Max() ? 0 : MinDistance;
+}
+
+int32 ATerraDyneManager::MakeChunkSeed(FIntPoint Coord) const
+{
+	return static_cast<int32>(HashCombine(GetTypeHash(Coord), GetTypeHash(ProceduralWorldSettings.WorldSeed)));
+}
+
+void ATerraDyneManager::RebuildWorldStateIndices()
+{
+	PopulationEntryIndexById.Reset();
+	for (int32 Index = 0; Index < PersistentPopulationEntries.Num(); ++Index)
+	{
+		if (!PersistentPopulationEntries[Index].PopulationId.IsValid())
+		{
+			PersistentPopulationEntries[Index].PopulationId = FGuid::NewGuid();
+		}
+
+		PopulationEntryIndexById.Add(PersistentPopulationEntries[Index].PopulationId, Index);
+	}
+
+	ProceduralChunkStateIndexByCoord.Reset();
+	for (int32 Index = 0; Index < ProceduralChunkStates.Num(); ++Index)
+	{
+		ProceduralChunkStateIndexByCoord.Add(ProceduralChunkStates[Index].Coordinate, Index);
+	}
+}
+
+FTerraDyneProceduralChunkState* ATerraDyneManager::FindProceduralChunkState(FIntPoint Coord)
+{
+	if (const int32* Index = ProceduralChunkStateIndexByCoord.Find(Coord))
+	{
+		return ProceduralChunkStates.IsValidIndex(*Index) ? &ProceduralChunkStates[*Index] : nullptr;
+	}
+
+	return nullptr;
+}
+
+const FTerraDyneProceduralChunkState* ATerraDyneManager::FindProceduralChunkState(FIntPoint Coord) const
+{
+	if (const int32* Index = ProceduralChunkStateIndexByCoord.Find(Coord))
+	{
+		return ProceduralChunkStates.IsValidIndex(*Index) ? &ProceduralChunkStates[*Index] : nullptr;
+	}
+
+	return nullptr;
+}
+
+FName ATerraDyneManager::ResolveBiomeForChunk(FIntPoint Coord, const ATerraDyneChunk* Chunk, TArray<FName>* OutOverlays) const
+{
+	FName SelectedBiome = ImportedChunkCoords.Contains(Coord) ? FName(TEXT("Authored")) : FName(TEXT("Outskirts"));
+	int32 SelectedPriority = TNumericLimits<int32>::Lowest();
+	const bool bAuthoredChunk = ImportedChunkCoords.Contains(Coord);
+	const float ProceduralNoise = FRandomStream(MakeChunkSeed(Coord)).FRand();
+
+	if (OutOverlays)
+	{
+		OutOverlays->Reset();
+	}
+
+	for (const FTerraDyneBiomeOverlay& Overlay : BiomeOverlays)
+	{
+		bool bMatches = false;
+
+		// Authored chunks used to match on average paint weight; with paint layers removed there is
+		// no per-chunk authored signal left, so only the procedural noise gate remains.
+		if (!bAuthoredChunk && Overlay.bApplyToProceduralChunks)
+		{
+			bMatches = ProceduralNoise >= Overlay.ProceduralNoiseMin && ProceduralNoise <= Overlay.ProceduralNoiseMax;
+		}
+
+		if (!bMatches)
+		{
+			continue;
+		}
+
+		if (OutOverlays)
+		{
+			OutOverlays->AddUnique(Overlay.BiomeTag);
+		}
+
+		if (Overlay.Priority >= SelectedPriority)
+		{
+			SelectedPriority = Overlay.Priority;
+			SelectedBiome = Overlay.BiomeTag;
+		}
+	}
+
+	return SelectedBiome;
+}
+
+void ATerraDyneManager::EnsureChunkFrameworkState(FIntPoint Coord, ATerraDyneChunk* Chunk)
+{
+	if (!Chunk)
+	{
+		return;
+	}
+
+	FTerraDyneProceduralChunkState* State = FindProceduralChunkState(Coord);
+	if (!State)
+	{
+		FTerraDyneProceduralChunkState NewState;
+		NewState.Coordinate = Coord;
+		NewState.ChunkSeed = MakeChunkSeed(Coord);
+		NewState.bIsAuthoredChunk = ImportedChunkCoords.Contains(Coord);
+		NewState.bGeneratedOutskirtsChunk = !NewState.bIsAuthoredChunk;
+		NewState.DistanceFromAuthored = GetDistanceFromAuthoredChunks(Coord);
+		NewState.PrimaryBiomeTag = ResolveBiomeForChunk(Coord, Chunk, &NewState.OverlayBiomeTags);
+
+		const int32 NewIndex = ProceduralChunkStates.Add(MoveTemp(NewState));
+		ProceduralChunkStateIndexByCoord.Add(Coord, NewIndex);
+		State = &ProceduralChunkStates[NewIndex];
+	}
+	else
+	{
+		State->ChunkSeed = MakeChunkSeed(Coord);
+		State->bIsAuthoredChunk = ImportedChunkCoords.Contains(Coord);
+		State->bGeneratedOutskirtsChunk = !State->bIsAuthoredChunk;
+		State->DistanceFromAuthored = GetDistanceFromAuthoredChunks(Coord);
+		State->PrimaryBiomeTag = ResolveBiomeForChunk(Coord, Chunk, &State->OverlayBiomeTags);
+	}
+
+	Chunk->ProceduralSeed = State->ChunkSeed;
+	Chunk->bIsAuthoredChunk = State->bIsAuthoredChunk;
+	Chunk->PrimaryBiomeTag = State->PrimaryBiomeTag;
+}
+
+void ATerraDyneManager::SetMasterMaterial(UMaterialInterface* NewMaterial)
+{
+	if (!HasAuthority() || NewMaterial == MasterMaterial)
+	{
+		return;
+	}
+
+	MasterMaterial = NewMaterial;
+
+	// Existing chunks are re-materialled now; chunks that stream in later read MasterMaterial in
+	// SpawnChunk, so they pick this up on their own.
+	ApplyMaterialToActiveChunks();
+}
+
+void ATerraDyneManager::OnRep_MasterMaterial()
+{
+	ApplyMaterialToActiveChunks();
+}
+
+void ATerraDyneManager::OnRep_LandscapeMigrationState()
+{
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->SetTransferredFoliageFollowsTerrain(LandscapeMigrationState.bTransferredFoliageFollowsTerrain);
+		}
+	}
+
+	OnRep_FrameworkConfig();
+}
+
+void ATerraDyneManager::OnRep_FrameworkConfig()
+{
+	RebuildWorldStateIndices();
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			EnsureChunkFrameworkState(Pair.Key, Pair.Value);
+		}
+	}
+
+	if (HasAuthority())
+	{
+		RefreshPopulationForLoadedChunks();
+	}
+}
+
+FTerraDyneGPUStats ATerraDyneManager::GetGPUStats() const
+{
+	FTerraDyneGPUStats Stats;
+	
+	int32 GPUChunks = 0;
+	int32 CPUChunks = 0;
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value && Pair.Value->IsUsingGPU())
+		{
+			GPUChunks++;
+		}
+		else
+		{
+			CPUChunks++;
+		}
+	}
+	
+	if (GPUChunks > 0)
+	{
+		Stats.AdapterName = TEXT("Hybrid Render Target Support");
+		Stats.bIsCudaAvailable = true;
+		Stats.ComputeBackend = FString::Printf(TEXT("Hybrid CPU Mesh (%d RT-enabled chunks, %d CPU-only)"), GPUChunks, CPUChunks);
+	}
+	else
+	{
+		Stats.AdapterName = TEXT("CPU Dynamic Mesh");
+		Stats.bIsCudaAvailable = false;
+		Stats.ComputeBackend = TEXT("CPU Sculpt Pipeline");
+	}
+	
+	Stats.DedicatedVideoMemory = 0;
+	return Stats;
+}
+
+int32 ATerraDyneManager::GetTotalVertexCount() const
+{
+	int32 Total = 0;
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			int32 Res = Pair.Value->Resolution;
+			Total += Res * Res;
+		}
+	}
+	return Total;
+}
+
+void ATerraDyneManager::ApplyWorldPreset(UTerraDyneWorldPreset* Preset)
+{
+	UTerraDyneWorldPreset* PresetToApply = Preset ? Preset : WorldPreset.Get();
+	if (!PresetToApply)
+	{
+		return;
+	}
+
+	WorldPreset = PresetToApply;
+	ProceduralWorldSettings = PresetToApply->ProceduralSettings;
+	BiomeOverlays = PresetToApply->BiomeOverlays;
+	PopulationSpawnRules = PresetToApply->PopulationSpawnRules;
+	AISpawnZones = PresetToApply->AISpawnZones;
+	BuildPermissionZones = PresetToApply->BuildPermissionZones;
+	bSpawnDefaultChunksOnBeginPlay = PresetToApply->bSpawnDefaultChunksOnBeginPlay;
+	bSetupDefaultLightingOnBeginPlay = PresetToApply->bSetupDefaultLightingOnBeginPlay;
+	bRefreshNavMeshOnTerrainChanges = PresetToApply->bRefreshNavMeshOnTerrainChanges;
+	bRefreshNavMeshOnPopulationChanges = PresetToApply->bRefreshNavMeshOnPopulationChanges;
+	NavigationDirtyBoundsPadding = PresetToApply->NavigationDirtyBoundsPadding;
+	OnRep_FrameworkConfig();
+}
+
+FTerraDynePopulationDescriptor ATerraDyneManager::MakeDescriptorFromActor(
+	AActor* Actor,
+	ETerraDynePopulationKind Kind,
+	bool bAllowRegrowth,
+	float RegrowthDelaySeconds,
+	bool bSnapToTerrain) const
+{
+	FTerraDynePopulationDescriptor Descriptor;
+	Descriptor.Kind = Kind;
+	Descriptor.TypeId = Actor ? Actor->GetClass()->GetFName() : NAME_None;
+	Descriptor.ActorClass = Actor ? Actor->GetClass() : nullptr;
+	Descriptor.bReplicates = true;
+	Descriptor.bAttachToChunk = false;
+	Descriptor.bSnapToTerrain = bSnapToTerrain;
+	Descriptor.bAllowRegrowth = bAllowRegrowth;
+	Descriptor.RegrowthDelaySeconds = RegrowthDelaySeconds;
+
+	if (const AStaticMeshActor* StaticMeshActor = Cast<AStaticMeshActor>(Actor))
+	{
+		if (const UStaticMeshComponent* StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent())
+		{
+			Descriptor.StaticMesh = StaticMeshComponent->GetStaticMesh();
+			Descriptor.MaterialOverride = StaticMeshComponent->GetMaterial(0);
+		}
+	}
+
+	return Descriptor;
+}
+
+FGuid ATerraDyneManager::RegisterPersistentActor(
+	AActor* Actor,
+	ETerraDynePopulationKind Kind,
+	bool bAllowRegrowth,
+	float RegrowthDelaySeconds,
+	bool bSnapToTerrain)
+{
+	if (!HasAuthority() || !Actor)
+	{
+		return FGuid();
+	}
+
+	if (const FGuid* ExistingId = PopulationIdByActor.Find(Actor))
+	{
+		return *ExistingId;
+	}
+
+	FTerraDynePopulationDescriptor Descriptor =
+		MakeDescriptorFromActor(Actor, Kind, bAllowRegrowth, RegrowthDelaySeconds, bSnapToTerrain);
+	const FTransform WorldTransform = Actor->GetActorTransform();
+	FGuid PopulationId = FGuid::NewGuid();
+
+	FTerraDynePersistentPopulationEntry Entry;
+	Entry.PopulationId = PopulationId;
+	Entry.Descriptor = Descriptor;
+	Entry.ChunkCoord = WorldToChunkCoord(WorldTransform.GetLocation());
+	Entry.LocalTransform = WorldTransform.GetRelativeTransform(GetActorTransform());
+	Entry.State = ETerraDynePopulationState::Active;
+	Entry.CachedBiomeTag = GetBiomeTagAtLocation(WorldTransform.GetLocation());
+	Entry.Descriptor.BiomeTag = Entry.CachedBiomeTag;
+
+	if (Descriptor.bSnapToTerrain)
+	{
+		if (ATerraDyneChunk* Chunk = GetChunkAtCoord(Entry.ChunkCoord))
+		{
+			const FVector ChunkLocal = WorldTransform.GetLocation() - Chunk->GetActorLocation();
+			const float TerrainZ = Chunk->GetActorLocation().Z +
+				Chunk->GetHeightAtLocation(FVector(ChunkLocal.X, ChunkLocal.Y, 0.0f));
+			Entry.Descriptor.TerrainOffset = WorldTransform.GetLocation().Z - TerrainZ;
+		}
+	}
+
+	const int32 NewIndex = PersistentPopulationEntries.Add(MoveTemp(Entry));
+	PopulationEntryIndexById.Add(PersistentPopulationEntries[NewIndex].PopulationId, NewIndex);
+	BindPopulationActor(PersistentPopulationEntries[NewIndex].PopulationId, Actor);
+	if (HasAuthority() && Actor->IsActorInitialized())
+	{
+		Actor->SetReplicates(PersistentPopulationEntries[NewIndex].Descriptor.bReplicates);
+	}
+	BroadcastPopulationChanged(PersistentPopulationEntries[NewIndex], FName(TEXT("Registered")));
+	RefreshNavigationForBounds(Actor->GetComponentsBoundingBox(true), true);
+	return PopulationId;
+}
+
+FGuid ATerraDyneManager::PlacePersistentActorFromDescriptor(
+	const FTerraDynePopulationDescriptor& Descriptor,
+	const FTransform& WorldTransform,
+	FName SourceRuleId)
+{
+	if (!HasAuthority())
+	{
+		return FGuid();
+	}
+
+	if (Descriptor.ActorClass.IsNull() && Descriptor.StaticMesh.IsNull())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyne: PlacePersistentActorFromDescriptor called without a class or mesh."));
+		return FGuid();
+	}
+
+	FTerraDynePersistentPopulationEntry Entry;
+	Entry.PopulationId = FGuid::NewGuid();
+	Entry.Descriptor = Descriptor;
+	Entry.ChunkCoord = WorldToChunkCoord(WorldTransform.GetLocation());
+	Entry.LocalTransform = WorldTransform.GetRelativeTransform(GetActorTransform());
+	Entry.State = ETerraDynePopulationState::Active;
+	Entry.SourceRuleId = SourceRuleId;
+	Entry.bSpawnedFromRule = SourceRuleId != NAME_None;
+	Entry.CachedBiomeTag = Descriptor.BiomeTag != NAME_None ? Descriptor.BiomeTag : GetBiomeTagAtLocation(WorldTransform.GetLocation());
+	Entry.Descriptor.BiomeTag = Entry.CachedBiomeTag;
+
+	if (Entry.Descriptor.TypeId == NAME_None)
+	{
+		if (!Descriptor.ActorClass.IsNull())
+		{
+			if (UClass* LoadedClass = Descriptor.ActorClass.LoadSynchronous())
+			{
+				Entry.Descriptor.TypeId = LoadedClass->GetFName();
+			}
+		}
+		else if (UStaticMesh* LoadedMesh = Descriptor.StaticMesh.LoadSynchronous())
+		{
+			Entry.Descriptor.TypeId = LoadedMesh->GetFName();
+		}
+	}
+
+	const int32 NewIndex = PersistentPopulationEntries.Add(MoveTemp(Entry));
+	PopulationEntryIndexById.Add(PersistentPopulationEntries[NewIndex].PopulationId, NewIndex);
+	SpawnPopulationActor(PersistentPopulationEntries[NewIndex]);
+	BroadcastPopulationChanged(PersistentPopulationEntries[NewIndex], FName(TEXT("Placed")));
+	RefreshNavigationForBounds(
+		TerraDyneWorldFramework::MakeChunkBounds(*this, PersistentPopulationEntries[NewIndex].ChunkCoord, GlobalChunkSize),
+		true);
+	return PersistentPopulationEntries[NewIndex].PopulationId;
+}
+
+FGuid ATerraDyneManager::PlacePersistentActor(
+	TSubclassOf<AActor> ActorClass,
+	const FTransform& WorldTransform,
+	ETerraDynePopulationKind Kind,
+	bool bSnapToTerrain,
+	float TerrainOffset,
+	bool bAllowRegrowth,
+	float RegrowthDelaySeconds)
+{
+	FTerraDynePopulationDescriptor Descriptor;
+	Descriptor.Kind = Kind;
+	Descriptor.ActorClass = ActorClass;
+	Descriptor.TypeId = ActorClass ? ActorClass->GetFName() : NAME_None;
+	Descriptor.bReplicates = true;
+	Descriptor.bSnapToTerrain = bSnapToTerrain;
+	Descriptor.TerrainOffset = TerrainOffset;
+	Descriptor.bAllowRegrowth = bAllowRegrowth;
+	Descriptor.RegrowthDelaySeconds = RegrowthDelaySeconds;
+	return PlacePersistentActorFromDescriptor(Descriptor, WorldTransform);
+}
+
+void ATerraDyneManager::BindPopulationActor(const FGuid& PopulationId, AActor* Actor)
+{
+	if (!Actor)
+	{
+		return;
+	}
+
+	PopulationActorById.Add(PopulationId, Actor);
+	PopulationIdByActor.Add(Actor, PopulationId);
+	Actor->OnDestroyed.RemoveDynamic(this, &ATerraDyneManager::HandlePopulationActorDestroyed);
+	Actor->OnDestroyed.AddUniqueDynamic(this, &ATerraDyneManager::HandlePopulationActorDestroyed);
+}
+
+AActor* ATerraDyneManager::SpawnPopulationActor(const FTerraDynePersistentPopulationEntry& Entry)
+{
+	if (!HasAuthority())
+	{
+		return nullptr;
+	}
+
+	if (const TWeakObjectPtr<AActor>* ExistingActor = PopulationActorById.Find(Entry.PopulationId))
+	{
+		if (ExistingActor->IsValid())
+		{
+			return ExistingActor->Get();
+		}
+	}
+
+	ATerraDyneChunk* Chunk = GetChunkAtCoord(Entry.ChunkCoord);
+	if (!Chunk || !GetWorld())
+	{
+		return nullptr;
+	}
+
+	FTransform WorldTransform = TerraDyneWorldFramework::MakeWorldTransform(Entry.LocalTransform, GetActorTransform());
+	if (Entry.Descriptor.bSnapToTerrain)
+	{
+		FVector WorldLocation = WorldTransform.GetLocation();
+		const FVector ChunkLocal = WorldLocation - Chunk->GetActorLocation();
+		WorldLocation.Z = Chunk->GetActorLocation().Z +
+			Chunk->GetHeightAtLocation(FVector(ChunkLocal.X, ChunkLocal.Y, 0.0f)) +
+			Entry.Descriptor.TerrainOffset;
+		WorldTransform.SetLocation(WorldLocation);
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	AActor* SpawnedActor = nullptr;
+	if (UClass* DesiredClass = Entry.Descriptor.ActorClass.LoadSynchronous())
+	{
+		SpawnedActor = GetWorld()->SpawnActor<AActor>(DesiredClass, WorldTransform, SpawnParams);
+	}
+	else if (UStaticMesh* StaticMesh = Entry.Descriptor.StaticMesh.LoadSynchronous())
+	{
+		if (AStaticMeshActor* StaticMeshActor = GetWorld()->SpawnActor<AStaticMeshActor>(
+			AStaticMeshActor::StaticClass(),
+			WorldTransform,
+			SpawnParams))
+		{
+			if (UStaticMeshComponent* StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent())
+			{
+				StaticMeshComponent->SetStaticMesh(StaticMesh);
+				if (UMaterialInterface* MaterialOverride = Entry.Descriptor.MaterialOverride.LoadSynchronous())
+				{
+					StaticMeshComponent->SetMaterial(0, MaterialOverride);
+				}
+			}
+			SpawnedActor = StaticMeshActor;
+		}
+	}
+
+	if (!SpawnedActor)
+	{
+		return nullptr;
+	}
+
+	if (UStaticMesh* StaticMesh = Entry.Descriptor.StaticMesh.LoadSynchronous())
+	{
+		if (UStaticMeshComponent* StaticMeshComponent = SpawnedActor->FindComponentByClass<UStaticMeshComponent>())
+		{
+			StaticMeshComponent->SetStaticMesh(StaticMesh);
+			if (UMaterialInterface* MaterialOverride = Entry.Descriptor.MaterialOverride.LoadSynchronous())
+			{
+				StaticMeshComponent->SetMaterial(0, MaterialOverride);
+			}
+		}
+	}
+
+	if (SpawnedActor->IsActorInitialized())
+	{
+		SpawnedActor->SetReplicates(Entry.Descriptor.bReplicates);
+	}
+	SpawnedActor->Tags.AddUnique(FName(TEXT("TerraDynePersistent")));
+	if (Entry.Descriptor.TypeId != NAME_None)
+	{
+		SpawnedActor->Tags.AddUnique(Entry.Descriptor.TypeId);
+	}
+	for (const FName& Tag : Entry.Descriptor.Tags)
+	{
+		SpawnedActor->Tags.AddUnique(Tag);
+	}
+
+	if (Entry.Descriptor.bAttachToChunk && SpawnedActor->GetRootComponent() && Chunk->GetRootComponent())
+	{
+		SpawnedActor->AttachToComponent(Chunk->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+	}
+
+	BindPopulationActor(Entry.PopulationId, SpawnedActor);
+	return SpawnedActor;
+}
+
+void ATerraDyneManager::SetPopulationStateInternal(
+	const FGuid& PopulationId,
+	ETerraDynePopulationState NewState,
+	FName Reason)
+{
+	const int32* EntryIndex = PopulationEntryIndexById.Find(PopulationId);
+	if (!EntryIndex || !PersistentPopulationEntries.IsValidIndex(*EntryIndex))
+	{
+		return;
+	}
+
+	FTerraDynePersistentPopulationEntry& Entry = PersistentPopulationEntries[*EntryIndex];
+	if (Entry.State == NewState && NewState != ETerraDynePopulationState::Active)
+	{
+		return;
+	}
+
+	FBox DirtyBounds = TerraDyneWorldFramework::MakeChunkBounds(*this, Entry.ChunkCoord, GlobalChunkSize);
+	if (const TWeakObjectPtr<AActor>* ExistingActor = PopulationActorById.Find(PopulationId))
+	{
+		if (ExistingActor->IsValid())
+		{
+			DirtyBounds = ExistingActor->Get()->GetComponentsBoundingBox(true);
+		}
+	}
+
+	Entry.State = NewState;
+	Entry.RemainingRegrowthTimeSeconds =
+		NewState == ETerraDynePopulationState::Regrowing
+			? FMath::Max(0.05f, Entry.Descriptor.RegrowthDelaySeconds)
+			: 0.0f;
+
+	if (NewState == ETerraDynePopulationState::Active)
+	{
+		SyncPopulationForChunk(Entry.ChunkCoord);
+	}
+	else if (const TWeakObjectPtr<AActor>* ExistingActor = PopulationActorById.Find(PopulationId))
+	{
+		if (ExistingActor->IsValid())
+		{
+			PopulationDestroyInProgress.Add(PopulationId);
+			ExistingActor->Get()->Destroy();
+		}
+	}
+
+	BroadcastPopulationChanged(Entry, Reason);
+	RefreshNavigationForBounds(DirtyBounds, true);
+}
+
+bool ATerraDyneManager::HarvestPersistentPopulation(const FGuid& PopulationId)
+{
+	const int32* EntryIndex = PopulationEntryIndexById.Find(PopulationId);
+	if (!EntryIndex || !PersistentPopulationEntries.IsValidIndex(*EntryIndex))
+	{
+		return false;
+	}
+
+	const FTerraDynePersistentPopulationEntry& Entry = PersistentPopulationEntries[*EntryIndex];
+	const ETerraDynePopulationState NewState =
+		Entry.Descriptor.bAllowRegrowth && Entry.Descriptor.RegrowthDelaySeconds > 0.0f
+			? ETerraDynePopulationState::Regrowing
+			: ETerraDynePopulationState::Harvested;
+	SetPopulationStateInternal(PopulationId, NewState, FName(TEXT("Harvested")));
+	return true;
+}
+
+bool ATerraDyneManager::SetPersistentPopulationDestroyed(const FGuid& PopulationId, bool bDestroyed)
+{
+	SetPopulationStateInternal(
+		PopulationId,
+		bDestroyed ? ETerraDynePopulationState::Destroyed : ETerraDynePopulationState::Active,
+		bDestroyed ? FName(TEXT("Destroyed")) : FName(TEXT("Restored")));
+	return PopulationEntryIndexById.Contains(PopulationId);
+}
+
+void ATerraDyneManager::GeneratePopulationForChunk(FIntPoint Coord, ATerraDyneChunk* Chunk)
+{
+	if (!HasAuthority() || !Chunk || !ProceduralWorldSettings.bGeneratePopulationFromRules)
+	{
+		return;
+	}
+
+	FTerraDyneProceduralChunkState* ChunkState = FindProceduralChunkState(Coord);
+	if (!ChunkState)
+	{
+		EnsureChunkFrameworkState(Coord, Chunk);
+		ChunkState = FindProceduralChunkState(Coord);
+	}
+
+	if (!ChunkState || ChunkState->bPopulationGenerated)
+	{
+		return;
+	}
+
+	const bool bAuthoredChunk = ChunkState->bIsAuthoredChunk;
+	const int32 DistanceFromAuthored = ChunkState->DistanceFromAuthored;
+	const float HalfSize = Chunk->WorldSize * 0.5f;
+
+	for (const FTerraDynePopulationSpawnRule& Rule : PopulationSpawnRules)
+	{
+		if (Rule.RuleId == NAME_None)
+		{
+			continue;
+		}
+
+		if ((bAuthoredChunk && !Rule.bAllowOnAuthoredChunks) || (!bAuthoredChunk && !Rule.bAllowOnProceduralChunks))
+		{
+			continue;
+		}
+
+		if (DistanceFromAuthored < Rule.MinDistanceFromAuthored || DistanceFromAuthored > Rule.MaxDistanceFromAuthored)
+		{
+			continue;
+		}
+
+		if (Rule.RequiredBiomeTag != NAME_None &&
+			Rule.RequiredBiomeTag != ChunkState->PrimaryBiomeTag &&
+			!ChunkState->OverlayBiomeTags.Contains(Rule.RequiredBiomeTag))
+		{
+			continue;
+		}
+
+		if (Rule.Descriptor.ActorClass.IsNull() && Rule.Descriptor.StaticMesh.IsNull())
+		{
+			continue;
+		}
+
+		FRandomStream Stream(MakeChunkSeed(Coord) ^ GetTypeHash(Rule.RuleId));
+		const int32 MinCount = FMath::Max(0, Rule.MinInstancesPerChunk);
+		const int32 MaxCount = FMath::Max(MinCount, Rule.MaxInstancesPerChunk);
+		const int32 SpawnCount = Stream.RandRange(MinCount, MaxCount);
+		TArray<FVector2D> SpawnedLocalPoints;
+
+		for (int32 InstanceIndex = 0; InstanceIndex < SpawnCount; ++InstanceIndex)
+		{
+			bool bPlaced = false;
+			for (int32 Attempt = 0; Attempt < 12 && !bPlaced; ++Attempt)
+			{
+				const float LocalX = Stream.FRandRange(-HalfSize + Rule.ChunkPadding, HalfSize - Rule.ChunkPadding);
+				const float LocalY = Stream.FRandRange(-HalfSize + Rule.ChunkPadding, HalfSize - Rule.ChunkPadding);
+				const FVector2D Candidate(LocalX, LocalY);
+
+				bool bOverlapsExisting = false;
+				for (const FVector2D& ExistingPoint : SpawnedLocalPoints)
+				{
+					if (FVector2D::Distance(ExistingPoint, Candidate) < Rule.MinSpacing)
+					{
+						bOverlapsExisting = true;
+						break;
+					}
+				}
+
+				if (bOverlapsExisting)
+				{
+					continue;
+				}
+
+				const float LocalZ = Rule.Descriptor.bSnapToTerrain
+					? Chunk->GetHeightAtLocation(FVector(LocalX, LocalY, 0.0f)) + Rule.Descriptor.TerrainOffset
+					: Rule.Descriptor.TerrainOffset;
+
+				FTransform WorldTransform(
+					FRotator(0.0f, Stream.FRandRange(0.0f, 360.0f), 0.0f),
+					Chunk->GetActorTransform().TransformPosition(FVector(LocalX, LocalY, LocalZ)),
+					FVector(1.0f));
+
+				FTerraDynePopulationDescriptor Descriptor = Rule.Descriptor;
+				Descriptor.Kind = Rule.Descriptor.Kind == ETerraDynePopulationKind::Prop
+					? ETerraDynePopulationKind::ProceduralSpawn
+					: Rule.Descriptor.Kind;
+				Descriptor.BiomeTag = ChunkState->PrimaryBiomeTag;
+				PlacePersistentActorFromDescriptor(Descriptor, WorldTransform, Rule.RuleId);
+				SpawnedLocalPoints.Add(Candidate);
+				bPlaced = true;
+			}
+		}
+	}
+
+	ChunkState->bPopulationGenerated = true;
+}
+
+void ATerraDyneManager::SyncPopulationForChunk(FIntPoint Coord)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	ATerraDyneChunk* Chunk = GetChunkAtCoord(Coord);
+	if (!Chunk)
+	{
+		return;
+	}
+
+	EnsureChunkFrameworkState(Coord, Chunk);
+	GeneratePopulationForChunk(Coord, Chunk);
+
+	for (FTerraDynePersistentPopulationEntry& Entry : PersistentPopulationEntries)
+	{
+		if (Entry.ChunkCoord != Coord)
+		{
+			continue;
+		}
+
+		if (Entry.State == ETerraDynePopulationState::Active)
+		{
+			if (AActor* Actor = SpawnPopulationActor(Entry))
+			{
+				FTransform WorldTransform = TerraDyneWorldFramework::MakeWorldTransform(Entry.LocalTransform, GetActorTransform());
+				if (Entry.Descriptor.bSnapToTerrain)
+				{
+					FVector WorldLocation = WorldTransform.GetLocation();
+					const FVector ChunkLocal = WorldLocation - Chunk->GetActorLocation();
+					WorldLocation.Z = Chunk->GetActorLocation().Z +
+						Chunk->GetHeightAtLocation(FVector(ChunkLocal.X, ChunkLocal.Y, 0.0f)) +
+						Entry.Descriptor.TerrainOffset;
+					WorldTransform.SetLocation(WorldLocation);
+				}
+
+				Actor->SetActorTransform(WorldTransform);
+			}
+		}
+		else if (const TWeakObjectPtr<AActor>* ExistingActor = PopulationActorById.Find(Entry.PopulationId))
+		{
+			if (ExistingActor->IsValid())
+			{
+				PopulationDestroyInProgress.Add(Entry.PopulationId);
+				ExistingActor->Get()->Destroy();
+			}
+		}
+	}
+}
+
+void ATerraDyneManager::DespawnPopulationForChunk(FIntPoint Coord)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	for (const FTerraDynePersistentPopulationEntry& Entry : PersistentPopulationEntries)
+	{
+		if (Entry.ChunkCoord != Coord)
+		{
+			continue;
+		}
+
+		if (const TWeakObjectPtr<AActor>* ExistingActor = PopulationActorById.Find(Entry.PopulationId))
+		{
+			if (ExistingActor->IsValid())
+			{
+				PopulationDestroyInProgress.Add(Entry.PopulationId);
+				ExistingActor->Get()->Destroy();
+			}
+		}
+	}
+}
+
+void ATerraDyneManager::HandlePopulationActorDestroyed(AActor* DestroyedActor)
+{
+	if (!DestroyedActor)
+	{
+		return;
+	}
+
+	const FGuid* PopulationId = PopulationIdByActor.Find(DestroyedActor);
+	if (!PopulationId)
+	{
+		return;
+	}
+
+	const FGuid PopulationGuid = *PopulationId;
+	const FBox DirtyBounds = DestroyedActor->GetComponentsBoundingBox(true);
+	PopulationIdByActor.Remove(DestroyedActor);
+	PopulationActorById.Remove(PopulationGuid);
+
+	if (PopulationDestroyInProgress.Remove(PopulationGuid) > 0)
+	{
+		return;
+	}
+
+	const int32* EntryIndex = PopulationEntryIndexById.Find(PopulationGuid);
+	if (!EntryIndex || !PersistentPopulationEntries.IsValidIndex(*EntryIndex))
+	{
+		return;
+	}
+
+	FTerraDynePersistentPopulationEntry& Entry = PersistentPopulationEntries[*EntryIndex];
+	if (Entry.Descriptor.bAllowRegrowth && Entry.Descriptor.RegrowthDelaySeconds > 0.0f)
+	{
+		Entry.State = ETerraDynePopulationState::Regrowing;
+		Entry.RemainingRegrowthTimeSeconds = Entry.Descriptor.RegrowthDelaySeconds;
+	}
+	else
+	{
+		Entry.State = Entry.Descriptor.Kind == ETerraDynePopulationKind::Harvestable
+			? ETerraDynePopulationState::Harvested
+			: ETerraDynePopulationState::Destroyed;
+		Entry.RemainingRegrowthTimeSeconds = 0.0f;
+	}
+
+	BroadcastPopulationChanged(Entry, FName(TEXT("Destroyed")));
+	RefreshNavigationForBounds(DirtyBounds, true);
+}
+
+void ATerraDyneManager::TickPopulationState(float DeltaTime)
+{
+	TArray<FIntPoint> ChunksToSync;
+
+	for (FTerraDynePersistentPopulationEntry& Entry : PersistentPopulationEntries)
+	{
+		if (Entry.State != ETerraDynePopulationState::Regrowing)
+		{
+			continue;
+		}
+
+		Entry.RemainingRegrowthTimeSeconds = FMath::Max(0.0f, Entry.RemainingRegrowthTimeSeconds - DeltaTime);
+		if (Entry.RemainingRegrowthTimeSeconds > 0.0f)
+		{
+			continue;
+		}
+
+		Entry.State = ETerraDynePopulationState::Active;
+		Entry.RemainingRegrowthTimeSeconds = 0.0f;
+		ChunksToSync.AddUnique(Entry.ChunkCoord);
+		BroadcastPopulationChanged(Entry, FName(TEXT("Regrown")));
+	}
+
+	for (const FIntPoint& Coord : ChunksToSync)
+	{
+		SyncPopulationForChunk(Coord);
+	}
+}
+
+void ATerraDyneManager::RefreshPopulationForLoadedChunks()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			SyncPopulationForChunk(Pair.Key);
+		}
+	}
+}
+
+FName ATerraDyneManager::GetBiomeTagAtLocation(FVector WorldLocation) const
+{
+	const FIntPoint Coord = WorldToChunkCoord(WorldLocation);
+	if (const FTerraDyneProceduralChunkState* ChunkState = FindProceduralChunkState(Coord))
+	{
+		return ChunkState->PrimaryBiomeTag;
+	}
+
+	return ResolveBiomeForChunk(Coord, GetChunkAtCoord(Coord));
+}
+
+TArray<FTerraDyneAISpawnZone> ATerraDyneManager::GetAISpawnZonesAtLocation(FVector WorldLocation) const
+{
+	TArray<FTerraDyneAISpawnZone> MatchingZones;
+	const FVector LocalLocation = WorldLocation - GetActorLocation();
+	const FIntPoint Coord = WorldToChunkCoord(WorldLocation);
+	const bool bProceduralChunk = !ImportedChunkCoords.Contains(Coord);
+	const FName BiomeTag = GetBiomeTagAtLocation(WorldLocation);
+
+	for (const FTerraDyneAISpawnZone& Zone : AISpawnZones)
+	{
+		if (!Zone.bEnabled || !Zone.LocalBounds.IsInsideOrOn(LocalLocation))
+		{
+			continue;
+		}
+
+		if (Zone.bProceduralOnly && !bProceduralChunk)
+		{
+			continue;
+		}
+
+		if (Zone.RequiredBiomeTag != NAME_None && Zone.RequiredBiomeTag != BiomeTag)
+		{
+			continue;
+		}
+
+		MatchingZones.Add(Zone);
+	}
+
+	return MatchingZones;
+}
+
+float ATerraDyneManager::GetSlopeDegreesAtLocation(FVector WorldLocation) const
+{
+	const ATerraDyneChunk* Chunk = GetChunkAtLocation(WorldLocation);
+	if (!Chunk)
+	{
+		return 0.0f;
+	}
+
+	const float SampleOffset = FMath::Max(100.0f, Chunk->WorldSize / FMath::Max(2, Chunk->Resolution - 1));
+	const FVector ChunkLocal = WorldLocation - Chunk->GetActorLocation();
+	const float HX0 = Chunk->GetHeightAtLocation(FVector(ChunkLocal.X - SampleOffset, ChunkLocal.Y, 0.0f));
+	const float HX1 = Chunk->GetHeightAtLocation(FVector(ChunkLocal.X + SampleOffset, ChunkLocal.Y, 0.0f));
+	const float HY0 = Chunk->GetHeightAtLocation(FVector(ChunkLocal.X, ChunkLocal.Y - SampleOffset, 0.0f));
+	const float HY1 = Chunk->GetHeightAtLocation(FVector(ChunkLocal.X, ChunkLocal.Y + SampleOffset, 0.0f));
+	const float DX = (HX1 - HX0) / (2.0f * SampleOffset);
+	const float DY = (HY1 - HY0) / (2.0f * SampleOffset);
+	return FMath::RadiansToDegrees(FMath::Atan(FMath::Sqrt(DX * DX + DY * DY)));
+}
+
+bool ATerraDyneManager::CanBuildAtLocation(FVector WorldLocation, FString& OutReason) const
+{
+	OutReason.Reset();
+	const FVector LocalLocation = WorldLocation - GetActorLocation();
+	const float SlopeDegrees = GetSlopeDegreesAtLocation(WorldLocation);
+
+	for (const FTerraDyneBuildPermissionZone& Zone : BuildPermissionZones)
+	{
+		if (!Zone.LocalBounds.IsInsideOrOn(LocalLocation))
+		{
+			continue;
+		}
+
+		if (SlopeDegrees > Zone.MaxSlopeDegrees)
+		{
+			OutReason = Zone.Reason.IsEmpty()
+				? FString::Printf(TEXT("Slope %.1f exceeds %.1f degrees in zone %s."), SlopeDegrees, Zone.MaxSlopeDegrees, *Zone.ZoneId.ToString())
+				: Zone.Reason;
+			return false;
+		}
+
+		if (Zone.Permission == ETerraDyneBuildPermission::Blocked)
+		{
+			OutReason = Zone.Reason.IsEmpty()
+				? FString::Printf(TEXT("Blocked by build zone %s."), *Zone.ZoneId.ToString())
+				: Zone.Reason;
+			return false;
+		}
+
+		if (Zone.Permission == ETerraDyneBuildPermission::Allowed)
+		{
+			continue;
+		}
+	}
+
+	return true;
+}
+
+TArray<FTerraDynePCGPoint> ATerraDyneManager::GetPCGSeedPointsForChunk(
+	FIntPoint Coord,
+	bool bIncludePopulation,
+	bool bIncludeAISpawnZones) const
+{
+	TArray<FTerraDynePCGPoint> Points;
+	const FName BiomeTag = GetBiomeTagAtLocation(
+		GetActorLocation() + FVector(Coord.X * GlobalChunkSize, Coord.Y * GlobalChunkSize, 0.0f));
+	const ATerraDyneChunk* Chunk = GetChunkAtCoord(Coord);
+	const FBox ChunkBounds = Chunk
+		? Chunk->GetWorldBounds()
+		: TerraDyneWorldFramework::MakeChunkBounds(*this, Coord, GlobalChunkSize);
+
+	if (bIncludePopulation)
+	{
+		for (const FTerraDynePersistentPopulationEntry& Entry : PersistentPopulationEntries)
+		{
+			if (Entry.ChunkCoord != Coord || Entry.State != ETerraDynePopulationState::Active)
+			{
+				continue;
+			}
+
+			FTerraDynePCGPoint Point;
+			Point.Transform = TerraDyneWorldFramework::MakeWorldTransform(Entry.LocalTransform, GetActorTransform());
+			Point.BiomeTag = Entry.CachedBiomeTag != NAME_None ? Entry.CachedBiomeTag : BiomeTag;
+			Point.SourceId = Entry.Descriptor.TypeId;
+			Point.PopulationKind = Entry.Descriptor.Kind;
+			Points.Add(Point);
+		}
+	}
+
+	if (bIncludeAISpawnZones)
+	{
+		for (const FTerraDyneAISpawnZone& Zone : AISpawnZones)
+		{
+			const FBox WorldBounds = Zone.LocalBounds.ShiftBy(GetActorLocation());
+			if (!WorldBounds.Intersect(ChunkBounds))
+			{
+				continue;
+			}
+
+			FTerraDynePCGPoint Point;
+			Point.Transform = FTransform(WorldBounds.GetCenter());
+			Point.BiomeTag = Zone.RequiredBiomeTag != NAME_None ? Zone.RequiredBiomeTag : BiomeTag;
+			Point.SourceId = Zone.ZoneId;
+			Point.PopulationKind = ETerraDynePopulationKind::ProceduralSpawn;
+			Point.Density = Zone.MaxConcurrentSpawns;
+			Points.Add(Point);
+		}
+	}
+
+	return Points;
+}
+
+void ATerraDyneManager::BroadcastTerrainChanged(const TArray<FIntPoint>& ChangedCoords)
+{
+	for (const FIntPoint& Coord : ChangedCoords)
+	{
+		FTerraDyneTerrainChangeEvent Event;
+		Event.ChunkCoord = Coord;
+		if (const ATerraDyneChunk* Chunk = GetChunkAtCoord(Coord))
+		{
+			Event.WorldBounds = Chunk->GetWorldBounds();
+		}
+		else
+		{
+			Event.WorldBounds = TerraDyneWorldFramework::MakeChunkBounds(*this, Coord, GlobalChunkSize);
+		}
+		Event.bAffectsNavigation = bRefreshNavMeshOnTerrainChanges;
+		OnTerrainChanged.Broadcast(Event);
+		RefreshNavigationForBounds(Event.WorldBounds, false);
+	}
+}
+
+void ATerraDyneManager::BroadcastFoliageChanged(const TArray<FIntPoint>& ChangedCoords)
+{
+	for (const FIntPoint& Coord : ChangedCoords)
+	{
+		FTerraDyneFoliageChangeEvent Event;
+		Event.ChunkCoord = Coord;
+		if (const ATerraDyneChunk* Chunk = GetChunkAtCoord(Coord))
+		{
+			Event.ImportedFoliageInstanceCount =
+				Chunk->GetTransferredFoliageInstanceCount() +
+				Chunk->GetTransferredActorFoliageInstanceCount();
+		}
+		OnFoliageChanged.Broadcast(Event);
+	}
+}
+
+void ATerraDyneManager::BroadcastPopulationChanged(
+	const FTerraDynePersistentPopulationEntry& Entry,
+	FName Reason)
+{
+	FTerraDynePopulationChangeEvent Event;
+	Event.PopulationId = Entry.PopulationId;
+	Event.TypeId = Entry.Descriptor.TypeId;
+	Event.Kind = Entry.Descriptor.Kind;
+	Event.State = Entry.State;
+	Event.Reason = Reason;
+	OnPopulationChanged.Broadcast(Event);
+}
+
+void ATerraDyneManager::RefreshNavigationForBounds(const FBox& Bounds, bool bPopulationChange)
+{
+	if (!HasAuthority() || !GetWorld() || !Bounds.IsValid)
+	{
+		return;
+	}
+
+	if ((bPopulationChange && !bRefreshNavMeshOnPopulationChanges) ||
+		(!bPopulationChange && !bRefreshNavMeshOnTerrainChanges))
+	{
+		return;
+	}
+
+	if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	{
+		const FBox ExpandedBounds = Bounds.ExpandBy(FMath::Max(0.0f, NavigationDirtyBoundsPadding));
+		NavSystem->AddDirtyArea(ExpandedBounds, ENavigationDirtyFlag::All, FName(TEXT("TerraDyne")));
+	}
+}
+
+void ATerraDyneManager::SendChunkSculptSync(ATerraDyneChunk* Chunk)
+{
+	if (!HasAuthority() || !Chunk)
+	{
+		return;
+	}
+
+	// Collect only the entries that actually differ from flat. Untouched ground is zero, so a
+	// typical stroke reduces tens of thousands of floats to a few hundred pairs.
+	TArray<int32> Indices;
+	TArray<float> Values;
+	Indices.Reserve(256);
+	Values.Reserve(256);
+	for (int32 Index = 0; Index < Chunk->SculptBuffer.Num(); Index++)
+	{
+		const float Value = Chunk->SculptBuffer[Index];
+		if (!FMath::IsNearlyZero(Value))
+		{
+			Indices.Add(Index);
+			Values.Add(Value);
+		}
+	}
+
+	// 8 bytes per pair, so this caps a batch around 24 KB — comfortably inside the 65,536-byte
+	// bunch limit even after RPC and array overhead.
+	const int32 MaxPairsPerBatch = 3000;
+	const int32 NumPairs = Indices.Num();
+	const int32 NumBatches = FMath::Max(1, FMath::DivideAndRoundUp(NumPairs, MaxPairsPerBatch));
+
+	for (int32 Batch = 0; Batch < NumBatches; Batch++)
+	{
+		const int32 Start = Batch * MaxPairsPerBatch;
+		const int32 Count = FMath::Min(MaxPairsPerBatch, NumPairs - Start);
+
+		TArray<int32> BatchIndices;
+		TArray<float> BatchValues;
+		if (Count > 0)
+		{
+			BatchIndices.Append(Indices.GetData() + Start, Count);
+			BatchValues.Append(Values.GetData() + Start, Count);
+		}
+
+		Multicast_SyncChunkSculpt(
+			Chunk->GridCoordinate,
+			BatchIndices,
+			BatchValues,
+			/*bFirstBatch=*/Batch == 0,
+			/*bFinalBatch=*/Batch == NumBatches - 1);
+	}
+}
+
+void ATerraDyneManager::Multicast_SyncChunkSculpt_Implementation(FIntPoint Coord, const TArray<int32>& Indices, const TArray<float>& Values, bool bFirstBatch, bool bFinalBatch)
+{
+	// The server already holds the restored state; this only repairs remote copies.
+	if (HasAuthority())
+	{
+		return;
+	}
+
+	ATerraDyneChunk* Chunk = GetChunkAtCoord(Coord);
+	if (!Chunk)
+	{
+		return;
+	}
+
+	const int32 ExpectedSize = Chunk->HeightBuffer.Num();
+
+	if (bFirstBatch)
+	{
+		// Sparse data only describes non-zero entries, so anything previously sculpted and now
+		// flat has to be cleared here rather than overwritten.
+		Chunk->SculptBuffer.Reset();
+		Chunk->SculptBuffer.SetNumZeroed(ExpectedSize);
+	}
+
+	const int32 Count = FMath::Min(Indices.Num(), Values.Num());
+	for (int32 i = 0; i < Count; i++)
+	{
+		if (Chunk->SculptBuffer.IsValidIndex(Indices[i]))
+		{
+			Chunk->SculptBuffer[Indices[i]] = Values[i];
+		}
+	}
+
+	if (!bFinalBatch)
+	{
+		return;
+	}
+
+	Chunk->RecomputeHeightFromLayers();
+
+	Chunk->RebuildPhysicsMesh();
+	Chunk->RequestTransferredFoliageRefresh();
+
+	TArray<FIntPoint> ChangedCoords;
+	ChangedCoords.Add(Coord);
+	BroadcastTerrainChanged(ChangedCoords);
+	BroadcastFoliageChanged(ChangedCoords);
+}
+
+void ATerraDyneManager::SendFullSyncToController(ATerraDyneEditController* Controller)
+{
+	if (!HasAuthority() || !Controller)
+	{
+		return;
+	}
+
+	for (const TPair<FIntPoint, ATerraDyneChunk*>& Pair : ActiveChunkMap)
+	{
+		if (ATerraDyneChunk* Chunk = Pair.Value)
+		{
+			Controller->Client_ReceiveChunkSync(Chunk->GetSerializedData());
+		}
+	}
+}
+
+void ATerraDyneManager::Multicast_ApplyBrush_Implementation(const FTerraDyneBrushParams& Params)
+{
+
+	// On the server the brush was already applied before the multicast was sent,
+	// so only apply on remote clients.
+	if (!HasAuthority())
+	{
+		ApplyGlobalBrush(Params.WorldLocation, Params.Radius, Params.Strength, Params.BrushMode, Params.FlattenHeight);
+	}
+}
+
+void ATerraDyneManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	DestroyTrackedPopulationActors();
+
+	// [C-5] Unregister so the subsystem does not hold a stale pointer after destruction
+	if (UWorld* World = GetWorld())
+	{
+		if (UTerraDyneSubsystem* Sys = World->GetSubsystem<UTerraDyneSubsystem>())
+		{
+			Sys->UnregisterManager(this);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
+// ---- Streaming: Helpers ----
+
+FIntPoint ATerraDyneManager::WorldToChunkCoord(const FVector& WorldPos) const
+{
+	const FVector LocalPos = WorldPos - GetActorLocation();
+	return FIntPoint(
+		TerraDyneWorldFramework::ChunkIndexFromLocalAxis(LocalPos.X, GlobalChunkSize),
+		TerraDyneWorldFramework::ChunkIndexFromLocalAxis(LocalPos.Y, GlobalChunkSize)
+	);
+}
+
+FString ATerraDyneManager::GetChunkCachePath(FIntPoint Coord) const
+{
+	FString Dir = TEXT("TerraDyne/ChunkCache");
+	if (const UTerraDyneSettings* S = GetDefault<UTerraDyneSettings>())
+	{
+		Dir = S->ChunkSaveDir;
+	}
+	FString SaveDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SaveGames"), Dir);
+	return FPaths::Combine(SaveDir, FString::Printf(TEXT("%d_%d.chunk"), Coord.X, Coord.Y));
+}
+
+void ATerraDyneManager::SaveChunkToCache(FIntPoint Coord, const FTerraDyneChunkData& Data)
+{
+	TArray<uint8> RawBytes;
+	FMemoryWriter Ar(RawBytes, true);
+	FTerraDyneChunkData MutableData = Data;
+	Ar << MutableData.Coordinate;
+	Ar << MutableData.Resolution;
+	Ar << MutableData.ZScale;
+	Ar << MutableData.HeightData;
+	Ar << MutableData.BaseData;
+	Ar << MutableData.SculptData;
+	Ar << MutableData.DetailData;
+	Ar << MutableData.bTransferredFoliageFollowsTerrain;
+	Ar << MutableData.FoliageStaticMeshPaths;
+	Ar << MutableData.FoliageMaterialCounts;
+	Ar << MutableData.FoliageOverrideMaterialPaths;
+	Ar << MutableData.FoliageDefinitionIndices;
+	Ar << MutableData.FoliageInstanceLocalTransforms;
+	Ar << MutableData.FoliageInstanceTerrainOffsets;
+	Ar << MutableData.ActorFoliageClassPaths;
+	Ar << MutableData.ActorFoliageAttachFlags;
+	Ar << MutableData.ActorFoliageDefinitionIndices;
+	Ar << MutableData.ActorFoliageInstanceLocalTransforms;
+	Ar << MutableData.ActorFoliageInstanceTerrainOffsets;
+
+	// Compress with Zlib
+	int32 UncompressedSize = RawBytes.Num();
+	TArray<uint8> Compressed;
+	Compressed.SetNumUninitialized(FCompression::CompressMemoryBound(NAME_Zlib, UncompressedSize));
+	int32 CompressedSize = Compressed.Num();
+	if (FCompression::CompressMemory(NAME_Zlib, Compressed.GetData(), CompressedSize, RawBytes.GetData(), UncompressedSize))
+	{
+		Compressed.SetNum(CompressedSize);
+
+		// File format: [UncompressedSize:int32][CompressedData]
+		TArray<uint8> FileData;
+		FileData.SetNumUninitialized(sizeof(int32) + CompressedSize);
+		FMemory::Memcpy(FileData.GetData(), &UncompressedSize, sizeof(int32));
+		FMemory::Memcpy(FileData.GetData() + sizeof(int32), Compressed.GetData(), CompressedSize);
+
+		FString Path = GetChunkCachePath(Coord);
+		FString FileDir = FPaths::GetPath(Path);
+		IFileManager::Get().MakeDirectory(*FileDir, true);
+		if (!FFileHelper::SaveArrayToFile(FileData, *Path))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Streaming: Failed to write cache file for chunk [%d,%d] at %s"), Coord.X, Coord.Y, *Path);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("Streaming: Cached chunk [%d,%d] (%d bytes compressed)"), Coord.X, Coord.Y, CompressedSize);
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Streaming: Failed to compress chunk [%d,%d]"), Coord.X, Coord.Y);
+	}
+}
+
+bool ATerraDyneManager::LoadChunkFromCache(FIntPoint Coord, FTerraDyneChunkData& OutData)
+{
+	FString Path = GetChunkCachePath(Coord);
+	if (!IFileManager::Get().FileExists(*Path))
+	{
+		return false;
+	}
+	TArray<uint8> FileData;
+	if (!FFileHelper::LoadFileToArray(FileData, *Path))
+	{
+		return false;
+	}
+	if (FileData.Num() <= (int32)sizeof(int32))
+	{
+		return false;
+	}
+
+	int32 UncompressedSize = 0;
+	FMemory::Memcpy(&UncompressedSize, FileData.GetData(), sizeof(int32));
+
+	// Sanity check: reject obviously invalid sizes
+	constexpr int32 MaxReasonableSize = 64 * 1024 * 1024; // 64 MB
+	if (UncompressedSize <= 0 || UncompressedSize > MaxReasonableSize)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Streaming: Invalid uncompressed size %d for chunk [%d,%d]"),
+			UncompressedSize, Coord.X, Coord.Y);
+		return false;
+	}
+
+	TArray<uint8> Decompressed;
+	Decompressed.SetNumUninitialized(UncompressedSize);
+	if (!FCompression::UncompressMemory(NAME_Zlib, Decompressed.GetData(), UncompressedSize,
+		FileData.GetData() + sizeof(int32), FileData.Num() - sizeof(int32)))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Streaming: Failed to decompress chunk [%d,%d]"), Coord.X, Coord.Y);
+		return false;
+	}
+
+	FMemoryReader Ar(Decompressed, true);
+	Ar << OutData.Coordinate;
+	Ar << OutData.Resolution;
+	Ar << OutData.ZScale;
+	Ar << OutData.HeightData;
+	Ar << OutData.BaseData;
+	Ar << OutData.SculptData;
+	Ar << OutData.DetailData;
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.bTransferredFoliageFollowsTerrain;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.FoliageStaticMeshPaths;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.FoliageMaterialCounts;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.FoliageOverrideMaterialPaths;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.FoliageDefinitionIndices;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.FoliageInstanceLocalTransforms;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.FoliageInstanceTerrainOffsets;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.ActorFoliageClassPaths;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.ActorFoliageAttachFlags;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.ActorFoliageDefinitionIndices;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.ActorFoliageInstanceLocalTransforms;
+	}
+	if (!Ar.AtEnd())
+	{
+		Ar << OutData.ActorFoliageInstanceTerrainOffsets;
+	}
+
+	return true;
+}
+
+void ATerraDyneManager::MarkChunkDirty(FIntPoint Coord)
+{
+	DirtyChunkSet.Add(Coord);
+}
+
+ATerraDyneChunk* ATerraDyneManager::SpawnConfiguredChunk(FIntPoint Coord, int32 OverrideResolution)
+{
+	if (!GetWorld())
+	{
+		return nullptr;
+	}
+
+	TSubclassOf<ATerraDyneChunk> ClassToSpawn = ChunkClass;
+	if (!ClassToSpawn)
+	{
+		ClassToSpawn = ATerraDyneChunk::StaticClass();
+	}
+	const FVector Location = GetActorLocation() + FVector(Coord.X * GlobalChunkSize, Coord.Y * GlobalChunkSize, 0.0f);
+
+	FActorSpawnParameters Params;
+	Params.bDeferConstruction = true;
+
+	ATerraDyneChunk* Chunk = GetWorld()->SpawnActor<ATerraDyneChunk>(ClassToSpawn, FTransform(Location), Params);
+	if (!Chunk)
+	{
+		return nullptr;
+	}
+
+	Chunk->GridCoordinate = Coord;
+	Chunk->ChunkSizeWorldUnits = GlobalChunkSize;
+	Chunk->BrushMaterialBase = HeightBrushMaterial;
+	Chunk->WorldSize = GlobalChunkSize;
+	Chunk->ProceduralSeed = MakeChunkSeed(Coord);
+	Chunk->bIsAuthoredChunk = ImportedChunkCoords.Contains(Coord);
+
+	if (OverrideResolution != INDEX_NONE)
+	{
+		Chunk->Resolution = FMath::Clamp(OverrideResolution, 32, 256);
+	}
+	else if (const UTerraDyneSettings* S = GetDefault<UTerraDyneSettings>())
+	{
+		Chunk->Resolution = FMath::Clamp(S->DefaultResolution, 32, 256);
+	}
+	else
+	{
+		Chunk->Resolution = 64;
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyneSettings CDO not found; using default Resolution=64"));
+	}
+
+	// FinishSpawning() synchronously runs BeginPlay(), which (if !bInitialized) calls Initialize()
+	// then Manager->RegisterChunk(this) — RegisterChunk() already adds this chunk to
+	// ActiveChunkMap and calls SetMaterial(MasterMaterial) using the now-populated height/weight
+	// data. Only fall back to doing it here if that didn't happen (e.g. subsystem lookup failed).
+	Chunk->FinishSpawning(FTransform(Location));
+
+	if (!ActiveChunkMap.Contains(Coord))
+	{
+		Chunk->SetMaterial(MasterMaterial);
+		ActiveChunkMap.Add(Coord, Chunk);
+	}
+
+	EnsureChunkFrameworkState(Coord, Chunk);
+	return Chunk;
+}
+
+// ---- Streaming: Load/Unload ----
+
+void ATerraDyneManager::LoadOrSpawnChunk(FIntPoint Coord)
+{
+	if (ActiveChunkMap.Contains(Coord)) return;
+	if (!ShouldAllowChunkCoord(Coord)) return;
+	ATerraDyneChunk* Chunk = SpawnConfiguredChunk(Coord);
+	if (!Chunk) return;
+
+	// Try loading cached data (previously sculpted/painted chunk)
+	FTerraDyneChunkData CachedData;
+	if (LoadChunkFromCache(Coord, CachedData))
+	{
+		Chunk->LoadFromData(CachedData);
+		// LoadFromData re-initializes the chunk when the cached resolution differs, which resizes
+		// the pad buffers back to zero. Re-stamp after the load rather than before it.
+		RefreshBuildingPadsForChunk(Chunk);
+		UE_LOG(LogTemp, Verbose, TEXT("Streaming: Loaded chunk [%d,%d] from cache"), Coord.X, Coord.Y);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("Streaming: Spawned fresh chunk [%d,%d]"), Coord.X, Coord.Y);
+	}
+
+	EnsureChunkFrameworkState(Coord, Chunk);
+	SyncPopulationForChunk(Coord);
+	PendingLoadQueue.Remove(Coord);
+}
+
+void ATerraDyneManager::UnloadChunk(FIntPoint Coord)
+{
+	ATerraDyneChunk** Found = ActiveChunkMap.Find(Coord);
+	if (!Found || !(*Found)) return;
+
+	ATerraDyneChunk* Chunk = *Found;
+	DespawnPopulationForChunk(Coord);
+
+	// Persist dirty chunks
+	if (DirtyChunkSet.Contains(Coord))
+	{
+		FTerraDyneChunkData Data = Chunk->GetSerializedData();
+		SaveChunkToCache(Coord, Data);
+		DirtyChunkSet.Remove(Coord);
+		UE_LOG(LogTemp, Verbose, TEXT("Streaming: Saved dirty chunk [%d,%d] to cache"), Coord.X, Coord.Y);
+	}
+
+	ActiveChunkMap.Remove(Coord);
+	Chunk->Destroy();
+	PendingUnloadQueue.Remove(Coord);
+
+	UE_LOG(LogTemp, Verbose, TEXT("Streaming: Unloaded chunk [%d,%d]"), Coord.X, Coord.Y);
+}
+
+// ---- Streaming: Ring Update ----
+
+void ATerraDyneManager::UpdateStreaming(const TArray<FVector>& PlayerPositions)
+{
+	if (bStreamingPaused || PlayerPositions.Num() == 0) return;
+
+	const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>();
+	if (!Settings) return;
+
+	const int32 LoadRadius = Settings->ChunkLoadRadius;
+	const int32 UnloadRadius = Settings->ChunkUnloadRadius;
+
+	// Compute a hash of all player chunk coordinates to detect movement
+	uint32 CurrentHash = 0;
+	TArray<FIntPoint> PlayerChunks;
+	for (const FVector& Pos : PlayerPositions)
+	{
+		FIntPoint PC = WorldToChunkCoord(Pos);
+		PlayerChunks.Add(PC);
+		CurrentHash = HashCombine(CurrentHash, GetTypeHash(PC));
+	}
+
+	// Only rescan when any player moves cells
+	if (CurrentHash != LastStreamingHash)
+	{
+		LastStreamingHash = CurrentHash;
+
+		// Build union of load regions across all players
+		for (const FIntPoint& PlayerChunk : PlayerChunks)
+		{
+			for (int32 DX = -LoadRadius; DX <= LoadRadius; DX++)
+			{
+				for (int32 DY = -LoadRadius; DY <= LoadRadius; DY++)
+				{
+					// Diamond shape: Manhattan distance
+					if (FMath::Abs(DX) + FMath::Abs(DY) > LoadRadius) continue;
+
+					FIntPoint Coord(PlayerChunk.X + DX, PlayerChunk.Y + DY);
+					if (!ShouldAllowChunkCoord(Coord))
+					{
+						continue;
+					}
+
+					if (!ActiveChunkMap.Contains(Coord) && !PendingLoadQueue.Contains(Coord))
+					{
+						PendingLoadQueue.Add(Coord);
+					}
+				}
+			}
+		}
+
+		// Queue chunks outside ALL players' unload radius
+		TArray<FIntPoint> ToUnload;
+		for (const auto& Pair : ActiveChunkMap)
+		{
+			bool bInAnyPlayerRange = false;
+			for (const FIntPoint& PlayerChunk : PlayerChunks)
+			{
+				int32 Dist = FMath::Abs(Pair.Key.X - PlayerChunk.X) + FMath::Abs(Pair.Key.Y - PlayerChunk.Y);
+				if (Dist <= UnloadRadius)
+				{
+					bInAnyPlayerRange = true;
+					break;
+				}
+			}
+			if (!bInAnyPlayerRange && !PendingUnloadQueue.Contains(Pair.Key))
+			{
+				ToUnload.Add(Pair.Key);
+			}
+		}
+		for (const FIntPoint& Coord : ToUnload)
+		{
+			PendingUnloadQueue.Add(Coord);
+		}
+	}
+
+	ProcessStreamingQueues(PlayerPositions);
+}
+
+void ATerraDyneManager::ProcessStreamingQueues(const TArray<FVector>& PlayerPositions)
+{
+	const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>();
+	const int32 MaxOps = Settings ? Settings->MaxChunkOpsPerTick : 2;
+	int32 Ops = 0;
+
+	// Pre-compute player chunk coords for sorting
+	TArray<FIntPoint> PlayerChunks;
+	for (const FVector& Pos : PlayerPositions)
+	{
+		PlayerChunks.Add(WorldToChunkCoord(Pos));
+	}
+
+	// Helper: minimum Manhattan distance from a chunk to any player
+	auto MinDistToAnyPlayer = [&PlayerChunks](const FIntPoint& Coord) -> int32
+	{
+		int32 MinDist = TNumericLimits<int32>::Max();
+		for (const FIntPoint& PC : PlayerChunks)
+		{
+			int32 D = FMath::Abs(Coord.X - PC.X) + FMath::Abs(Coord.Y - PC.Y);
+			MinDist = FMath::Min(MinDist, D);
+		}
+		return MinDist;
+	};
+
+	// Unloads first (free memory before allocating) — farthest from any player first
+	if (PendingUnloadQueue.Num() > 0 && Ops < MaxOps)
+	{
+		TArray<FIntPoint> UnloadList = PendingUnloadQueue.Array();
+		UnloadList.Sort([&MinDistToAnyPlayer](const FIntPoint& A, const FIntPoint& B)
+		{
+			return MinDistToAnyPlayer(A) > MinDistToAnyPlayer(B);
+		});
+
+		for (const FIntPoint& Coord : UnloadList)
+		{
+			if (Ops >= MaxOps) break;
+			UnloadChunk(Coord);
+			Ops++;
+		}
+	}
+
+	// Loads next — nearest to any player first
+	if (PendingLoadQueue.Num() > 0 && Ops < MaxOps)
+	{
+		TArray<FIntPoint> LoadList = PendingLoadQueue.Array();
+		LoadList.Sort([&MinDistToAnyPlayer](const FIntPoint& A, const FIntPoint& B)
+		{
+			return MinDistToAnyPlayer(A) < MinDistToAnyPlayer(B);
+		});
+
+		for (const FIntPoint& Coord : LoadList)
+		{
+			if (Ops >= MaxOps) break;
+			LoadOrSpawnChunk(Coord);
+			Ops++;
+		}
+	}
+}
+
+#if WITH_EDITOR
+void ATerraDyneManager::ManualImport()
+{
+	ImportFromLandscape(TargetLandscapeSource, true);
+}
+
+void ATerraDyneManager::MigrateLandscapeProject()
+{
+	ImportFromLandscapeWithOptions(TargetLandscapeSource, LandscapeMigrationOptions);
+}
+
+void ATerraDyneManager::ResampleLandscapeData(ATerraDyneChunk* Chunk, ULandscapeComponent* SourceComponent)
+{
+	if (!Chunk || !SourceComponent)
+	{
+		return;
+	}
+
+	ALandscapeProxy* Proxy = SourceComponent->GetLandscapeProxy();
+	ULandscapeInfo* Info = Proxy ? Proxy->GetLandscapeInfo() : nullptr;
+	if (!Info)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyne Import: LandscapeInfo unavailable for component %s."), *SourceComponent->GetName());
+		return;
+	}
+
+	const int32 Quads = SourceComponent->ComponentSizeQuads;
+	const int32 Resolution = Quads + 1;
+	const int32 NumSamples = Resolution * Resolution;
+	if (Resolution < 2 || NumSamples <= 0)
+	{
+		return;
+	}
+
+	const int32 X1 = SourceComponent->SectionBaseX;
+	const int32 Y1 = SourceComponent->SectionBaseY;
+	const int32 X2 = X1 + Quads;
+	const int32 Y2 = Y1 + Quads;
+
+	FLandscapeEditDataInterface EditData(Info);
+
+	TArray<uint16> HeightSamples;
+	HeightSamples.SetNumZeroed(NumSamples);
+	EditData.GetHeightDataFast(X1, Y1, X2, Y2, HeightSamples.GetData(), 0);
+
+	Chunk->Resolution = Resolution;
+	Chunk->BaseBuffer.SetNumZeroed(NumSamples);
+	Chunk->SculptBuffer.SetNumZeroed(NumSamples);
+	Chunk->DetailBuffer.SetNumZeroed(NumSamples);
+	Chunk->HeightBuffer.SetNumZeroed(NumSamples);
+	// This path resizes the buffers directly instead of going through Initialize(), so the pad
+	// layer has to be resized alongside them or RecomputeHeightFromLayers will find it stale.
+	Chunk->PadWeightBuffer.SetNumZeroed(NumSamples);
+	Chunk->PadTargetBuffer.SetNumZeroed(NumSamples);
+	for (int32 Index = 0; Index < NumSamples; Index++)
+	{
+		Chunk->BaseBuffer[Index] = static_cast<float>(HeightSamples[Index]) / 65535.0f;
+	}
+	Chunk->RecomputeHeightFromLayers();
+
+	Chunk->RebuildPhysicsMesh();
+}
+
+void ATerraDyneManager::ImportFromLandscape(ALandscapeProxy* TargetLandscape, bool bHideSource)
+{
+	FTerraDyneLandscapeMigrationOptions Options = LandscapeMigrationOptions;
+	Options.bHideSourceLandscape = bHideSource;
+	ImportFromLandscapeWithOptions(TargetLandscape, Options);
+}
+
+void ATerraDyneManager::ImportFromLandscapeWithOptions(ALandscapeProxy* TargetLandscape, const FTerraDyneLandscapeMigrationOptions& Options)
+{
+	ImportInternal(TargetLandscape, Options);
+}
+
+void ATerraDyneManager::ImportInternal(ALandscapeProxy* Source, const FTerraDyneLandscapeMigrationOptions& Options)
+{
+	if (!Source || !GetWorld())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyne Import: Invalid landscape source."));
+		return;
+	}
+
+	TargetLandscapeSource = Source;
+
+	const bool bPreviousStreamingPaused = bStreamingPaused;
+	if (Options.bPauseStreamingDuringImport)
+	{
+		bStreamingPaused = true;
+	}
+
+	PendingLoadQueue.Empty();
+	PendingUnloadQueue.Empty();
+	DirtyChunkSet.Empty();
+	ImportedChunkCoords.Empty();
+	LastStreamingHash = 0;
+	ClearUndoRedoState();
+
+	if (Options.bClearExistingChunks)
+	{
+		TArray<AActor*> ExistingChunks;
+		UGameplayStatics::GetAllActorsOfClass(GetWorld(), ATerraDyneChunk::StaticClass(), ExistingChunks);
+		for (AActor* Actor : ExistingChunks)
+		{
+			if (Actor)
+			{
+				Actor->Destroy();
+			}
+		}
+		ActiveChunkMap.Reset();
+	}
+
+	LandscapeMigrationState = FTerraDyneLandscapeMigrationState();
+	LandscapeMigrationState.bWasImportedFromLandscape = true;
+	LandscapeMigrationState.SourceLandscapeName = Source->GetName();
+	LandscapeMigrationState.SourceLandscapePath = Source->GetPathName();
+	LandscapeMigrationState.SourceLandscapeLocation = Source->GetActorLocation();
+	LandscapeMigrationState.SourceLandscapeScale = Source->GetActorScale3D();
+	LandscapeMigrationState.SourceLandscapeMaterialPath = Source->LandscapeMaterial ? Source->LandscapeMaterial->GetPathName() : FString();
+	LandscapeMigrationState.bImportedPaintLayers = Options.bImportWeightLayers;
+	LandscapeMigrationState.bSourceLandscapeHidden = Options.bHideSourceLandscape;
+	LandscapeMigrationState.ImportedAtIso8601 = FDateTime::UtcNow().ToIso8601();
+
+	const FVector LandscapeScale = Source->GetActorScale3D();
+	if (LandscapeScale.X > KINDA_SMALL_NUMBER)
+	{
+		GlobalChunkSize = Source->ComponentSizeQuads * LandscapeScale.X;
+	}
+
+	const FVector SourceLocation = Source->GetActorLocation();
+	SetActorLocation(FVector(
+		SourceLocation.X + (GlobalChunkSize * 0.5f),
+		SourceLocation.Y + (GlobalChunkSize * 0.5f),
+		SourceLocation.Z - (256.0f * LandscapeScale.Z)));
+	LandscapeMigrationState.RuntimeManagerLocation = GetActorLocation();
+	LandscapeMigrationState.ImportedChunkSize = GlobalChunkSize;
+
+	if (Options.bAdoptLandscapeMaterialAsMasterMaterial && Source->LandscapeMaterial)
+	{
+		MasterMaterial = Source->LandscapeMaterial;
+		LandscapeMigrationState.bAdoptedLandscapeMaterial = true;
+	}
+
+	if (Options.bImportWeightLayers || Options.bCaptureLayerMappings)
+	{
+		TSet<FName> SeenMappedLayers;
+		TSet<FName> SeenUnmappedLayers;
+		for (ULandscapeComponent* Component : Source->LandscapeComponents)
+		{
+			if (!Component)
+			{
+				continue;
+			}
+
+			for (const FWeightmapLayerAllocationInfo& Allocation : Component->GetWeightmapLayerAllocations())
+			{
+				if (!Allocation.LayerInfo)
+				{
+					continue;
+				}
+
+				const FName LayerName = Allocation.LayerInfo->GetLayerName() != NAME_None
+					? Allocation.LayerInfo->GetLayerName()
+					: Allocation.LayerInfo->GetFName();
+
+				if (SeenMappedLayers.Contains(LayerName) || SeenUnmappedLayers.Contains(LayerName))
+				{
+					continue;
+				}
+
+				if ((Options.bImportWeightLayers || Options.bCaptureLayerMappings) &&
+					LandscapeMigrationState.LayerMappings.Num() < MaxCapturedLandscapeLayerMappings)
+				{
+					FTerraDyneLandscapeLayerMapping Mapping;
+					Mapping.SourceLayerName = LayerName;
+					Mapping.TerraDyneWeightLayerIndex = LandscapeMigrationState.LayerMappings.Num();
+					LandscapeMigrationState.LayerMappings.Add(Mapping);
+					SeenMappedLayers.Add(LayerName);
+				}
+				else
+				{
+					LandscapeMigrationState.UnmappedLayerNames.Add(LayerName.ToString());
+					SeenUnmappedLayers.Add(LayerName);
+				}
+			}
+		}
+	}
+
+	LandscapeMigrationState.ImportedWeightLayerCount = LandscapeMigrationState.LayerMappings.Num();
+	LandscapeMigrationState.bImportedPaintLayers =
+		Options.bImportWeightLayers && LandscapeMigrationState.ImportedWeightLayerCount > 0;
+	LandscapeMigrationState.bTransferredPlacedFoliage = false;
+	LandscapeMigrationState.bTransferredFoliageFollowsTerrain = false;
+	LandscapeMigrationState.ImportedFoliageDefinitionCount = 0;
+	LandscapeMigrationState.ImportedFoliageInstanceCount = 0;
+
+	TSet<FString> ImportedFoliageDefinitions;
+	int32 ImportedFoliageInstances = 0;
+
+	auto CapturePlacedFoliageForComponent =
+		[this, &ImportedFoliageDefinitions, &ImportedFoliageInstances, &Options](ATerraDyneChunk* Chunk, ULandscapeComponent* Component)
+	{
+		if (!Chunk || !Component)
+		{
+			return;
+		}
+
+		AInstancedFoliageActor* FoliageActor =
+			AInstancedFoliageActor::GetInstancedFoliageActorForLevel(Component->GetComponentLevel(), false);
+		if (!FoliageActor)
+		{
+			return;
+		}
+
+		const TMap<UFoliageType*, TArray<const FFoliageInstancePlacementInfo*>> FoliageByType =
+			FoliageActor->GetInstancesForComponent(Component);
+		if (FoliageByType.Num() == 0)
+		{
+			return;
+		}
+
+		TArray<FString> StaticMeshPaths;
+		TArray<int32> MaterialCounts;
+		TArray<FString> OverrideMaterialPaths;
+		TArray<int32> DefinitionIndices;
+		TArray<FTransform> LocalTransforms;
+		TArray<float> TerrainOffsets;
+		TMap<FString, int32> DefinitionLookup;
+		TArray<FString> ActorClassPaths;
+		TArray<uint8> ActorAttachFlags;
+		TArray<int32> ActorDefinitionIndices;
+		TArray<FTransform> ActorLocalTransforms;
+		TArray<float> ActorTerrainOffsets;
+		TMap<FString, int32> ActorDefinitionLookup;
+
+		for (const auto& FoliagePair : FoliageByType)
+		{
+			const UFoliageType_InstancedStaticMesh* StaticMeshType = Cast<UFoliageType_InstancedStaticMesh>(FoliagePair.Key);
+			const UFoliageType_Actor* ActorType = Cast<UFoliageType_Actor>(FoliagePair.Key);
+			if (StaticMeshType && StaticMeshType->Mesh)
+			{
+				const FString MeshPath = StaticMeshType->Mesh->GetPathName();
+				TArray<FString> MaterialPaths;
+				MaterialPaths.Reserve(StaticMeshType->OverrideMaterials.Num());
+				for (UMaterialInterface* OverrideMaterial : StaticMeshType->OverrideMaterials)
+				{
+					if (!OverrideMaterial)
+					{
+						MaterialPaths.Add(FString());
+						continue;
+					}
+
+					const FString MaterialPath = OverrideMaterial->GetPathName();
+					MaterialPaths.Add(MaterialPath.StartsWith(TEXT("/Engine/Transient")) ? FString() : MaterialPath);
+				}
+
+				FString DefinitionKey = MeshPath;
+				for (const FString& MaterialPath : MaterialPaths)
+				{
+					DefinitionKey += TEXT("|");
+					DefinitionKey += MaterialPath;
+				}
+
+				int32 DefinitionIndex = INDEX_NONE;
+				if (const int32* ExistingIndex = DefinitionLookup.Find(DefinitionKey))
+				{
+					DefinitionIndex = *ExistingIndex;
+				}
+				else
+				{
+					DefinitionIndex = StaticMeshPaths.Add(MeshPath);
+					DefinitionLookup.Add(DefinitionKey, DefinitionIndex);
+					MaterialCounts.Add(MaterialPaths.Num());
+					OverrideMaterialPaths.Append(MaterialPaths);
+					ImportedFoliageDefinitions.Add(DefinitionKey);
+				}
+
+				for (const FFoliageInstancePlacementInfo* PlacementInfo : FoliagePair.Value)
+				{
+					if (!PlacementInfo)
+					{
+						continue;
+					}
+
+					const FTransform WorldTransform(
+						FQuat(PlacementInfo->Rotation),
+						PlacementInfo->Location,
+						FVector(PlacementInfo->DrawScale3D.X, PlacementInfo->DrawScale3D.Y, PlacementInfo->DrawScale3D.Z));
+					const FTransform LocalTransform = WorldTransform.GetRelativeTransform(Chunk->GetActorTransform());
+
+					DefinitionIndices.Add(DefinitionIndex);
+					LocalTransforms.Add(LocalTransform);
+					TerrainOffsets.Add(
+						LocalTransform.GetLocation().Z -
+						Chunk->GetHeightAtLocation(FVector(LocalTransform.GetLocation().X, LocalTransform.GetLocation().Y, 0.0f)));
+				}
+			}
+			else if (ActorType && ActorType->ActorClass)
+			{
+				const FString ActorClassPath = ActorType->ActorClass->GetPathName();
+				const FString DefinitionKey = FString::Printf(
+					TEXT("Actor:%s|%d"),
+					*ActorClassPath,
+					ActorType->bShouldAttachToBaseComponent ? 1 : 0);
+
+				int32 DefinitionIndex = INDEX_NONE;
+				if (const int32* ExistingIndex = ActorDefinitionLookup.Find(DefinitionKey))
+				{
+					DefinitionIndex = *ExistingIndex;
+				}
+				else
+				{
+					DefinitionIndex = ActorClassPaths.Add(ActorClassPath);
+					ActorDefinitionLookup.Add(DefinitionKey, DefinitionIndex);
+					ActorAttachFlags.Add(ActorType->bShouldAttachToBaseComponent ? 1 : 0);
+					ImportedFoliageDefinitions.Add(DefinitionKey);
+				}
+
+				for (const FFoliageInstancePlacementInfo* PlacementInfo : FoliagePair.Value)
+				{
+					if (!PlacementInfo)
+					{
+						continue;
+					}
+
+					const FTransform WorldTransform(
+						FQuat(PlacementInfo->Rotation),
+						PlacementInfo->Location,
+						FVector(PlacementInfo->DrawScale3D.X, PlacementInfo->DrawScale3D.Y, PlacementInfo->DrawScale3D.Z));
+					const FTransform LocalTransform = WorldTransform.GetRelativeTransform(Chunk->GetActorTransform());
+
+					ActorDefinitionIndices.Add(DefinitionIndex);
+					ActorLocalTransforms.Add(LocalTransform);
+					ActorTerrainOffsets.Add(
+						LocalTransform.GetLocation().Z -
+						Chunk->GetHeightAtLocation(FVector(LocalTransform.GetLocation().X, LocalTransform.GetLocation().Y, 0.0f)));
+				}
+			}
+		}
+
+		if (LocalTransforms.Num() == 0 && ActorLocalTransforms.Num() == 0)
+		{
+			return;
+		}
+
+		ImportedFoliageInstances += LocalTransforms.Num() + ActorLocalTransforms.Num();
+		Chunk->SetTransferredFoliageData(
+			StaticMeshPaths,
+			MaterialCounts,
+			OverrideMaterialPaths,
+			DefinitionIndices,
+			LocalTransforms,
+			TerrainOffsets,
+			Options.bTransferredFoliageFollowsTerrain);
+		Chunk->SetTransferredActorFoliageData(
+			ActorClassPaths,
+			ActorAttachFlags,
+			ActorDefinitionIndices,
+			ActorLocalTransforms,
+			ActorTerrainOffsets);
+	};
+
+	int32 ImportedChunks = 0;
+	int32 ImportedResolution = 0;
+	for (ULandscapeComponent* Component : Source->LandscapeComponents)
+	{
+		if (!Component)
+		{
+			continue;
+		}
+
+		const FIntPoint Coord = Component->GetSectionBase() / Component->ComponentSizeQuads;
+		ImportedChunkCoords.Add(Coord);
+		ATerraDyneChunk* Chunk = SpawnConfiguredChunk(Coord, Component->ComponentSizeQuads + 1);
+		if (!Chunk)
+		{
+			continue;
+		}
+
+		Chunk->ZScale = 512.0f * LandscapeScale.Z;
+		ResampleLandscapeData(Chunk, Component);
+		if (Options.bTransferPlacedFoliage)
+		{
+			CapturePlacedFoliageForComponent(Chunk, Component);
+		}
+		ImportedResolution = FMath::Max(ImportedResolution, Component->ComponentSizeQuads + 1);
+		ImportedChunks++;
+	}
+
+	LandscapeMigrationState.ImportedComponentCount = ImportedChunks;
+	LandscapeMigrationState.ImportedResolution = ImportedResolution;
+	LandscapeMigrationState.bTransferredPlacedFoliage =
+		Options.bTransferPlacedFoliage && ImportedFoliageInstances > 0;
+	LandscapeMigrationState.bTransferredFoliageFollowsTerrain =
+		LandscapeMigrationState.bTransferredPlacedFoliage && Options.bTransferredFoliageFollowsTerrain;
+	LandscapeMigrationState.ImportedFoliageDefinitionCount = ImportedFoliageDefinitions.Num();
+	LandscapeMigrationState.ImportedFoliageInstanceCount = ImportedFoliageInstances;
+
+	RebuildChunkMap();
+	ApplyMaterialToActiveChunks();
+
+	if (Options.bHideSourceLandscape)
+	{
+		Source->SetActorHiddenInGame(true);
+		Source->SetIsTemporarilyHiddenInEditor(true);
+	}
+
+	bStreamingPaused = bPreviousStreamingPaused;
+
+	UE_LOG(LogTemp, Log, TEXT("TerraDyne Import: Imported %d landscape components from %s."), ImportedChunks, *Source->GetName());
+}
+#endif
