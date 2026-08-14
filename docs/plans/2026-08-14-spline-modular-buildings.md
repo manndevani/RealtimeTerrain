@@ -237,7 +237,7 @@ existing `SetToolMode` / `GetToolModeColor` handle the active-button highlight u
 |---|---|---|
 | 1 | Static generation | **DONE** — kit + actor + generator, verified against a rectangle and a concave L with non-module edge lengths. |
 | 2 | Terrain flatten | **DONE** — pad layer, polygon SDF, manager recompute, streaming re-assert. Verified in PIE against live terrain (see Phase 2 results). |
-| 3 | Placement + panel UI | BUILDINGS section, place-on-click, floors ±, delete. **Feature is usable here.** |
+| 3 | Placement + panel UI | **DONE** — BUILDINGS section, place-on-click, select, floors ±, re-level, delete. Verified by placing three buildings by click in PIE. |
 | 4 | Runtime gizmo | Translate gizmo + selection |
 | 5 | Spline point editing | Handles, insert, delete |
 | 6 | Persistence + networking | Save/load + Server RPCs |
@@ -350,6 +350,53 @@ Two bugs found by review before testing, both already fixed:
 2. **A full buffer scan per chunk stream-in.** `HasBuildingPad()` swept Resolution^2 floats, and the
    manager calls it for every chunk on every load — in a world with no buildings that is 16k floats
    read to answer "no". Now a tracked flag.
+
+## Phase 3 results
+
+Panel section added to `STerraDynePanel` alongside SCULPTING: Place / Select tool modes, selected
+building readout, floor counter, Re-level, Delete.
+
+Building clicks are **one-shot**. The sculpt path latches `bIsClicking` and re-applies every tick
+while held — right for a brush, and it would carpet the terrain with actors here.
+`OnLeftClickStart` branches on the tool mode and the building path never sets that flag;
+`PerformToolAction` also returns early on a building mode, covering a tool switch made mid-drag.
+
+Also fixed a **pre-existing input leak**: the panel's `OnMouseButtonDown` returned `Unhandled` for
+everything outside the 50px drag header, so clicks on panel background — the gaps between buttons,
+the surrounding border — fell through to the world and sculpted the terrain behind the UI. It now
+absorbs clicks landing on its box. The widget's own slot spans the whole viewport, so the test has
+to run against the inner `SBox`'s geometry, not the handler's.
+
+No networking: `IsInstructor()` is `IsLocalController() && HasAuthority()`, so the panel only
+exists on the host and placement always runs on the authority. Replicating placed buildings to
+other machines remains phase 6.
+
+## Terrain material: three stacked faults
+
+Surfaced while testing phase 3. Worth recording because each one masked the next.
+
+1. **Plugin content mount.** Every material path read `/Game/TerraDyne/...` — the *host project's*
+   Content folder — for assets that ship in the plugin and mount at `/TerraDyne/...`. Those loads
+   returned null, `SetMaterial(nullptr)` fell back to `/Engine/BasicShapes/BasicShapeMaterial`, and
+   the terrain had been rendering plain engine grey. Fixing the mount switched the real material on
+   for the first time, which exposed the next two.
+
+2. **`WeightMap` never bound.** `ApplyTerrainMaterialParameters` set `HeightMap` and the scalars but
+   skipped `WeightMap`. Every terrain material declares it and defaults it to
+   `/Engine/EngineResources/DefaultTexture` — the engine **checkerboard**. Unbound therefore does
+   not mean "no weights", it multiplies the ground blend by a checker. The layer split comes from
+   vertex colours now (`ApplyLayerWeightsToMesh`), so neutral white is the identity.
+
+3. **Defaults pointed at the bare master.** `M_TerraDyne_Master` leaves all five ground textures
+   (`Grass`/`Dirt`/`Rock`/`Stones`/`Snow`) null, and a null texture parameter also samples as
+   checkerboard — so the fallback could never render regardless of fix 2. `MI_TerraDyne_Terrain` is
+   the same material with those textures assigned.
+
+Neither 2 nor 3 is sufficient alone: the instance supplies the ground textures, the code supplies
+the neutral `WeightMap`, and the instance leaves `WeightMap` unoverridden so it inherits the
+master's checker default either way.
+
+Verified on a cold PIE start with no runtime patching. Suite 17/17.
 
 ## Assumptions
 
