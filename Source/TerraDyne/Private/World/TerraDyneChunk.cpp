@@ -116,6 +116,22 @@ static void ApplyTerrainMaterialParameters(
 		MID->SetTextureParameterValue(TEXT("HeightMap"), HeightTexture);
 	}
 
+	// WeightMap has to be bound to something neutral even though the layer split now comes from
+	// vertex colors (see ApplyLayerWeightsToMesh). Every shipped terrain material still declares
+	// the parameter, and both M_TerraDyne_Master and the MI_TerraDyne_* instances default it to
+	// /Engine/EngineResources/DefaultTexture — which is the engine CHECKERBOARD. Leaving it unbound
+	// therefore does not fall back to "no weights", it multiplies the ground blend by a checker and
+	// tiles the whole landscape with grey squares.
+	//
+	// White is the identity here: verified in PIE, binding it restores the correct rock/dirt/grass/
+	// snow blend, while the checker returns the moment it is removed.
+	static UTexture* NeutralWeightTexture = LoadObject<UTexture>(nullptr,
+		TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+	if (NeutralWeightTexture)
+	{
+		MID->SetTextureParameterValue(TEXT("WeightMap"), NeutralWeightTexture);
+	}
+
 	MID->SetScalarParameterValue(TEXT("WorldSize"), WorldSize);
 	MID->SetScalarParameterValue(TEXT("ZScale"), ZScale);
 	MID->SetScalarParameterValue(
