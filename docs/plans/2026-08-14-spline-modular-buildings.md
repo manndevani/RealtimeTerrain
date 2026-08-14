@@ -291,24 +291,46 @@ assets into the project rather than the plugin is correct).
 Result after the fix: **16 passed, 1 failed** (up from 15). `Demo.ShowcaseMaterialSelection` now
 passes.
 
-### Known-red: TerraDyne.Rendering.MaterialBindings
+### TerraDyne.Rendering.MaterialBindings — fixed
 
-Still failing, now for a different reason that the path fix un-masked:
+The path fix un-masked a second, deeper failure that had been hiding behind the first:
 
 ```
 Expected 'Height RT created' to be not null.       TerraDyneMigrationTests.cpp:200
 HeightMap bound to chunk RT: values are not equal. TerraDyneMigrationTests.cpp:210
 ```
 
-Stale test against a deliberate code change. `ATerraDyneChunk::Initialize()` no longer calls
+A stale test against a deliberate code change. `ATerraDyneChunk::Initialize()` no longer calls
 `SetupGPU()` — see the comment there: it built two render targets plus a synchronous
-`FlushRenderingCommands()` + readback to validate `ApplyBrushGPU`, which nothing invokes. So
-`HeightRT` is permanently null and the material binds `CPUHeightTexture` instead. The test prints
-"validating material bindings with CPU fallback" and then asserts on `HeightRT` regardless.
+`FlushRenderingCommands()` + readback to serve `ApplyBrushGPU`, which nothing invokes. So `HeightRT`
+is permanently null and the material binds `CPUHeightTexture` instead.
 
-Not fixed, because it is a design question rather than a typo: either the assertions should follow
-`IsUsingGPU()` and check `CPUHeightTexture`, or the now-dead GPU members (`HeightRT`,
-`HeightRT_Swap`, `SetupGPU`, `ApplyBrushGPU`) should be removed outright and the test with them.
+The assertions now follow `IsUsingGPU()` and check whichever texture is live. The test's own
+diagnostic was also wrong and has been rewritten: it blamed the automation RHI, but this is not an
+RHI limitation — the GPU path is unreachable in every configuration, editor included.
+
+**Suite is now 17 passed, 0 failed.**
+
+### Still outstanding: the unreachable GPU path
+
+Verified by call-site search, not by trusting the comments:
+
+| Symbol | Lines | Call sites |
+|---|---|---|
+| `SetupGPU()` | 58 | **0** |
+| `ApplyBrushGPU()` | 35 | **0** |
+| `UpdateRenderTargetFromHeightmap()` | 51 | only from `bUseGPU` branches |
+| `ReadbackRenderTarget()` | 18 | only from `bUseGPU` branches |
+
+`bUseGPU = true` appears exactly once, at `TerraDyneChunk.cpp:788`, *inside* `SetupGPU()`. Since
+nothing calls it, `bUseGPU` is provably always false, `HeightRT`/`HeightRT_Swap` are always null,
+and four branch sites are dead or vacuous.
+
+Deleting it (~162 lines plus 37 `HeightRT` references) is the better end state, but it is deliberately
+deferred: it should be its own change, not folded into feature work on the same files. Note also
+that `GetSerializedData()` documents that reconnecting the readback naively would overwrite
+sculpted CPU data and silently revert terrain — so this is a half-finished path with a known
+correctness trap, not a working mode waiting to be switched on.
 
 ### Height composition was centralised
 
