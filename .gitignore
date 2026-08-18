@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Unreal Engine generated output. All of this is rebuilt from source and must
+# never be committed.
+# ---------------------------------------------------------------------------
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+DDC/
+
+# ---------------------------------------------------------------------------
+# IDE / toolchain scratch
+# ---------------------------------------------------------------------------
+.vs/
+*.sln
+*.slnx
+*.suo
+*.sdf
+*.opensdf
+*.opendb
+*.VC.db
+*.VC.opendb
+*.xcodeproj
+*.xcworkspace
+
+# ---------------------------------------------------------------------------
+# Content is deliberately NOT tracked here.
+#
+# It is 8.5 GB, almost entirely two licensed marketplace packs
+# (MWLandscapeAutoMaterial and SD_Art Industrial_Architecture). GitHub caps
+# individual files at 100 MB and free Git LFS at 1 GB, so this cannot be pushed
+# as-is -- and redistributing purchased marketplace assets is a licensing
+# question in its own right.
+#
+# NewWorld.umap is the one hand-authored asset in this tree and is currently
+# unversioned; consider carving it out of this rule rather than tracking all
+# 8.5 GB.
+# ---------------------------------------------------------------------------
+Content/
+
+# ---------------------------------------------------------------------------
+# Nested plugin repositories.
+#
+#   Plugins/Monolith  third-party MCP editor tooling with its own upstream at
+#                     https://github.com/tumourlove/monolith.git. Not ours to
+#                     carry, and ~3 GB. Clone it separately.
+#
+# Plugins/TerraDyne-main is NOT ignored: it is where this project's real
+# development happens, so it is imported into this repository via a subtree
+# merge with its history intact.
+# ---------------------------------------------------------------------------
+Plugins/Monolith/
