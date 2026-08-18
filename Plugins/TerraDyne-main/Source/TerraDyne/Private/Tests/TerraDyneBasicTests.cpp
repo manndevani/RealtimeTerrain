@@ -49,8 +49,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneLevelOverlapAuditTest, "TerraDyne.Bas
 
 bool FTerraDyneLevelOverlapAuditTest::RunTest(const FString& Parameters)
 {
-    UWorld* World = UEditorLoadingAndSavingUtils::LoadMap(TEXT("/Game/NewWorld"));
-    TestNotNull("Loaded /Game/NewWorld map", World);
+    UWorld* World = UEditorLoadingAndSavingUtils::LoadMap(TEXT("/TerraDyne/Maps/NewWorld"));
+    TestNotNull("Loaded /TerraDyne/Maps/NewWorld map", World);
     if (!World)
     {
         return false;
@@ -58,7 +58,7 @@ bool FTerraDyneLevelOverlapAuditTest::RunTest(const FString& Parameters)
 
     TArray<AActor*> AllActors;
     UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
-    UE_LOG(LogTemp, Display, TEXT("=== AUDIT: Total actors in /Game/NewWorld = %d ==="), AllActors.Num());
+    UE_LOG(LogTemp, Display, TEXT("=== AUDIT: Total actors in /TerraDyne/Maps/NewWorld = %d ==="), AllActors.Num());
 
     TArray<AActor*> LandscapeActors;
     TArray<AActor*> ManagerActors;
