@@ -7,6 +7,8 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
+#include "Net/UnrealNetwork.h"
 #include "TerraDyneModule.h"
 
 namespace
@@ -22,6 +24,9 @@ namespace
 ATerraDyneBuildingActor::ATerraDyneBuildingActor()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = true;
+	bAlwaysRelevant = true;
+	SetReplicateMovement(true);
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
@@ -43,6 +48,85 @@ ATerraDyneBuildingActor::ATerraDyneBuildingActor()
 	FootprintSpline->UpdateSpline();
 
 	BuildingId = FGuid::NewGuid();
+	SyncSplinePointsToReplication();
+}
+
+void ATerraDyneBuildingActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ATerraDyneBuildingActor, FloorCount);
+	DOREPLIFETIME(ATerraDyneBuildingActor, Kit);
+	DOREPLIFETIME(ATerraDyneBuildingActor, bGenerateWalls);
+	DOREPLIFETIME(ATerraDyneBuildingActor, bGenerateFloors);
+	DOREPLIFETIME(ATerraDyneBuildingActor, bGenerateRoof);
+	DOREPLIFETIME(ATerraDyneBuildingActor, bGenerateCornerPosts);
+	DOREPLIFETIME(ATerraDyneBuildingActor, DoorSegmentIndex);
+	DOREPLIFETIME(ATerraDyneBuildingActor, BuildingId);
+	DOREPLIFETIME(ATerraDyneBuildingActor, ReplicatedSplinePoints);
+	DOREPLIFETIME(ATerraDyneBuildingActor, bFlattenTerrain);
+	DOREPLIFETIME(ATerraDyneBuildingActor, bAutoPadHeight);
+	DOREPLIFETIME(ATerraDyneBuildingActor, PadTargetWorldZ);
+	DOREPLIFETIME(ATerraDyneBuildingActor, PadFalloff);
+}
+
+void ATerraDyneBuildingActor::SyncSplinePointsToReplication()
+{
+	ReplicatedSplinePoints.Reset();
+	if (FootprintSpline)
+	{
+		const int32 NumPoints = FootprintSpline->GetNumberOfSplinePoints();
+		ReplicatedSplinePoints.Reserve(NumPoints);
+		for (int32 i = 0; i < NumPoints; i++)
+		{
+			ReplicatedSplinePoints.Add(FootprintSpline->GetLocationAtSplinePoint(i, ESplineCoordinateSpace::Local));
+		}
+	}
+}
+
+void ATerraDyneBuildingActor::OnRep_FloorCount()
+{
+	RegenerateBuilding();
+	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::OnRep_Kit()
+{
+	RegenerateBuilding();
+	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::OnRep_BuildingConfig()
+{
+	RegenerateBuilding();
+	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::OnRep_PadSettings()
+{
+	if (PadTargetWorldZ != 0.0f)
+	{
+		const FVector Location = GetActorLocation();
+		SetActorLocation(FVector(Location.X, Location.Y, PadTargetWorldZ));
+	}
+	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::OnRep_SplinePoints()
+{
+	if (FootprintSpline && ReplicatedSplinePoints.Num() >= 3)
+	{
+		FootprintSpline->ClearSplinePoints(false);
+		for (const FVector& Pt : ReplicatedSplinePoints)
+		{
+			FootprintSpline->AddSplinePoint(Pt, ESplineCoordinateSpace::Local, false);
+		}
+		FootprintSpline->SetClosedLoop(true, false);
+		FootprintSpline->UpdateSpline();
+		EnforceLinearTangents();
+	}
+	RegenerateBuilding();
+	NotifyBuildingChanged();
 }
 
 void ATerraDyneBuildingActor::BeginPlay()
@@ -104,7 +188,18 @@ ATerraDyneManager* ATerraDyneBuildingActor::FindManager() const
 {
 	UWorld* World = GetWorld();
 	UTerraDyneSubsystem* Subsystem = World ? World->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
-	return Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+	ATerraDyneManager* Manager = Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+	if (!Manager && World)
+	{
+		Manager = Cast<ATerraDyneManager>(UGameplayStatics::GetActorOfClass(World, ATerraDyneManager::StaticClass()));
+	}
+	return Manager;
+}
+
+void ATerraDyneBuildingActor::PostNetReceiveLocationAndRotation()
+{
+	Super::PostNetReceiveLocationAndRotation();
+	NotifyBuildingChanged();
 }
 
 void ATerraDyneBuildingActor::RelevelToTerrain()
@@ -115,6 +210,11 @@ void ATerraDyneBuildingActor::RelevelToTerrain()
 
 float ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const
 {
+	if (!HasAuthority())
+	{
+		return PadTargetWorldZ != 0.0f ? PadTargetWorldZ : GetActorLocation().Z;
+	}
+
 	if (!bAutoPadHeight)
 	{
 		return PadTargetWorldZ;
@@ -132,44 +232,119 @@ float ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const
 		return GetActorLocation().Z;
 	}
 
-	// Mean natural ground under the footprint corners. Sampling the NATURAL height matters: the
-	// padded height would include this building's own pad from the previous refresh, so the target
-	// would creep a little further every time anything triggered a recompute.
+	// Sample center, corners, and edge midpoints to accurately capture mountain peaks, ridges, and slopes
+	FVector2D Center(0.0, 0.0);
+	for (const FVector2D& P : Polygon)
+	{
+		Center += P;
+	}
+	Center /= FMath::Max(1, Polygon.Num());
+
+	TArray<FVector2D> SamplePoints = Polygon;
+	SamplePoints.Add(Center);
+
+	const int32 NumVerts = Polygon.Num();
+	for (int32 i = 0; i < NumVerts; ++i)
+	{
+		const FVector2D& P0 = Polygon[i];
+		const FVector2D& P1 = Polygon[(i + 1) % NumVerts];
+		SamplePoints.Add((P0 + P1) * 0.5f);
+	}
+
 	double Sum = 0.0;
 	int32 Samples = 0;
-	for (const FVector2D& P : Polygon)
+	float MaxGroundZ = -MAX_FLT;
+	for (const FVector2D& P : SamplePoints)
 	{
 		float GroundZ = 0.0f;
 		if (Manager->GetNaturalTerrainHeightAtXY(P, GroundZ))
 		{
+			MaxGroundZ = FMath::Max(MaxGroundZ, GroundZ);
 			Sum += GroundZ;
 			++Samples;
 		}
 	}
 
-	// No loaded chunk under any corner — the terrain is streamed out. Leave the building where it
-	// is rather than snapping it to an invented height, and do NOT cache that non-answer, so the
-	// real ground still gets sampled once a chunk arrives.
+	// No loaded chunk under any sample — the terrain is streamed out.
 	if (Samples == 0)
 	{
 		return GetActorLocation().Z;
 	}
 
-	CachedPadTargetWorldZ = static_cast<float>(Sum / Samples);
+	// Use the peak height within the footprint so the building sits cleanly on top of
+	// mountain peaks and slopes without any terrain poking through the floor.
+	CachedPadTargetWorldZ = (MaxGroundZ > -MAX_FLT) ? MaxGroundZ : static_cast<float>(Sum / Samples);
 	bPadTargetCached = true;
+	const_cast<ATerraDyneBuildingActor*>(this)->PadTargetWorldZ = CachedPadTargetWorldZ;
 	return CachedPadTargetWorldZ;
 }
 
 void ATerraDyneBuildingActor::SnapToPadHeight()
 {
+	bPadTargetCached = false;
 	const float TargetZ = ResolvePadTargetWorldZ();
 	const FVector Location = GetActorLocation();
 	SetActorLocation(FVector(Location.X, Location.Y, TargetZ));
+	PadTargetWorldZ = TargetZ;
 	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::SetIsHolographicPreview(bool bHolographic)
+{
+	bIsHolographicPreview = bHolographic;
+	if (bIsHolographicPreview)
+	{
+		bFlattenTerrain = false;
+		SetActorEnableCollision(false);
+		SetReplicates(false);
+		SetCanBeDamaged(false);
+		if (ATerraDyneManager* Manager = FindManager())
+		{
+			Manager->UnregisterBuilding(this);
+		}
+	}
+	ApplyHolographicVisuals();
+}
+
+void ATerraDyneBuildingActor::ApplyHolographicVisuals()
+{
+	if (!bIsHolographicPreview)
+	{
+		return;
+	}
+
+	UMaterialInterface* HoloMat = LoadObject<UMaterialInterface>(
+		nullptr, TEXT("/Game/SD_Art/Industrial_Architecture/Materials/MI_Window_Glass.MI_Window_Glass"));
+	if (!HoloMat)
+	{
+		HoloMat = LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	}
+
+	for (UInstancedStaticMeshComponent* Inst : Instancers)
+	{
+		if (Inst)
+		{
+			Inst->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Inst->SetCastShadow(false);
+			if (HoloMat)
+			{
+				for (int32 i = 0; i < Inst->GetNumMaterials(); ++i)
+				{
+					Inst->SetMaterial(i, HoloMat);
+				}
+			}
+		}
+	}
 }
 
 void ATerraDyneBuildingActor::NotifyBuildingChanged()
 {
+	if (bIsHolographicPreview)
+	{
+		return;
+	}
+
 	ATerraDyneManager* Manager = FindManager();
 	if (!Manager)
 	{
@@ -240,8 +415,93 @@ void ATerraDyneBuildingActor::ResetToDefaultFootprint()
 	bSuppressRegenerate = false;
 
 	EnforceLinearTangents();
+	SyncSplinePointsToReplication();
 	RegenerateBuilding();
 	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::SetSplinePointLocal(int32 PointIndex, const FVector& LocalPos, bool bUpdatePad)
+{
+	if (!FootprintSpline || PointIndex < 0 || PointIndex >= FootprintSpline->GetNumberOfSplinePoints())
+	{
+		return;
+	}
+
+	FootprintSpline->SetLocationAtSplinePoint(PointIndex, LocalPos, ESplineCoordinateSpace::Local, false);
+	EnforceLinearTangents();
+	RegenerateBuilding();
+	if (bUpdatePad)
+	{
+		NotifyBuildingChanged();
+	}
+}
+
+void ATerraDyneBuildingActor::SetSplinePoints(const TArray<FVector>& InPoints)
+{
+	if (!FootprintSpline || InPoints.Num() < 3)
+	{
+		return;
+	}
+
+	bSuppressRegenerate = true;
+	FootprintSpline->ClearSplinePoints(false);
+	for (const FVector& Pt : InPoints)
+	{
+		FootprintSpline->AddSplinePoint(Pt, ESplineCoordinateSpace::Local, false);
+	}
+	FootprintSpline->SetClosedLoop(true, false);
+	FootprintSpline->UpdateSpline();
+	bSuppressRegenerate = false;
+
+	EnforceLinearTangents();
+	SyncSplinePointsToReplication();
+	RegenerateBuilding();
+	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::AddSplinePoint()
+{
+	if (!FootprintSpline)
+	{
+		return;
+	}
+
+	TArray<FVector> Current = GatherSplinePointsLocal();
+	if (Current.Num() < 2)
+	{
+		return;
+	}
+
+	// Insert midpoint on the last edge
+	const FVector Mid = (Current.Last() + Current[0]) * 0.5f + FVector(200.0f, 0.0f, 0.0f);
+	Current.Add(Mid);
+	SetSplinePoints(Current);
+}
+
+void ATerraDyneBuildingActor::RemoveSplinePoint(int32 PointIndex)
+{
+	if (!FootprintSpline)
+	{
+		return;
+	}
+
+	TArray<FVector> Current = GatherSplinePointsLocal();
+	if (Current.Num() <= 3)
+	{
+		// Cannot reduce below 3 points for a closed polygon
+		return;
+	}
+
+	if (PointIndex >= 0 && PointIndex < Current.Num())
+	{
+		Current.RemoveAt(PointIndex);
+	}
+	else
+	{
+		Current.Pop();
+	}
+
+	SetSplinePoints(Current);
 }
 
 void ATerraDyneBuildingActor::EnforceLinearTangents()
@@ -416,6 +676,11 @@ void ATerraDyneBuildingActor::RegenerateBuilding()
 	if (bGenerateFloors || bGenerateRoof)
 	{
 		BuildSlabs(Points, ActiveKit);
+	}
+
+	if (bIsHolographicPreview)
+	{
+		ApplyHolographicVisuals();
 	}
 }
 

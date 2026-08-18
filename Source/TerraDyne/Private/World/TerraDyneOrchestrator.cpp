@@ -128,6 +128,7 @@ ATerraDyneOrchestrator::ATerraDyneOrchestrator()
 	PrimaryActorTick.bCanEverTick = true;
 
 	CurrentPhase = EShowcasePhase::Warmup;
+	bStartInInteractivePhase = true;
 	PhaseTimer = 0.0f;
 	ActionTimer = 0.0f;
 	OriginalPlayerPos = FVector::ZeroVector;
@@ -282,15 +283,18 @@ void ATerraDyneOrchestrator::RunScriptedShowcase()
 void ATerraDyneOrchestrator::RestartShowcaseInternal(bool bForceInteractive)
 {
 	ClearShowcaseTimers();
-	EnsureShowcaseWorld();
-	if (bShowcaseBaselineCaptured)
+	if (HasAuthority())
 	{
-		RestoreShowcaseBaseline();
 		EnsureShowcaseWorld();
-	}
-	else
-	{
-		CaptureShowcaseBaseline();
+		if (bShowcaseBaselineCaptured)
+		{
+			RestoreShowcaseBaseline();
+			EnsureShowcaseWorld();
+		}
+		else
+		{
+			CaptureShowcaseBaseline();
+		}
 	}
 	BindManagerEvents(GetManager());
 
@@ -351,7 +355,7 @@ ATerraDyneManager* ATerraDyneOrchestrator::EnsureShowcaseManager()
 		return ExistingManager;
 	}
 
-	if (!GetWorld() || !UGameplayStatics::GetPlayerController(this, 0))
+	if (!GetWorld() || !HasAuthority())
 	{
 		return nullptr;
 	}
@@ -453,7 +457,7 @@ UTerraDyneWorldPreset* ATerraDyneOrchestrator::BuildFallbackPreset()
 
 ATerraDyneChunk* ATerraDyneOrchestrator::EnsurePrimaryAuthoredChunk(ATerraDyneManager* Manager)
 {
-	if (!Manager || !GetWorld())
+	if (!Manager || !GetWorld() || !HasAuthority())
 	{
 		return nullptr;
 	}
@@ -518,38 +522,12 @@ ATerraDyneChunk* ATerraDyneOrchestrator::EnsurePrimaryAuthoredChunk(ATerraDyneMa
 		Manager->LandscapeMigrationState.bTransferredFoliageFollowsTerrain = true;
 	}
 
-	if (bSpawnedFallbackChunk)
-	{
-		SeedFallbackTerrain(Manager);
-	}
-
 	return PrimaryChunk;
 }
 
 void ATerraDyneOrchestrator::SeedFallbackTerrain(ATerraDyneManager* Manager)
 {
-	if (!Manager)
-	{
-		return;
-	}
-
-	const FVector Origin = Manager->GetActorLocation();
-	for (int32 Index = 0; Index < 4; ++Index)
-	{
-		Manager->ApplyGlobalBrush(Origin + FVector(-2100.0f, -1000.0f, 0.0f), 1500.0f, 950.0f, ETerraDyneBrushMode::Raise);
-		Manager->ApplyGlobalBrush(Origin + FVector(1700.0f, 1200.0f, 0.0f), 1100.0f, 800.0f, ETerraDyneBrushMode::Raise);
-	}
-
-	for (int32 Index = 0; Index < 3; ++Index)
-	{
-		Manager->ApplyGlobalBrush(Origin + FVector(1600.0f, -1800.0f, 0.0f), 1300.0f, 900.0f, ETerraDyneBrushMode::Lower);
-	}
-
-	Manager->ApplyGlobalBrush(Origin, 2400.0f, 1300.0f, ETerraDyneBrushMode::Smooth);
-
-	for (int32 Index = 0; Index < 4; ++Index)
-	{
-	}
+	// Permanently removed: Never apply hardcoded terrain deformations on BeginPlay.
 }
 
 void ATerraDyneOrchestrator::EnsureFallbackFoliagePresentation(ATerraDyneManager* Manager, ATerraDyneChunk* Chunk)

@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"
 #include "Core/TerraDyneWorldTypes.h"
+#include "Building/TerraDyneBuildingTypes.h"
 #include "TerraDyneSaveGame.generated.h"
 
 USTRUCT(BlueprintType)
@@ -195,6 +196,9 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
 	TArray<FIntPoint> AuthoredChunkCoords;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	TArray<FTerraDyneBuildingData> Buildings;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
 	TMap<FIntPoint, FTerraDyneChunkData> Chunks;

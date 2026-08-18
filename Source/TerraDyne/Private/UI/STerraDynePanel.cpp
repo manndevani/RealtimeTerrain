@@ -2,6 +2,7 @@
 #include "STerraDynePanel.h"
 #include "UI/TerraDyneToolWidget.h"
 #include "Core/TerraDyneManager.h"
+#include "Core/TerraDyneEditController.h"
 #include "World/TerraDyneOrchestrator.h"
 #include "Building/TerraDyneBuildingActor.h"
 #include "Kismet/GameplayStatics.h"
@@ -370,6 +371,44 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 
 							+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
 							[
+								SNew(STextBlock)
+								.Text(LOCTEXT("FootprintHeader", "FOOTPRINT SPLINE"))
+								.Font(LabelFont)
+							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnAddSplinePoint", "+ Point"))
+									.ToolTipText(LOCTEXT("TipAddPoint", "Insert a new corner/vertex point into the building footprint."))
+									.IsEnabled(this, &STerraDynePanel::IsBuildingSelected)
+									.OnClicked(this, &STerraDynePanel::OnAddSplinePointClicked)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnRemoveSplinePoint", "- Point"))
+									.ToolTipText(LOCTEXT("TipRemovePoint", "Remove a corner/vertex point from the building footprint."))
+									.IsEnabled(this, &STerraDynePanel::IsBuildingSelected)
+									.OnClicked(this, &STerraDynePanel::OnRemoveSplinePointClicked)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnResetFootprint", "↺ Reset"))
+									.ToolTipText(LOCTEXT("TipResetFootprint", "Reset footprint back to default 4-corner rectangle."))
+									.IsEnabled(this, &STerraDynePanel::IsBuildingSelected)
+									.OnClicked(this, &STerraDynePanel::OnResetFootprintClicked)
+									.HAlign(HAlign_Center)
+								]
+							]
+
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+							[
 								SNew(SHorizontalBox)
 								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
 								[
@@ -546,7 +585,14 @@ FReply STerraDynePanel::OnAddFloorClicked()
 	OwnerWidget->PendingFloorCount = FMath::Clamp(OwnerWidget->PendingFloorCount + 1, 1, 50);
 	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
 	{
-		Building->SetFloorCount(OwnerWidget->PendingFloorCount);
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->RequestSetBuildingFloorCount(Building, OwnerWidget->PendingFloorCount);
+		}
+		else
+		{
+			Building->SetFloorCount(OwnerWidget->PendingFloorCount);
+		}
 	}
 	return FReply::Handled();
 }
@@ -561,17 +607,94 @@ FReply STerraDynePanel::OnRemoveFloorClicked()
 	OwnerWidget->PendingFloorCount = FMath::Clamp(OwnerWidget->PendingFloorCount - 1, 1, 50);
 	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
 	{
-		Building->SetFloorCount(OwnerWidget->PendingFloorCount);
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->RequestSetBuildingFloorCount(Building, OwnerWidget->PendingFloorCount);
+		}
+		else
+		{
+			Building->SetFloorCount(OwnerWidget->PendingFloorCount);
+		}
 	}
 	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnAddSplinePointClicked()
+{
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		if (OwnerWidget.IsValid())
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->RequestAddSplinePoint(Building);
+			}
+			else
+			{
+				Building->AddSplinePoint();
+			}
+		}
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+FReply STerraDynePanel::OnRemoveSplinePointClicked()
+{
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		if (OwnerWidget.IsValid())
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->RequestRemoveSplinePoint(Building);
+			}
+			else
+			{
+				Building->RemoveSplinePoint();
+			}
+		}
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+FReply STerraDynePanel::OnResetFootprintClicked()
+{
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		if (OwnerWidget.IsValid())
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->RequestResetFootprint(Building);
+			}
+			else
+			{
+				Building->ResetToDefaultFootprint();
+			}
+		}
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
 }
 
 FReply STerraDynePanel::OnRelevelClicked()
 {
 	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
 	{
-		Building->RelevelToTerrain();
-		Building->SnapToPadHeight();
+		if (OwnerWidget.IsValid())
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->RequestRelevelBuilding(Building);
+			}
+			else
+			{
+				Building->RelevelToTerrain();
+				Building->SnapToPadHeight();
+			}
+		}
 		return FReply::Handled();
 	}
 	return FReply::Unhandled();
@@ -590,8 +713,19 @@ FReply STerraDynePanel::OnDeleteBuildingClicked()
 	if (OwnerWidget.IsValid())
 	{
 		OwnerWidget->SelectedBuilding = nullptr;
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->RequestDeleteBuilding(Building);
+		}
+		else
+		{
+			Building->Destroy();
+		}
 	}
-	Building->Destroy();
+	else
+	{
+		Building->Destroy();
+	}
 
 	return FReply::Handled();
 }
@@ -641,81 +775,101 @@ FReply STerraDynePanel::StartPersistenceTest()
 
 FReply STerraDynePanel::SaveToFile()
 {
-#if WITH_EDITOR
-	ATerraDyneManager* Mgr = GetManager();
-	if (!Mgr)
-	{
-		return FReply::Unhandled();
-	}
-
-	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-	if (!DesktopPlatform)
-	{
-		return FReply::Unhandled();
-	}
-
-	const FString DefaultPath = FPaths::ConvertRelativePathToFull(
+	const FString DefaultFolder = FPaths::ConvertRelativePathToFull(
 		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TerraDyneExports")));
-	IFileManager::Get().MakeDirectory(*DefaultPath, true);
+	IFileManager::Get().MakeDirectory(*DefaultFolder, true);
 
-	TArray<FString> OutFiles;
-	const bool bPicked = DesktopPlatform->SaveFileDialog(
-		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
-		TEXT("Save TerraDyne Level"),
-		DefaultPath,
-		TEXT("MyLevel.terradyne"),
-		TEXT("TerraDyne Level (*.terradyne)|*.terradyne"),
-		EFileDialogFlags::None,
-		OutFiles);
+	FString TargetPath = FPaths::Combine(DefaultFolder, TEXT("MyLevel.terradyne"));
 
-	if (bPicked && OutFiles.Num() > 0)
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
 	{
-		LastExportPath = OutFiles[0];
-		Mgr->SaveWorldToFile(LastExportPath);
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->SaveFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			TEXT("Save TerraDyne Level"),
+			DefaultFolder,
+			TEXT("MyLevel.terradyne"),
+			TEXT("TerraDyne Level (*.terradyne)|*.terradyne"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			TargetPath = OutFiles[0];
+		}
+		else
+		{
+			return FReply::Handled();
+		}
+	}
+#endif
+
+	LastExportPath = TargetPath;
+	if (OwnerWidget.IsValid())
+	{
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->RequestSaveWorldToFile(TargetPath);
+			return FReply::Handled();
+		}
+	}
+
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		Mgr->SaveWorldToFile(TargetPath);
 	}
 	return FReply::Handled();
-#else
-	return FReply::Unhandled();
-#endif
 }
 
 FReply STerraDynePanel::LoadFromFile()
 {
-#if WITH_EDITOR
-	ATerraDyneManager* Mgr = GetManager();
-	if (!Mgr)
-	{
-		return FReply::Unhandled();
-	}
-
-	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-	if (!DesktopPlatform)
-	{
-		return FReply::Unhandled();
-	}
-
-	const FString DefaultPath = FPaths::ConvertRelativePathToFull(
+	const FString DefaultFolder = FPaths::ConvertRelativePathToFull(
 		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TerraDyneExports")));
 
-	TArray<FString> OutFiles;
-	const bool bPicked = DesktopPlatform->OpenFileDialog(
-		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
-		TEXT("Load TerraDyne Level"),
-		DefaultPath,
-		TEXT(""),
-		TEXT("TerraDyne Level (*.terradyne)|*.terradyne"),
-		EFileDialogFlags::None,
-		OutFiles);
+	FString TargetPath = FPaths::Combine(DefaultFolder, TEXT("MyLevel.terradyne"));
 
-	if (bPicked && OutFiles.Num() > 0)
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
 	{
-		LastExportPath = OutFiles[0];
-		Mgr->LoadWorldFromFile(LastExportPath);
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			TEXT("Load TerraDyne Level"),
+			DefaultFolder,
+			TEXT(""),
+			TEXT("TerraDyne Level (*.terradyne)|*.terradyne"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			TargetPath = OutFiles[0];
+		}
+		else
+		{
+			return FReply::Handled();
+		}
+	}
+#endif
+
+	LastExportPath = TargetPath;
+	if (OwnerWidget.IsValid())
+	{
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->RequestLoadWorldFromFile(TargetPath);
+			return FReply::Handled();
+		}
+	}
+
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		Mgr->LoadWorldFromFile(TargetPath);
 	}
 	return FReply::Handled();
-#else
-	return FReply::Unhandled();
-#endif
 }
 
 FText STerraDynePanel::GetExportStatusText() const

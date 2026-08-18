@@ -215,7 +215,11 @@ void ATerraDyneManager::Tick(float DeltaTime)
 				if (!PC) continue;
 
 				FVector Pos = FVector::ZeroVector;
-				if (APawn* Pawn = PC->GetPawn())
+				if (PC->PlayerCameraManager)
+				{
+					Pos = PC->PlayerCameraManager->GetCameraLocation();
+				}
+				else if (APawn* Pawn = PC->GetPawn())
 				{
 					Pos = Pawn->GetActorLocation();
 				}
@@ -364,28 +368,24 @@ void ATerraDyneManager::ApplyGlobalBrush(FVector WorldLocation, float Radius, fl
 	UE_LOG(LogTemp, Verbose, TEXT("ApplyGlobalBrush: Loc=%s R=%.0f S=%.0f Mode=%d"),
 		*WorldLocation.ToString(), Radius, Strength, (int32)BrushMode);
 
-	TArray<FIntPoint> ChangedCoords;
-	const float RadiusWorld = Radius + GlobalChunkSize * 0.5f;
-	const float ProbeInset = 0.01f;
-	const FIntPoint MinCoord = WorldToChunkCoord(WorldLocation - FVector(RadiusWorld, RadiusWorld, 0.0f));
-	const FIntPoint MaxCoord = WorldToChunkCoord(
-		WorldLocation + FVector(RadiusWorld - ProbeInset, RadiusWorld - ProbeInset, 0.0f));
-
-	for (int32 X = MinCoord.X; X <= MaxCoord.X; X++)
+	if (ActiveChunkMap.Num() == 0)
 	{
-		for (int32 Y = MinCoord.Y; Y <= MaxCoord.Y; Y++)
+		RebuildChunkMap();
+	}
+
+	const FBox2D BrushBounds(
+		FVector2D(WorldLocation.X - Radius, WorldLocation.Y - Radius),
+		FVector2D(WorldLocation.X + Radius, WorldLocation.Y + Radius));
+
+	TArray<FIntPoint> ChangedCoords;
+	for (ATerraDyneChunk* Chunk : GetChunksInBoxXY(BrushBounds))
+	{
+		if (Chunk)
 		{
-			FIntPoint Coord(X, Y);
-			if (ATerraDyneChunk** FoundChunk = ActiveChunkMap.Find(Coord))
-			{
-				if (ATerraDyneChunk* Chunk = *FoundChunk)
-				{
-					FVector RelativePos = WorldLocation - Chunk->GetActorLocation();
-					Chunk->ApplyLocalIdempotentEdit(RelativePos, Radius, Strength, BrushMode, FlattenHeight);
-					MarkChunkDirty(Coord);
-					ChangedCoords.AddUnique(Coord);
-				}
-			}
+			FVector RelativePos = WorldLocation - Chunk->GetActorLocation();
+			Chunk->ApplyLocalIdempotentEdit(RelativePos, Radius, Strength, BrushMode, FlattenHeight);
+			MarkChunkDirty(Chunk->GridCoordinate);
+			ChangedCoords.AddUnique(Chunk->GridCoordinate);
 		}
 	}
 
@@ -405,7 +405,24 @@ void ATerraDyneManager::ApplyGlobalBrush(FVector WorldLocation, float Radius, fl
 
 ATerraDyneChunk* ATerraDyneManager::GetChunkAtLocation(FVector WorldLocation) const
 {
+	if (ActiveChunkMap.Num() == 0)
+	{
+		const_cast<ATerraDyneManager*>(this)->RebuildChunkMap();
+	}
 	if (ATerraDyneChunk* const* Chunk = ActiveChunkMap.Find(WorldToChunkCoord(WorldLocation))) return *Chunk;
+
+	const FVector2D Point(WorldLocation.X, WorldLocation.Y);
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			const FBox2D Bounds = GetChunkBoundsXY(Pair.Value);
+			if (Bounds.bIsValid && Bounds.IsInside(Point))
+			{
+				return Pair.Value;
+			}
+		}
+	}
 	return nullptr;
 }
 
@@ -429,6 +446,11 @@ TArray<ATerraDyneChunk*> ATerraDyneManager::GetChunksInBoxXY(const FBox2D& World
 	if (!WorldAreaXY.bIsValid)
 	{
 		return Result;
+	}
+
+	if (ActiveChunkMap.Num() == 0)
+	{
+		const_cast<ATerraDyneManager*>(this)->RebuildChunkMap();
 	}
 
 	for (const TPair<FIntPoint, ATerraDyneChunk*>& Pair : ActiveChunkMap)
@@ -518,6 +540,19 @@ void ATerraDyneManager::RefreshBuildingPads(const FBox2D& WorldAreaXY)
 	if (ChangedCoords.Num() > 0)
 	{
 		BroadcastTerrainChanged(ChangedCoords);
+	}
+
+	if (HasAuthority())
+	{
+		Multicast_RefreshBuildingPads(WorldAreaXY.Min, WorldAreaXY.Max);
+	}
+}
+
+void ATerraDyneManager::Multicast_RefreshBuildingPads_Implementation(FVector2D MinXY, FVector2D MaxXY)
+{
+	if (!HasAuthority())
+	{
+		RefreshBuildingPads(FBox2D(MinXY, MaxXY));
 	}
 }
 
@@ -618,6 +653,19 @@ void ATerraDyneManager::RegisterChunk(ATerraDyneChunk* Chunk)
 	if (!Chunk)
 	{
 		return;
+	}
+
+	if (ATerraDyneChunk** ExistingChunk = ActiveChunkMap.Find(Chunk->GridCoordinate))
+	{
+		if (*ExistingChunk && *ExistingChunk != Chunk)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Duplicate chunk detected at [%d,%d] — replacing stale instance %s with %s"),
+				Chunk->GridCoordinate.X, Chunk->GridCoordinate.Y, *(*ExistingChunk)->GetName(), *Chunk->GetName());
+			if (!(*ExistingChunk)->HasAuthority())
+			{
+				(*ExistingChunk)->Destroy();
+			}
+		}
 	}
 
 	ActiveChunkMap.Add(Chunk->GridCoordinate, Chunk);
@@ -800,7 +848,67 @@ void ATerraDyneManager::Redo(APlayerController* Controller)
 
 void ATerraDyneManager::ApplyGlobalNoise(float Strength, float Frequency, float Seed)
 {
-	UE_LOG(LogTemp, Warning, TEXT("ApplyGlobalNoise not implemented"));
+	const float SafeFrequency = (Frequency > KINDA_SMALL_NUMBER) ? Frequency : 0.001f;
+	TArray<FIntPoint> ChangedCoords;
+
+	for (auto& Pair : ActiveChunkMap)
+	{
+		ATerraDyneChunk* Chunk = Pair.Value;
+		if (!Chunk || Chunk->Resolution < 2)
+		{
+			continue;
+		}
+
+		const int32 Resolution = Chunk->Resolution;
+		const float WorldSize = Chunk->WorldSize > 0.0f ? Chunk->WorldSize : GlobalChunkSize;
+		const FVector ChunkOrigin(Chunk->GridCoordinate.X * WorldSize, Chunk->GridCoordinate.Y * WorldSize, 0.0);
+		const float ZScale = Chunk->ZScale > 0.0f ? Chunk->ZScale : 8000.0f;
+		const float StrengthNorm = Strength / ZScale;
+
+		const int32 NumVerts = Resolution * Resolution;
+		if (Chunk->DetailBuffer.Num() != NumVerts)
+		{
+			Chunk->DetailBuffer.SetNumZeroed(NumVerts);
+		}
+
+		for (int32 Y = 0; Y < Resolution; Y++)
+		{
+			for (int32 X = 0; X < Resolution; X++)
+			{
+				const double WorldX = ChunkOrigin.X + ((double(X) / (Resolution - 1)) - 0.5) * WorldSize + (double)Seed * 1337.0;
+				const double WorldY = ChunkOrigin.Y + ((double(Y) / (Resolution - 1)) - 0.5) * WorldSize + (double)Seed * 1337.0;
+
+				const float NoiseVal = (FMath::PerlinNoise2D(FVector2D(WorldX * SafeFrequency, WorldY * SafeFrequency))) * StrengthNorm;
+				const int32 Index = Y * Resolution + X;
+				Chunk->DetailBuffer[Index] += NoiseVal;
+			}
+		}
+
+		Chunk->RecomputeHeightFromLayers();
+		Chunk->RebuildPhysicsMesh();
+		Chunk->RequestTransferredFoliageRefresh();
+		MarkChunkDirty(Chunk->GridCoordinate);
+		ChangedCoords.Add(Chunk->GridCoordinate);
+	}
+
+	if (ChangedCoords.Num() > 0)
+	{
+		BroadcastTerrainChanged(ChangedCoords);
+		BroadcastFoliageChanged(ChangedCoords);
+	}
+
+	if (HasAuthority())
+	{
+		Multicast_ApplyGlobalNoise(Strength, Frequency, Seed);
+	}
+}
+
+void ATerraDyneManager::Multicast_ApplyGlobalNoise_Implementation(float Strength, float Frequency, float Seed)
+{
+	if (!HasAuthority())
+	{
+		ApplyGlobalNoise(Strength, Frequency, Seed);
+	}
 }
 
 UTerraDyneSaveGame* ATerraDyneManager::BuildSaveGameInstance()
@@ -831,6 +939,15 @@ UTerraDyneSaveGame* ATerraDyneManager::BuildSaveGameInstance()
 		if (!MaterialPath.StartsWith(TEXT("/Engine/Transient")))
 		{
 			SaveInst->MasterMaterialPath = MaterialPath;
+		}
+	}
+
+	SaveInst->Buildings.Reset();
+	for (const TWeakObjectPtr<ATerraDyneBuildingActor>& Entry : RegisteredBuildings)
+	{
+		if (ATerraDyneBuildingActor* Building = Entry.Get())
+		{
+			SaveInst->Buildings.Add(Building->ToData());
 		}
 	}
 
@@ -1013,10 +1130,59 @@ void ATerraDyneManager::ApplyLoadedSaveGame(UTerraDyneSaveGame* LoadInst, const 
 		}
 	}
 
+	// Destroy existing buildings
+	TArray<ATerraDyneBuildingActor*> BuildingsToDestroy;
+	for (const TWeakObjectPtr<ATerraDyneBuildingActor>& Entry : RegisteredBuildings)
+	{
+		if (ATerraDyneBuildingActor* Building = Entry.Get())
+		{
+			BuildingsToDestroy.Add(Building);
+		}
+	}
+	RegisteredBuildings.Reset();
+	for (ATerraDyneBuildingActor* Building : BuildingsToDestroy)
+	{
+		if (Building)
+		{
+			Building->Destroy();
+		}
+	}
+
+	// Spawn saved buildings
+	UWorld* World = GetWorld();
+	if (World && HasAuthority())
+	{
+		for (const FTerraDyneBuildingData& BData : LoadInst->Buildings)
+		{
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
+				ATerraDyneBuildingActor::StaticClass(),
+				FTransform(BData.Rotation, BData.Origin),
+				SpawnParams);
+			if (NewBuilding)
+			{
+				NewBuilding->ApplyData(BData, true);
+			}
+		}
+	}
+
 	RebuildChunkMap();
 	ApplyMaterialToActiveChunks();
 	OnRep_FrameworkConfig();
 	RefreshPopulationForLoadedChunks();
+
+	// Push full sync to all connected player controllers so clients see the loaded terrain and state
+	if (World && HasAuthority())
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (ATerraDyneEditController* EditController = Cast<ATerraDyneEditController>(It->Get()))
+			{
+				SendFullSyncToController(EditController);
+			}
+		}
+	}
 }
 
 void ATerraDyneManager::SetAuthoredChunkCoordinates(
@@ -2362,7 +2528,7 @@ void ATerraDyneManager::SendFullSyncToController(ATerraDyneEditController* Contr
 	{
 		if (ATerraDyneChunk* Chunk = Pair.Value)
 		{
-			Controller->Client_ReceiveChunkSync(Chunk->GetSerializedData());
+			SendChunkSculptSync(Chunk);
 		}
 	}
 }

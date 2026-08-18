@@ -80,6 +80,9 @@ private:
 	bool IsBuildingSelected() const;
 	FReply OnAddFloorClicked();
 	FReply OnRemoveFloorClicked();
+	FReply OnAddSplinePointClicked();
+	FReply OnRemoveSplinePointClicked();
+	FReply OnResetFootprintClicked();
 	FReply OnRelevelClicked();
 	FReply OnDeleteBuildingClicked();
 

@@ -14,6 +14,7 @@
 #include "Components/SceneComponent.h"
 #include "Kismet/KismetRenderingLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Kismet/GameplayStatics.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Canvas.h"
 #include "Engine/StaticMesh.h"
@@ -600,12 +601,19 @@ void ATerraDyneChunk::BeginPlay()
 		Initialize(Resolution, WorldSize);
 	}
 
+	ATerraDyneManager* Manager = nullptr;
 	if (UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr)
 	{
-		if (ATerraDyneManager* Manager = Subsystem->GetTerrainManager())
-		{
-			Manager->RegisterChunk(this);
-		}
+		Manager = Subsystem->GetTerrainManager();
+	}
+	if (!Manager && GetWorld())
+	{
+		Manager = Cast<ATerraDyneManager>(UGameplayStatics::GetActorOfClass(GetWorld(), ATerraDyneManager::StaticClass()));
+	}
+
+	if (Manager)
+	{
+		Manager->RegisterChunk(this);
 	}
 }
 
@@ -1245,6 +1253,11 @@ void ATerraDyneChunk::UpdateMeshHeights()
 	{
 		RebuildMesh();
 		return;
+	}
+
+	if (DynamicMeshComp)
+	{
+		DynamicMeshComp->NotifyMeshVertexAttributesModified(true, true);
 	}
 
 	UpdateDisplayMaterialParameters();

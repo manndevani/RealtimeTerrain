@@ -110,12 +110,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Tools")
 	TObjectPtr<UMaterialInterface> HeightBrushMaterial;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Tools")
-	TObjectPtr<UMaterialInterface> WeightBrushMaterial;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Tools")
-	TObjectPtr<UMaterialInterface> NoiseBrushMaterial;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Migration")
 	FTerraDyneLandscapeMigrationOptions LandscapeMigrationOptions;
 
@@ -246,6 +240,14 @@ public:
 	UFUNCTION(NetMulticast, Reliable)
 	void Multicast_ApplyBrush(const FTerraDyneBrushParams& Params);
 
+	/** Server → All Clients: broadcast global noise application to all clients. */
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_ApplyGlobalNoise(float Strength, float Frequency, float Seed);
+
+	/** Server → All Clients: broadcast building pad refresh to all clients. */
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_RefreshBuildingPads(FVector2D MinXY, FVector2D MaxXY);
+
 
 	/** Send every live chunk's state to one controller, to catch up a late joiner. Server only. */
 	void SendFullSyncToController(ATerraDyneEditController* Controller);
@@ -324,6 +326,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|System")
 	bool LoadWorldFromFile(const FString& FilePath);
+
+	class UTerraDyneSaveGame* BuildSaveGameInstance();
+	void ApplyLoadedSaveGame(class UTerraDyneSaveGame* LoadInst, const FString& SourceLabel);
 
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Migration")
 	void SetAuthoredChunkCoordinates(const TArray<FIntPoint>& ChunkCoords, bool bWasImportedFromLandscape = true);
@@ -434,9 +439,6 @@ protected:
 	void OnRep_FrameworkConfig();
 
 private:
-	class UTerraDyneSaveGame* BuildSaveGameInstance();
-	void ApplyLoadedSaveGame(class UTerraDyneSaveGame* LoadInst, const FString& SourceLabel);
-
 	UPROPERTY(Transient)
 	TMap<FIntPoint, ATerraDyneChunk*> ActiveChunkMap;
 

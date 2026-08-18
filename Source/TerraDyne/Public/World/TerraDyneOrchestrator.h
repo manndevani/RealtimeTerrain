@@ -67,10 +67,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Showcase")
 	bool bEnableCameraFlythrough = false;
 
-	// When true, RestartShowcase() enters directly at EShowcasePhase::Interactive instead of
+	// When true (default), RestartShowcase() enters directly at EShowcasePhase::Interactive instead of
 	// Warmup, skipping the ~95s scripted phase sequence so sculpting/tool input is live immediately.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Showcase")
-	bool bStartInInteractivePhase = false;
+	bool bStartInInteractivePhase = true;
 
 	UPROPERTY(Transient)
 	TObjectPtr<class UUserWidget> ActiveUI;

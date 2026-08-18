@@ -29,6 +29,7 @@ class TERRADYNE_API ATerraDyneBuildingActor : public AActor
 
 public:
 	ATerraDyneBuildingActor();
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne|Building")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -37,52 +38,65 @@ public:
 	TObjectPtr<USplineComponent> FootprintSpline;
 
 	/** Storeys. Each is exactly Kit->FloorHeight tall — no scaling, so panels never stretch. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building",
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_FloorCount, Category = "TerraDyne|Building",
 		meta = (ClampMin = "1", UIMin = "1", UIMax = "20"))
 	int32 FloorCount = 2;
 
 	/** Leave null to use the built-in SD_Art Industrial kit. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_Kit, Category = "TerraDyne|Building")
 	TObjectPtr<UTerraDyneBuildingKit> Kit;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Parts")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_BuildingConfig, Category = "TerraDyne|Building|Parts")
 	bool bGenerateWalls = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Parts")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_BuildingConfig, Category = "TerraDyne|Building|Parts")
 	bool bGenerateFloors = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Parts")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_BuildingConfig, Category = "TerraDyne|Building|Parts")
 	bool bGenerateRoof = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Parts")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_BuildingConfig, Category = "TerraDyne|Building|Parts")
 	bool bGenerateCornerPosts = true;
 
 	/** Which footprint segment gets the door panel on the ground floor. Negative disables it. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Parts")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_BuildingConfig, Category = "TerraDyne|Building|Parts")
 	int32 DoorSegmentIndex = 0;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne|Building")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Replicated, Category = "TerraDyne|Building")
 	FGuid BuildingId;
+
+	/** Replicated local spline points to keep footprints in sync across clients. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_SplinePoints, Category = "TerraDyne|Building")
+	TArray<FVector> ReplicatedSplinePoints;
 
 	//--- Terrain pad ---
 
 	/** When false the building leaves the ground alone and simply sits wherever it is placed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Terrain")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_PadSettings, Category = "TerraDyne|Building|Terrain")
 	bool bFlattenTerrain = true;
 
 	/** Level the pad to the average natural ground under the footprint, rather than PadTargetWorldZ. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Terrain")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_PadSettings, Category = "TerraDyne|Building|Terrain")
 	bool bAutoPadHeight = true;
 
 	/** Explicit flatten height in world Z. Only used when bAutoPadHeight is false. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Terrain",
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_PadSettings, Category = "TerraDyne|Building|Terrain",
 		meta = (EditCondition = "!bAutoPadHeight"))
 	float PadTargetWorldZ = 0.0f;
 
 	/** Width of the blend skirt from the footprint edge out to natural ground, in world units. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Building|Terrain",
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_PadSettings, Category = "TerraDyne|Building|Terrain",
 		meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2000.0"))
 	float PadFalloff = 400.0f;
+
+	/** When true, this is a local preview ghost that has no collision, does not stamp pads, and displays as a hologram. */
+	UPROPERTY(Transient)
+	bool bIsHolographicPreview = false;
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
+	void SetIsHolographicPreview(bool bHolographic);
+
+	void ApplyHolographicVisuals();
 
 	/**
 	 * The height the pad will actually flatten to, resolving bAutoPadHeight against the terrain.
@@ -137,8 +151,26 @@ public:
 	/** World-space XY bounds of the footprint, expanded by Padding. */
 	FBox2D GetFootprintBoundsWorld(float Padding = 0.0f) const;
 
-	//--- Serialization (phase 6) ---
+	void SyncSplinePointsToReplication();
 
+	/** Local-space footprint points, in order. */
+	TArray<FVector> GatherSplinePointsLocal() const;
+
+	/** Updates one local spline point position and rebuilds geometry. */
+	void SetSplinePointLocal(int32 PointIndex, const FVector& LocalPos, bool bUpdatePad = true);
+
+	/** Sets local footprint spline points and regenerates the building and pad. */
+	void SetSplinePoints(const TArray<FVector>& InPoints);
+
+	/** Adds a new corner/spline point to the building footprint. */
+	void AddSplinePoint();
+
+	/** Removes a spline point by index, maintaining at least 3 points. */
+	void RemoveSplinePoint(int32 PointIndex = INDEX_NONE);
+
+	void EnforceLinearTangents();
+
+	//--- Serialization (phase 6) ---
 	FTerraDyneBuildingData ToData() const;
 	void ApplyData(const FTerraDyneBuildingData& Data, bool bRegenerate = true);
 
@@ -146,6 +178,22 @@ protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void PostNetReceiveLocationAndRotation() override;
+
+	UFUNCTION()
+	void OnRep_FloorCount();
+
+	UFUNCTION()
+	void OnRep_Kit();
+
+	UFUNCTION()
+	void OnRep_BuildingConfig();
+
+	UFUNCTION()
+	void OnRep_PadSettings();
+
+	UFUNCTION()
+	void OnRep_SplinePoints();
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -182,7 +230,6 @@ private:
 	const UTerraDyneBuildingKit* ResolveKit() const;
 	UInstancedStaticMeshComponent* GetOrCreateInstancer(UStaticMesh* Mesh);
 	void ClearAllInstances();
-	void EnforceLinearTangents();
 
 	/** Greedy largest-first fill of one segment. Handles the sub-module remainder by overlap. */
 	TArray<FPanelPlacement> PlanSegmentPanels(float SegmentLength, const UTerraDyneBuildingKit* InKit) const;
@@ -204,9 +251,6 @@ private:
 
 	/** True when the whole cell lies inside the polygon, not merely its centre. */
 	static bool IsCellInsidePolygon(const TArray<FVector2D>& Polygon, const FVector2D& CellCorner, float Size);
-
-	/** Local-space footprint points, in order. */
-	TArray<FVector> GatherSplinePointsLocal() const;
 
 	static bool IsPointInPolygon(const FVector2D& Point, const TArray<FVector2D>& Polygon);
 };

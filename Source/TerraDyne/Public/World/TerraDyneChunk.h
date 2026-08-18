@@ -69,15 +69,6 @@ public:
 	TObjectPtr<UMaterialInterface> BrushMaterialBase;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UTextureRenderTarget2D> BaseLayerRT;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UTextureRenderTarget2D> SculptLayerRT;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UTextureRenderTarget2D> DetailLayerRT;
-
-	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> HeightRT; // Current height RT (read target for display/collision)
 
 	UPROPERTY(Transient)

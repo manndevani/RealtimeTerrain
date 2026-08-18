@@ -5,6 +5,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Core/TerraDyneSaveGame.h"
 #include "World/TerraDyneTileData.h"
+#include "Building/TerraDyneGizmoActor.h"
 #include "TerraDyneEditController.generated.h"
 
 class ATerraDyneManager;
@@ -30,18 +31,23 @@ class TERRADYNE_API ATerraDyneEditController : public APlayerController
 public:
 	ATerraDyneEditController();
 
+	/** Whether this controller has permission to edit terrain and place buildings. False by default for clients so only instructor edits. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category = "TerraDyne|Permissions")
+	bool bCanEditTerrain = false;
+
+	/** Whether non-host clients should show the tool UI panel locally. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|UI")
+	bool bShowUIForClients = false;
+
 	/** Tool panel spawned for the local player. */
 	UPROPERTY(EditDefaultsOnly, Category = "TerraDyne|UI")
 	TSubclassOf<class UUserWidget> UIClass;
 
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 	/**
-	 * Only the instructor gets the tool panel and sculpt input; everyone else is a viewer who sees
-	 * the terrain change under them. Edits are applied on the authority and multicast, so a viewer
-	 * needs no edit rights of its own — just a pawn to look through.
-	 *
-	 * The instructor is the player on the listen server (the host). To hand the role to a specific
-	 * client instead, replace this with a replicated flag set by the game mode and rebuild the UI in
-	 * its OnRep — the rest of the pipeline already works from any authority-capable controller.
+	 * Returns true if this controller can edit. True for local host (instructor) or any player
+	 * when bCanEditTerrain is enabled.
 	 */
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Roles")
 	bool IsInstructor() const;
@@ -58,12 +64,32 @@ public:
 	void RequestUndo();
 	void RequestRedo();
 
+	//--- Save / Load Requests ---
+	void RequestSaveWorldToFile(const FString& FilePath);
+	void RequestLoadWorldFromFile(const FString& FilePath);
+
+	//--- Building Requests ---
+	void RequestPlaceBuilding(TSubclassOf<class ATerraDyneBuildingActor> BuildingClass, const FTransform& WorldTransform, int32 FloorCount);
+	void RequestMoveBuilding(class ATerraDyneBuildingActor* Building, const FTransform& NewTransform);
+	void RequestSetBuildingFloorCount(class ATerraDyneBuildingActor* Building, int32 NewFloorCount);
+	void RequestSetBuildingSplinePoints(class ATerraDyneBuildingActor* Building, const TArray<FVector>& NewPoints);
+	void RequestAddSplinePoint(class ATerraDyneBuildingActor* Building);
+	void RequestRemoveSplinePoint(class ATerraDyneBuildingActor* Building, int32 PointIndex = INDEX_NONE);
+	void RequestResetFootprint(class ATerraDyneBuildingActor* Building);
+	void RequestRelevelBuilding(class ATerraDyneBuildingActor* Building);
+	void RequestDeleteBuilding(class ATerraDyneBuildingActor* Building);
+
+	//--- Population Requests ---
+	void RequestHarvestPopulation(const FGuid& PopulationId);
+	void RequestSetPopulationDestroyed(const FGuid& PopulationId, bool bDestroyed);
+
 	/** Server -> owning client: one chunk's full state, used to catch up a late joiner. */
 	UFUNCTION(Client, Reliable)
 	void Client_ReceiveChunkSync(const FTerraDyneChunkData& Data);
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupInputComponent() override;
 
@@ -75,10 +101,34 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<class UUserWidget> ActiveUI;
 
+	UPROPERTY(Transient)
+	TObjectPtr<class ATerraDyneBuildingActor> HolographicGhostBuilding;
+
+	UPROPERTY(Transient)
+	TObjectPtr<class ATerraDyneGizmoActor> ActiveMoveGizmo;
+
+	void UpdateHolographicPreview();
+	void UpdateMoveGizmo();
+	bool TraceGizmoUnderCursor(ETerraDyneGizmoAxis& OutAxis, FVector& OutHitPoint) const;
+	bool TraceSplinePointUnderCursor(int32& OutPointIndex, FVector& OutHitPoint) const;
+	bool IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const;
+
 	bool bIsClicking = false;
 	bool bStrokeBegun = false;
 	bool bFlattenHeightLocked = false;
 	float LockedFlattenHeight = 0.0f;
+
+	ETerraDyneGizmoAxis DraggingGizmoAxis = ETerraDyneGizmoAxis::None;
+	FVector GizmoDragStartBuildingLoc = FVector::ZeroVector;
+	FVector GizmoDragStartIntersection = FVector::ZeroVector;
+	FPlane GizmoDragPlane;
+	FVector GizmoDragAxisDir = FVector::ZeroVector;
+
+	int32 DraggingSplinePointIndex = INDEX_NONE;
+	FVector SplinePointDragStartLocal = FVector::ZeroVector;
+
+	float TimeSinceLastPadUpdate = 0.0f;
+	mutable FVector2D LastMousePosition = FVector2D(-1.0f, -1.0f);
 
 	void OnLeftClickStart();
 	void OnLeftClickStop();
@@ -115,6 +165,45 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_Redo();
+
+	UFUNCTION(Server, Reliable)
+	void Server_PlaceBuilding(TSubclassOf<class ATerraDyneBuildingActor> BuildingClass, FTransform WorldTransform, int32 FloorCount);
+
+	UFUNCTION(Server, Reliable)
+	void Server_MoveBuilding(class ATerraDyneBuildingActor* Building, FTransform NewTransform);
+
+	UFUNCTION(Server, Reliable)
+	void Server_SetBuildingFloorCount(class ATerraDyneBuildingActor* Building, int32 NewFloorCount);
+
+	UFUNCTION(Server, Reliable)
+	void Server_SetBuildingSplinePoints(class ATerraDyneBuildingActor* Building, const TArray<FVector>& NewPoints);
+
+	UFUNCTION(Server, Reliable)
+	void Server_AddSplinePoint(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(Server, Reliable)
+	void Server_RemoveSplinePoint(class ATerraDyneBuildingActor* Building, int32 PointIndex);
+
+	UFUNCTION(Server, Reliable)
+	void Server_ResetFootprint(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(Server, Reliable)
+	void Server_RelevelBuilding(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(Server, Reliable)
+	void Server_DeleteBuilding(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(Server, Reliable)
+	void Server_HarvestPopulation(FGuid PopulationId);
+
+	UFUNCTION(Server, Reliable)
+	void Server_SetPopulationDestroyed(FGuid PopulationId, bool bDestroyed);
+
+	UFUNCTION(Server, Reliable)
+	void Server_SaveWorldToFile(const FString& FilePath);
+
+	UFUNCTION(Server, Reliable)
+	void Server_LoadWorldFromFile(const FString& FilePath);
 
 	ATerraDyneManager* GetManager() const;
 
