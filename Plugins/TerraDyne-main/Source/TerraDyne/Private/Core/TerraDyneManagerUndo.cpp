@@ -1,0 +1,189 @@
+// Copyright (c) 2026 GregOrigin. All Rights Reserved.
+//
+// ATerraDyneManager -- undo/redo.
+//
+// Fourth translation unit split out of TerraDyneManager.cpp. Same members, same class, same API;
+// only the file boundary is new. See TerraDyneManagerPopulation.cpp for the first.
+//
+// What lives here: per-player stroke history. A stroke opens with BeginStroke, which snapshots
+// the sculpt buffer of every chunk the brush radius touches, and closes with CommitStroke, which
+// pushes that snapshot set onto the player's undo stack as a single entry. Undo/Redo swap entries
+// between the two stacks and hand them to RestoreSnapshots.
+//
+// Stacks are keyed per APlayerController rather than global, so one player's undo cannot rewind
+// another's edit.
+//
+// Two behaviours worth knowing before changing anything here:
+//
+//   - Entries referencing chunks that have since streamed out are silently skipped. Undo history
+//     is not persisted alongside the chunk cache, so an undo can be a partial no-op after the
+//     terrain it covered has been evicted.
+//
+//   - RestoreSnapshots re-broadcasts through SendChunkSculptSync rather than replicating the
+//     restored buffer directly, because a full sculpt buffer overflows Unreal's maximum bunch
+//     size. See the comment on Multicast_SyncChunkSculpt in TerraDyneManager.h.
+
+#include "Core/TerraDyneManager.h"
+#include "Core/TerraDyneManagerInternal.h"
+#include "Core/TerraDyneSubsystem.h"
+#include "Settings/TerraDyneSettings.h"
+#include "World/TerraDyneChunk.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+
+void ATerraDyneManager::BeginStroke(FVector WorldLocation, float Radius, APlayerController* Controller)
+{
+	if (PendingStroke.IsSet() && PendingStrokeOwner != Controller)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("BeginStroke: overwriting pending stroke from %s with stroke from %s — previous stroke discarded"),
+			*PendingStrokeOwner->GetName(), *Controller->GetName());
+	}
+	PendingStroke.Reset();
+	PendingStrokeOwner = Controller;
+
+	FTerraDyneUndoEntry Entry;
+	for (ATerraDyneChunk* Chunk : GetChunksInRadius(WorldLocation, Radius))
+	{
+		FTerraDyneChunkSnapshot Snap;
+		Snap.Coordinate = Chunk->GridCoordinate;
+		Snap.SculptBuffer = Chunk->SculptBuffer;
+		Entry.Snapshots.Add(Chunk->GridCoordinate, MoveTemp(Snap));
+	}
+	PendingStroke = MoveTemp(Entry);
+}
+
+void ATerraDyneManager::CommitStroke(APlayerController* Controller)
+{
+	if (!PendingStroke.IsSet() || PendingStrokeOwner != Controller) return;
+
+	TArray<FTerraDyneUndoEntry>& Stack = UndoStacks.FindOrAdd(Controller);
+	Stack.Add(MoveTemp(PendingStroke.GetValue()));
+	PendingStroke.Reset();
+	PendingStrokeOwner = nullptr;
+
+	int32 MaxHistory = 20;
+	if (const UTerraDyneSettings* S = GetDefault<UTerraDyneSettings>())
+	{
+		MaxHistory = S->MaxUndoHistory;
+	}
+	if (Stack.Num() > MaxHistory)
+		Stack.RemoveAt(0, Stack.Num() - MaxHistory);
+
+	// New stroke clears redo for this player
+	RedoStacks.Remove(Controller);
+}
+
+void ATerraDyneManager::RestoreSnapshots(const FTerraDyneUndoEntry& Entry)
+{
+	TArray<FIntPoint> RestoredCoords;
+	for (const auto& Pair : Entry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		const FTerraDyneChunkSnapshot& Snap = Pair.Value;
+
+		Chunk->SculptBuffer = Snap.SculptBuffer;
+		// Undo restores the sculpt layer only. The building pad is derived state and is left
+		// untouched, so undoing a brush stroke under a building cannot dig a hole through its pad.
+		Chunk->RecomputeHeightFromLayers();
+
+		const int32 MeshSamples = Chunk->Resolution * Chunk->Resolution;
+		if (MeshSamples > 0 && Chunk->HeightBuffer.Num() == MeshSamples)
+		{
+			Chunk->RebuildPhysicsMesh();
+			Chunk->RequestTransferredFoliageRefresh();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("RestoreSnapshots: chunk %s has invalid terrain sample count (%d vs %d); skipping rebuild."),
+				*Snap.Coordinate.ToString(), Chunk->HeightBuffer.Num(), MeshSamples);
+		}
+
+		RestoredCoords.AddUnique(Pair.Key);
+	}
+
+	if (RestoredCoords.Num() > 0)
+	{
+		BroadcastTerrainChanged(RestoredCoords);
+		BroadcastFoliageChanged(RestoredCoords);
+		if (HasAuthority())
+		{
+			for (const FIntPoint& Coord : RestoredCoords)
+			{
+				SyncPopulationForChunk(Coord);
+			}
+		}
+	}
+}
+
+void ATerraDyneManager::Undo(APlayerController* Controller)
+{
+	TArray<FTerraDyneUndoEntry>* Stack = UndoStacks.Find(Controller);
+	if (!Stack || Stack->Num() == 0) return;
+
+	FTerraDyneUndoEntry UndoEntry = Stack->Pop();
+
+	// Snapshot current state for redo
+	FTerraDyneUndoEntry RedoEntry;
+	for (const auto& Pair : UndoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		FTerraDyneChunkSnapshot CurrentSnap;
+		CurrentSnap.Coordinate = Chunk->GridCoordinate;
+		CurrentSnap.SculptBuffer = Chunk->SculptBuffer;
+		RedoEntry.Snapshots.Add(Pair.Key, MoveTemp(CurrentSnap));
+	}
+	RedoStacks.FindOrAdd(Controller).Add(MoveTemp(RedoEntry));
+
+	RestoreSnapshots(UndoEntry);
+
+	// Multicast affected chunks to remote clients
+	for (const auto& Pair : UndoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		SendChunkSculptSync(Chunk);
+	}
+}
+
+void ATerraDyneManager::Redo(APlayerController* Controller)
+{
+	TArray<FTerraDyneUndoEntry>* Stack = RedoStacks.Find(Controller);
+	if (!Stack || Stack->Num() == 0) return;
+
+	FTerraDyneUndoEntry RedoEntry = Stack->Pop();
+
+	// Snapshot current state back to undo
+	FTerraDyneUndoEntry UndoEntry;
+	for (const auto& Pair : RedoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		FTerraDyneChunkSnapshot CurrentSnap;
+		CurrentSnap.Coordinate = Chunk->GridCoordinate;
+		CurrentSnap.SculptBuffer = Chunk->SculptBuffer;
+		UndoEntry.Snapshots.Add(Pair.Key, MoveTemp(CurrentSnap));
+	}
+	UndoStacks.FindOrAdd(Controller).Add(MoveTemp(UndoEntry));
+
+	RestoreSnapshots(RedoEntry);
+
+	// Multicast affected chunks to remote clients
+	for (const auto& Pair : RedoEntry.Snapshots)
+	{
+		ATerraDyneChunk* Chunk = GetChunkAtCoord(Pair.Key);
+		if (!Chunk) continue;
+		SendChunkSculptSync(Chunk);
+	}
+}
+
+void ATerraDyneManager::ClearUndoRedoState()
+{
+	UndoStacks.Reset();
+	RedoStacks.Reset();
+	PendingStroke.Reset();
+	PendingStrokeOwner = nullptr;
+}

@@ -272,9 +272,6 @@ public:
 	/** Splits a chunk's sculpt buffer into safely-sized sparse batches and multicasts them. */
 	void SendChunkSculptSync(class ATerraDyneChunk* Chunk);
 
-	/** Remove undo/redo stacks for a disconnected player. */
-	void CleanupPlayerStacks(APlayerController* Controller);
-
 	/** Returns true if a stroke is pending for the given controller. */
 	bool HasPendingStroke(APlayerController* Controller) const
 	{
