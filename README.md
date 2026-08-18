@@ -71,6 +71,8 @@ This repo is no longer just a terrain deformation prototype. TerraDyne now targe
 - Unreal Engine `5.7`
 - `GeometryScripting`
 - `VirtualHeightfieldMesh`
+- `CelestialVault` (engine plugin; used by the scene-setup lighting path)
+- `DaySequence` (engine plugin, Experimental; pulled in by CelestialVault)
 - `Win64` is the currently packaged and validated target in this repository
 
 ## 📦 GitHub Or Fab?
@@ -83,7 +85,7 @@ This repo is no longer just a terrain deformation prototype. TerraDyne now targe
 ## 🚀 Installation
 
 1. Copy the `TerraDyne` plugin folder into your project's `Plugins/` directory.
-2. Enable `GeometryScripting` and `VirtualHeightfieldMesh`.
+2. Enable `GeometryScripting`, `VirtualHeightfieldMesh`, `CelestialVault`, and `DaySequence`.
 3. Regenerate project files.
 4. Build the `Development Editor` target for your project.
 

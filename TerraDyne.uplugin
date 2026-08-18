@@ -41,6 +41,14 @@
 		{
 			"Name": "VirtualHeightfieldMesh",
 			"Enabled": true
+		},
+		{
+			"Name": "CelestialVault",
+			"Enabled": true
+		},
+		{
+			"Name": "DaySequence",
+			"Enabled": true
 		}
 	]
 }
