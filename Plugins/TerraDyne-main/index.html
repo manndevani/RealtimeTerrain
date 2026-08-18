@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TerraDyne // Documentation</title>
+    
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Prism (Syntax Highlighting) -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    
+    <!-- Configuration -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        'greg-dark': '#0B1120',
+                        'greg-panel': '#0f172a',
+                        'greg-border': '#1e293b',
+                        'greg-green': '#10b981',
+                        'greg-green-dim': '#059669',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Styles -->
+    <style type="text/tailwindcss">
+        body { @apply bg-greg-dark text-slate-400 selection:bg-greg-green selection:text-white font-sans; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0B1120; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+        .doc-content h1 { @apply text-3xl font-bold text-white mb-6 border-b border-greg-border pb-4 flex items-center gap-3 tracking-tight; }
+        .doc-content h2 { @apply text-xl font-semibold text-white mt-12 mb-4 flex items-center gap-2 cursor-pointer border-l-2 border-transparent hover:border-greg-green pl-0 hover:pl-3 transition-all duration-300; }
+        .doc-content h3 { @apply text-lg font-medium text-greg-green mt-8 mb-3 flex items-center gap-2; }
+        .doc-content p { @apply leading-7 mb-4 text-slate-400; }
+        .doc-content ul { @apply list-disc list-outside ml-5 mb-4 space-y-2 marker:text-slate-600; }
+        
+        code { @apply bg-[#0D1117] text-greg-green text-sm px-1.5 py-0.5 rounded font-mono border border-greg-border; }
+        pre { @apply bg-[#0D1117] p-4 rounded-lg overflow-x-auto border border-greg-border mb-6 shadow-xl; }
+        
+        .nav-item { @apply flex items-center gap-3 px-4 py-2 text-sm font-medium border-l-2 border-transparent transition-all duration-200 cursor-pointer opacity-60 hover:opacity-100 hover:text-white; }
+        .nav-item.active { @apply text-greg-green border-greg-green bg-greg-green/5 opacity-100; }
+    </style>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+</head>
+<body class="h-screen flex flex-col md:flex-row overflow-hidden text-slate-400">
+
+<!-- SIDEBAR -->
+    <aside class="w-full md:w-80 bg-greg-panel border-r border-greg-border flex-shrink-0 flex flex-col h-full z-20">
+        <div class="p-6 border-b border-greg-border bg-greg-panel/50">
+            <a href="https://www.gregorigin.com" class="text-slate-500 hover:text-white transition block mb-4" title="GregOrigin Systems">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+            </a>
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-greg-green/10 rounded-lg flex items-center justify-center border border-greg-green/20 text-greg-green">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"></path></svg>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-white tracking-tight leading-none">TerraDyne</h1>
+                    <span class="text-[10px] uppercase tracking-widest text-greg-green font-bold">Runtime World v0.3</span>
+                </div>
+            </div>
+        </div>
+
+        <nav class="flex-1 overflow-y-auto pt-6 px-0 space-y-8" id="sidebar-nav">
+            <div>
+                <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Core</h3>
+                <a href="#intro" class="nav-item active">Introduction</a>
+                <a href="#quickstart" class="nav-item">Quick Start</a>
+                <a href="#config" class="nav-item">Configuration</a>
+                <a href="#using" class="nav-item">Using TerraDyne</a>
+                <a href="#persistence" class="nav-item">Persistence (Save/Load)</a>
+            </div>
+            <div>
+                <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Specifications</h3>
+                <a href="#tech" class="nav-item">Technical Reference</a>
+                <a href="#chunks" class="nav-item">Chunk System & LOD</a>
+            </div>
+            <div>
+                <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Support</h3>
+                <a href="#troubleshooting" class="nav-item">Troubleshooting</a>
+                <a href="#about" class="nav-item">About</a>
+            </div>
+        </nav>
+
+        <div class="p-6 border-t border-greg-border bg-greg-panel/50 text-[15px] text-slate-600 font-mono text-center">
+            &copy; 2026 GregOrigin_Systems
+        </div>
+    </aside>
+
+<!-- CONTENT AREA -->
+    <main class="flex-1 overflow-y-auto h-full bg-greg-dark scroll-smooth relative" id="main-scroller">
+        <header class="sticky top-0 z-10 bg-greg-dark/80 backdrop-blur-md border-b border-greg-border px-8 py-4 flex items-center justify-between">
+            <div id="breadcrumbs" class="text-sm font-mono text-slate-500 flex items-center gap-2">
+                <span>Docs</span><span class="text-slate-700">/</span><span class="text-greg-green" id="breadcrumb-active">Introduction</span>
+            </div>
+            <a href="https://www.fab.com/sellers/GregOrigin" class="w-8 h-8 flex items-center justify-center bg-greg-green/10 text-greg-green border border-greg-green/30 rounded-full hover:bg-greg-green hover:text-white transition" title="Get it on Fab">
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5l-2.5 1.25L12 11zm0 2.5l-5-2.5-5 2.5L12 22l10-8.5-5-2.5-5 2.5z"/></svg>
+            </a>
+        </header>
+
+        <div class="max-w-4xl mx-auto px-8 py-12 doc-content">
+            
+<!-- SECTION: INTRODUCTION -->
+<section id="intro" class="mb-24 scroll-mt-24">
+    <h1>Introduction</h1>
+
+    <p class="text-lg leading-relaxed mb-8">
+        TerraDyne is a <strong>native runtime terrain plugin for Unreal Engine 5.7</strong>. It provides chunked runtime deformation for digging, raising, and layer painting with persistent state, distance-based scalability, and optional hybrid material workflows.
+    </p>
+
+    <!-- ILLUSTRATED CONCEPT DIAGRAM: ASYNC PIPELINE -->
+    <div class="my-12 bg-greg-panel rounded-2xl border border-greg-border p-8 shadow-inner overflow-hidden relative">
+        <div class="absolute top-0 right-0 p-4 opacity-10">
+            <svg class="w-64 h-64" fill="currentColor" viewBox="0 0 24 24"><path d="M4 6h16v12H4z M2 4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H2z M22 2h-6v2h6v6h2V4c0-1.1-.9-2-2-2z"/></svg>
+        </div>
+        
+        <div class="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+            <div>
+                <h3 class="text-white mt-0 mb-4 flex items-center gap-2">
+                    <span class="w-2 h-2 bg-greg-green rounded-full underline decoration-greg-green"></span>
+                    The Scaling Problem
+                </h3>
+                <p class="text-sm text-slate-400 leading-6 mb-6">
+                    Legacy voxel systems are CPU heavy. Standard landscapes are static. Runtime mesh manipulation often leads to collision desyncs and visual seams.
+                </p>
+                <p class="text-sm text-slate-400 leading-6">
+                    TerraDyne solves this with a <strong>CPU-authoritative terrain pipeline</strong>. Height and weight buffers stay authoritative for sculpting, undo, save/load, and collision, while optional render-target updates can feed material-driven visuals without changing gameplay state.
+                </p>
+            </div>
+
+            <!-- SVG ILLUSTRATION: PIPELINE -->
+            <div class="flex justify-center">
+                <svg viewBox="0 0 400 300" class="w-full max-w-xs drop-shadow-2xl">
+                    <!-- Base Layer -->
+                    <rect x="50" y="220" width="300" height="20" fill="#1e293b" opacity="0.5" />
+                    <!-- Deformed Mesh Line -->
+                    <path d="M50,220 L120,220 Q150,220 160,180 L200,100 L240,180 Q250,220 280,220 L350,220" fill="none" stroke="#10b981" stroke-width="3" />
+                    
+                    <!-- Physics Nodes (Low Poly) -->
+                    <circle cx="120" cy="220" r="4" fill="#059669" />
+                    <circle cx="160" cy="180" r="4" fill="#059669" />
+                    <circle cx="200" cy="100" r="4" fill="#059669" />
+                    <circle cx="240" cy="180" r="4" fill="#059669" />
+                    
+                    <!-- Visual Layer (Optional Material / RT) -->
+                    <path d="M50,215 L350,215" fill="none" stroke="#ef4444" stroke-width="1" stroke-dasharray="2" opacity="0.5" />
+                    <text x="260" y="80" fill="#10b981" font-family="monospace" font-size="10">CPU CACHE</text>
+                    <text x="238" y="95" fill="#ef4444" font-family="monospace" font-size="10">OPTIONAL RT VISUALS</text>
+                    
+                    <!-- Connection -->
+                    <line x1="200" y1="100" x2="200" y2="50" stroke="#475569" stroke-width="1" stroke-dasharray="2" />
+                    <rect x="160" y="20" width="80" height="30" rx="4" fill="#0f172a" stroke="#10b981" />
+                    <text x="175" y="40" fill="#fff" font-family="monospace" font-size="10">MANAGER</text>
+                </svg>
+            </div>
+        </div>
+    </div>
+
+    <h2 id="core-pillars">Technical Pillars</h2>
+    <p class="mb-8">Built for UE 5.7, TerraDyne uses Geometry Script, Dynamic Mesh workflows, and optional render-target integrations to keep runtime terrain practical in shipped gameplay code.</p>
+    
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+        <!-- Pillar 1 -->
+        <div class="group p-6 bg-greg-panel border border-greg-border rounded-xl hover:border-greg-green transition-all duration-300">
+            <div class="text-greg-green mb-4">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+            </div>
+            <h4 class="text-white font-bold mb-2">CPU-Authoritative Data</h4>
+            <p class="text-xs text-slate-500 leading-relaxed">Height and weight buffers remain the source of truth for sculpting, persistence, undo/redo, collision rebuilds, and multiplayer synchronization.</p>
+        </div>
+
+        <!-- Pillar 2 -->
+        <div class="group p-6 bg-greg-panel border border-greg-border rounded-xl hover:border-greg-green transition-all duration-300">
+            <div class="text-greg-green mb-4">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 7m0 13V7"></path></svg>
+            </div>
+            <h4 class="text-white font-bold mb-2">Flexible Material Layering</h4>
+            <p class="text-xs text-slate-500 leading-relaxed">Supports painted weight layers and project-defined materials, with self-contained fallback defaults so the plugin boots cleanly before custom assets are assigned.</p>
+        </div>
+
+        <!-- Pillar 3 -->
+        <div class="group p-6 bg-greg-panel border border-greg-border rounded-xl hover:border-greg-green transition-all duration-300">
+            <div class="text-greg-green mb-4">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+            </div>
+            <h4 class="text-white font-bold mb-2">Adaptive Scalability</h4>
+            <p class="text-xs text-slate-500 leading-relaxed">Chunks utilize distance-based LOD to disable physics >500m away, and edits are debounced (0.2s) to prevent frame spikes during rapid sculpting.</p>
+        </div>
+    </div>
+</section>
+
+<!-- SECTION: QUICK START -->
+ <section id="quickstart" class="mb-24 scroll-mt-24">
+    <h1>Quick Start Guide (Developers)</h1>
+    
+    <h3>1. Include the Module</h3>
+    <p>If you are consuming TerraDyne from another gameplay module, the minimal dependency is the TerraDyne runtime module itself:</p>
+    <pre><code class="language-csharp">PublicDependencyModuleNames.AddRange(new string[] { 
+    "TerraDyne"
+});</code></pre>
+    
+    <h3>2. Access the Manager</h3>
+    <p>The <code>ATerraDyneManager</code> is a singleton-style actor registered to the world subsystem. You do not need to scan for it.</p>
+    <pre><code class="language-cpp">// Get the Subsystem first
+if (UTerraDyneSubsystem* Sys = GetWorld()->GetSubsystem<UTerraDyneSubsystem>())
+{
+    // Retrieve the active Manager
+    if (ATerraDyneManager* Manager = Sys->GetTerrainManager())
+    {
+        // 3. Dig a hole (Radius 500, Strength -100)
+        Manager->ApplyGlobalBrush(HitLocation, 500.0f, -100.0f, false);
+        
+        // 4. Save Changes
+        Manager->SaveWorld("MySaveSlot");
+    }
+}</code></pre>
+
+    <h3>3. Configure a Projectile</h3>
+    <p>For fast-moving objects (meteors, grenades) to interact with dynamic terrain, enable CCD and bind to the Hit event.</p>
+    <pre><code class="language-cpp">MeshComp->BodyInstance.bUseCCD = true; // Prevents Tunneling
+MeshComp->OnComponentHit.AddDynamic(this, &ATerraDyneProjectile::OnHit);</code></pre>
+</section>
+
+<!-- SECTION: CONFIGURATION -->
+<section id="config" class="mb-24 scroll-mt-24">
+    <h1>Configuration</h1>
+    <p class="text-lg mb-8">
+        TerraDyne exposes global settings via the Unreal Editor's Project Settings window. This allows you to configure default materials, asset paths, and performance thresholds without recompiling C++.
+    </p>
+
+    <!-- DIAGRAM: SETTINGS FLOW -->
+    <div class="mb-8">
+        <h3 class="text-white text-sm font-bold mb-4">Configuration Data Flow</h3>
+        <div class="bg-[#050911] p-8 rounded-xl border border-greg-border flex flex-col md:flex-row items-center justify-center gap-6 overflow-x-auto">
+            
+            <!-- Node 1 -->
+            <div class="flex flex-col items-center">
+                <div class="w-12 h-12 bg-greg-panel border border-slate-600 rounded flex items-center justify-center mb-2 shadow-lg">
+                    <svg class="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                </div>
+                <span class="text-[10px] font-mono text-slate-500 uppercase">Project Settings</span>
+            </div>
+
+            <!-- Arrow -->
+            <div class="text-greg-green">&rarr;</div>
+
+            <!-- Node 2 -->
+            <div class="flex flex-col items-center">
+                <div class="px-4 py-2 bg-[#0D1117] border border-greg-green/50 rounded text-xs font-mono text-white shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+                    UTerraDyneSettings
+                </div>
+                <span class="text-[10px] font-mono text-slate-500 mt-2">DefaultGame.ini</span>
+            </div>
+
+            <!-- Arrow -->
+            <div class="text-greg-green">&rarr;</div>
+
+            <!-- Node 3 -->
+            <div class="flex flex-col items-center">
+                <div class="w-12 h-12 bg-greg-panel border border-greg-border rounded flex items-center justify-center mb-2 shadow-lg">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                </div>
+                <span class="text-[10px] font-mono text-slate-500 uppercase">Runtime Manager</span>
+            </div>
+
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        
+        <!-- Asset Paths -->
+        <div>
+            <h3 class="text-white text-lg font-bold mb-4 border-b border-greg-border pb-2">Asset Paths</h3>
+            <ul class="space-y-4 text-sm text-slate-400">
+                <li>
+                    <strong class="block text-white mb-1">Master Material Path</strong>
+                    Defines the default material applied to new chunks. 
+                    <br><span class="text-xs text-greg-green">Default: /Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial</span>
+                </li>
+                <li>
+                    <strong class="block text-white mb-1">Height Brush Material</strong>
+                    Optional material used by the hybrid render-target path. Runtime sculpting still works when this is unset.
+                </li>
+                <li>
+                    <strong class="block text-white mb-1">HUD Widget Class</strong>
+                    Optional override for the tool UI. If left unset, TerraDyne falls back to the native tool widget.
+                </li>
+            </ul>
+        </div>
+
+        <!-- Performance -->
+        <div>
+            <h3 class="text-white text-lg font-bold mb-4 border-b border-greg-border pb-2">Performance Tuning</h3>
+            <ul class="space-y-4 text-sm text-slate-400">
+                <li>
+                    <strong class="block text-white mb-1">LOD Distance Threshold</strong>
+                    <span class="font-mono text-xs bg-[#0D1117] px-1 py-0.5 rounded border border-slate-700">float</span>
+                    <br>Distance (in cm) at which chunks disable complex collision. Default is 50,000 (500m).
+                </li>
+                <li>
+                    <strong class="block text-white mb-1">Collision Debounce Time</strong>
+                    <span class="font-mono text-xs bg-[#0D1117] px-1 py-0.5 rounded border border-slate-700">seconds</span>
+                    <br>Wait time after a brush stroke before triggering a physics cook. Increase for smoother sculpting, decrease for responsiveness.
+                </li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- SECTION: USING TERRADYNE -->
+<section id="using" class="mb-24 scroll-mt-24">
+    <h1>Using TerraDyne</h1>
+    <p class="text-lg mb-8">
+        This guide covers the operational workflows for TerraDyne: setting up the Manager, importing from an Unreal Landscape actor, and using the runtime brush API for gameplay mechanics.
+    </p>
+
+    <!-- STEP 1: CONFIGURATION -->
+    <div class="mb-12">
+        <h2 class="text-white text-xl font-bold mb-6 flex items-center gap-3">
+            <span class="bg-greg-green/10 text-greg-green border border-greg-green/30 w-8 h-8 rounded flex items-center justify-center text-sm">1</span>
+            Manager Configuration
+        </h2>
+        
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div class="space-y-4">
+                <p class="text-sm">The <code>ATerraDyneManager</code> is the central orchestrator. Place it at your terrain origin to manage chunk streaming and tool distribution. Demo world spawning, lighting setup, and showcase playback are opt-in and disabled by default.</p>
+                
+                <div class="bg-greg-panel p-4 rounded-lg border border-greg-border">
+                    <h4 class="text-greg-green font-mono text-xs uppercase mb-3">Common Property Assignments</h4>
+                    <ul class="text-sm space-y-3 marker:text-greg-green">
+                        <li><strong>Chunk Class:</strong> Optional override. If unset, TerraDyne spawns the configured native chunk class.</li>
+                        <li><strong>Master Material:</strong> Optional project material. The plugin falls back to an engine material if this is unset.</li>
+                        <li><strong>Height Brush Material:</strong> Optional for render-target driven visual overlays.</li>
+                        <li><strong>Weight Brush Material:</strong> Optional for custom material-layer workflows.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ILLUSTRATION: MANAGER DEPENDENCIES -->
+            <div class="bg-[#0D1117] rounded-xl border border-greg-border p-6 flex items-center justify-center">
+                <svg viewBox="0 0 300 160" class="w-full h-full">
+                    <!-- Manager Node -->
+                    <rect x="100" y="20" width="100" height="40" rx="4" fill="#0f172a" stroke="#10b981" stroke-width="2"/>
+                    <text x="150" y="45" text-anchor="middle" fill="#fff" font-family="monospace" font-size="12">MANAGER BP</text>
+                    
+                    <!-- Lines -->
+                    <path d="M150,60 L150,90 L60,90 L60,110" stroke="#475569" stroke-width="1.5" fill="none"/>
+                    <path d="M150,90 L240,90 L240,110" stroke="#475569" stroke-width="1.5" fill="none"/>
+                    
+                    <!-- Assets -->
+                    <rect x="20" y="110" width="80" height="30" rx="4" fill="#1e293b"/>
+                    <text x="60" y="130" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="10">MATERIALS</text>
+                    
+                    <rect x="200" y="110" width="80" height="30" rx="4" fill="#1e293b"/>
+                    <text x="240" y="130" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="10">CHUNK BP</text>
+                    
+                    <!-- Signal Flow -->
+                    <circle cx="150" cy="90" r="3" fill="#10b981">
+                        <animate attributeName="opacity" values="1;0;1" dur="2s" repeatCount="indefinite"/>
+                    </circle>
+                </svg>
+            </div>
+        </div>
+    </div>
+
+    <!-- STEP 2: RUNTIME BRUSH API -->
+    <div class="mb-12">
+        <h2 class="text-white text-xl font-bold mb-6 flex items-center gap-3">
+            <span class="bg-greg-green/10 text-greg-green border border-greg-green/30 w-8 h-8 rounded flex items-center justify-center text-sm">2</span>
+            Runtime Brush API
+        </h2>
+        
+        <p class="mb-6">
+            Use <code>ApplyGlobalBrush</code> to deform terrain or paint layers. The system automatically debounces collision updates (0.2s delay) to ensure smooth frame rates during continuous painting.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <!-- Deformation Example -->
+            <div class="bg-[#0D1117] p-4 rounded border border-greg-border">
+                <h4 class="text-greg-green text-sm font-mono mb-2">// 1. Sculpting (Physics)</h4>
+                <p class="text-xs mb-3 text-slate-500">Deforms geometry. Physics updates automatically via Async Cook.</p>
+                <code class="block w-full text-xs language-cpp">
+Manager->ApplyGlobalBrush(
+    HitLocation,  // Center
+    500.0f,       // Radius
+    -50.0f,       // Strength (Neg=Dig)
+    false,        // bIsHole
+    -1            // Layer (-1 = Sculpt)
+);
+                </code>
+            </div>
+
+            <!-- Painting Example -->
+            <div class="bg-[#0D1117] p-4 rounded border border-greg-border">
+                <h4 class="text-purple-400 text-sm font-mono mb-2">// 2. Painting (Visuals)</h4>
+                <p class="text-xs mb-3 text-slate-500">Updates RGBA Weightmap. Does not affect collision.</p>
+                <code class="block w-full text-xs language-cpp">
+Manager->ApplyGlobalBrush(
+    HitLocation, 
+    500.0f,       // Radius
+    1.0f,         // Opacity
+    false, 
+    1             // Layer ID (0=R, 1=G...)
+);
+                </code>
+            </div>
+        </div>
+    </div>
+
+    <!-- SECTION: PERSISTENCE -->
+    <section id="persistence" class="mb-12">
+        <h2 class="text-white text-xl font-bold mb-6 flex items-center gap-3">
+            <span class="bg-greg-green/10 text-greg-green border border-greg-green/30 w-8 h-8 rounded flex items-center justify-center text-sm">3</span>
+            Persistence (Save/Load)
+        </h2>
+        
+        <p class="mb-4">
+            TerraDyne 1.1 introduces a full serialization pipeline. You can capture the state of every chunk (Height & Layers) and save it to disk using the standard <code>USaveGame</code> framework.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-[#0D1117] p-5 rounded border border-greg-border">
+                <h4 class="text-white text-sm font-bold mb-2">Saving the World</h4>
+                <code class="block w-full text-xs language-cpp mb-2">Manager->SaveWorld("Level1_State");</code>
+                <p class="text-xs text-slate-500">
+                    Serializes all <code>ActiveChunkMap</code> entries into compressed float arrays. The file is stored in <code>Saved/SaveGames/</code>.
+                </p>
+            </div>
+            <div class="bg-[#0D1117] p-5 rounded border border-greg-border">
+                <h4 class="text-white text-sm font-bold mb-2">Loading the World</h4>
+                <code class="block w-full text-xs language-cpp mb-2">Manager->LoadWorld("Level1_State");</code>
+                <p class="text-xs text-slate-500">
+                    Restores terrain state. Missing chunks are automatically spawned. Existing chunks are updated in-place.
+                </p>
+            </div>
+        </div>
+    </section>
+
+</section>
+
+<!-- SECTION: TECHNICAL REFERENCE -->
+<section id="tech" class="mb-24 scroll-mt-24">
+    <h1>Technical Reference (C++)</h1>
+    <p class="text-lg mb-8">
+        This section details the internal architecture, class hierarchy, and low-level data flow of the TerraDyne Runtime module.
+    </p>
+
+    <!-- API: CLASSEs -->
+    <div class="space-y-12">
+        
+        <!-- CLASS: MANAGER -->
+        <div>
+            <h3 class="font-mono text-xl text-greg-green mb-4">ATerraDyneManager</h3>
+            <p class="text-sm mb-4">Singleton-like actor responsible for routing "Brush" events to the correct world grid cells.</p>
+            
+            <table class="w-full text-left text-sm border border-greg-border rounded-lg overflow-hidden">
+                <thead class="bg-greg-panel text-slate-300">
+                    <tr>
+                        <th class="p-3 border-b border-greg-border font-mono w-1/3">Function Signature</th>
+                        <th class="p-3 border-b border-greg-border">Description</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-greg-border">
+                    <tr class="bg-[#0D1117]/50">
+                        <td class="p-3 font-mono text-purple-400">ApplyGlobalBrush(...)</td>
+                        <td class="p-3 text-slate-400">
+                            Calculates which grid cells overlap the brush radius and forwards the call.
+                            <br><span class="text-xs text-slate-600">Params: Location, Radius, Strength, bIsHole, PaintLayer</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="p-3 font-mono text-greg-green">SaveWorld(SlotName)</td>
+                        <td class="p-3 text-slate-400">
+                            Serializes the entire world state to disk using <code>UTerraDyneSaveGame</code>.
+                        </td>
+                    </tr>
+                    <tr class="bg-[#0D1117]/50">
+                        <td class="p-3 font-mono text-greg-green">LoadWorld(SlotName)</td>
+                        <td class="p-3 text-slate-400">
+                            Deserializes and restores world state. Spawns chunks if they don't exist.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="p-3 font-mono text-blue-400">RebuildChunkMap()</td>
+                        <td class="p-3 text-slate-400">
+                            Scans the world for <code>ATerraDyneChunk</code> actors and rebuilds the spatial hash.
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- CLASS: CHUNK -->
+        <div>
+            <h3 class="font-mono text-xl text-greg-green mb-4">ATerraDyneChunk</h3>
+            <p class="text-sm mb-4">The atomic unit of terrain. Owns CPU height and weight buffers, optional render-target/material sync, and physics collision.</p>
+            
+            <table class="w-full text-left text-sm border border-greg-border rounded-lg overflow-hidden">
+                <thead class="bg-greg-panel text-slate-300">
+                    <tr>
+                        <th class="p-3 border-b border-greg-border font-mono w-1/3">Variable / Function</th>
+                        <th class="p-3 border-b border-greg-border">Description</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-greg-border">
+                    <tr class="bg-[#0D1117]/50">
+                        <td class="p-3 font-mono text-slate-300">TArray&lt;float&gt; HeightBuffer</td>
+                        <td class="p-3 text-slate-400">
+                            The "Source of Truth". A simple 1D float array representing the Z-height of every vertex in the grid.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="p-3 font-mono text-purple-400">UpdateLOD(ViewerPos)</td>
+                        <td class="p-3 text-slate-400">
+                            Checks distance to viewer. If > 500m, sets collision to <code>NoCollision</code> to save CPU.
+                        </td>
+                    </tr>
+                    <tr class="bg-[#0D1117]/50">
+                        <td class="p-3 font-mono text-purple-400">GetSerializedData()</td>
+                        <td class="p-3 text-slate-400">
+                            Packs the chunk's coordinates, ZScale, and HeightBuffer into a struct for saving.
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <!-- SECTION: THREADING MODEL -->
+    <div class="mt-16">
+        <h2 class="text-white text-xl font-bold mb-6">Threading & Performance Model</h2>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-greg-panel p-6 rounded-lg border border-greg-border">
+                <h4 class="text-white font-bold mb-2">Physics (Async Cook)</h4>
+                <p class="text-sm text-slate-400 mb-4">
+                    TerraDyne sets <code>PhysicsMesh->UpdateCollision(true)</code>. This pushes the PhysX/Chaos geometry cooking to a background thread.
+                </p>
+                <div class="flex items-center gap-2 text-xs font-mono text-greg-green">
+                    <span class="w-2 h-2 bg-greg-green rounded-full"></span> Non-Blocking (Debounced 0.2s)
+                </div>
+            </div>
+
+            <div class="bg-greg-panel p-6 rounded-lg border border-greg-border">
+                <h4 class="text-white font-bold mb-2">Optional Material Sync</h4>
+                <p class="text-sm text-slate-400 mb-4">
+                    When hybrid visual materials are enabled, TerraDyne can upload terrain data through render-thread resource updates. The core sculpt, save/load, and collision path does not depend on this being configured.
+                </p>
+                <div class="flex items-center gap-2 text-xs font-mono text-greg-green">
+                    <span class="w-2 h-2 bg-greg-green rounded-full"></span> Optional Render Thread Work
+                </div>
+            </div>
+        </div>
+    </div>
+
+</section>
+
+<!-- SECTION: CHUNK SYSTEM -->
+<section id="chunks" class="mb-24 scroll-mt-24">
+    <h1>Chunk System & LOD</h1>
+    <p class="text-lg mb-8">
+        TerraDyne employs an intelligent Level of Detail (LOD) system to maintain high performance even in massive worlds.
+    </p>
+
+    <!-- LOD DIAGRAM -->
+    <div class="bg-[#050911] p-8 rounded-xl border border-greg-border mb-8">
+        <h3 class="text-white text-sm font-bold mb-4">Distance-Based Activation</h3>
+        <div class="relative w-full h-32 bg-greg-panel rounded border border-greg-border overflow-hidden">
+            <!-- Player -->
+            <div class="absolute top-1/2 left-8 w-4 h-4 bg-white rounded-full z-20 shadow-[0_0_20px_white]"></div>
+            <text x="35" y="50%" class="absolute top-[60%] left-8 text-[10px] text-white font-mono">PLAYER</text>
+            
+            <!-- Zone 1: Active -->
+            <div class="absolute inset-y-0 left-0 w-1/3 bg-greg-green/10 border-r border-greg-green/30 flex items-center justify-center">
+                <span class="text-greg-green font-mono text-xs font-bold">PHYSICS ACTIVE</span>
+            </div>
+            
+            <!-- Zone 2: Dormant -->
+            <div class="absolute inset-y-0 left-[33.33%] right-0 bg-red-500/5 flex items-center justify-center">
+                <span class="text-red-400 font-mono text-xs font-bold">PHYSICS DISABLED (Visuals Only)</span>
+            </div>
+            
+            <!-- Distance Marker -->
+            <div class="absolute bottom-2 left-[33.33%] -translate-x-1/2 bg-black px-2 py-0.5 rounded text-[9px] text-slate-400 border border-slate-700">
+                500m
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
+            <h4 class="text-white font-bold mb-2">Near Field (< 500m)</h4>
+            <p class="text-sm text-slate-400">
+                Chunks have <strong>Complex Collision</strong> enabled. Projectiles bounce, characters can walk, and edits trigger immediate physics recooks (debounced).
+            </p>
+        </div>
+        <div>
+            <h4 class="text-white font-bold mb-2">Far Field (> 500m)</h4>
+            <p class="text-sm text-slate-400">
+                Chunks automatically switch to <strong>NoCollision</strong>. They remain visible as lightweight renderable terrain while consuming no collision time, which keeps large streamed worlds practical.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- SECTION: TROUBLESHOOTING -->
+<section id="troubleshooting" class="mb-24 scroll-mt-24">
+    <h1>Troubleshooting Guide</h1>
+
+    <div class="space-y-4">
+        <!-- ISSUE 1: LOD/Projectiles -->
+        <div class="bg-greg-panel border border-greg-border rounded-lg overflow-hidden">
+            <div class="p-4 border-b border-greg-border flex justify-between items-center bg-[#0D1117]">
+                <span class="text-red-400 font-bold text-sm">SYMPTOM: Projectiles fall through distant terrain</span>
+                <span class="text-xs font-mono text-slate-500">Error: Aggressive LOD</span>
+            </div>
+            <div class="p-6">
+                <h4 class="text-greg-green text-xs font-bold uppercase mb-2">The Cure</h4>
+                <p class="text-sm text-slate-400 mb-2">
+                    This is intended behavior (optimization). If you need physics further out (e.g., for sniping), adjust the threshold in <code>ATerraDyneChunk::UpdateLOD</code> or <code>TerraDyneManager.cpp</code>.
+                </p>
+            </div>
+        </div>
+
+        <!-- ISSUE 2: Debounce/Latency -->
+        <div class="bg-greg-panel border border-greg-border rounded-lg overflow-hidden">
+            <div class="p-4 border-b border-greg-border flex justify-between items-center bg-[#0D1117]">
+                <span class="text-red-400 font-bold text-sm">SYMPTOM: Collision lags behind visual brush</span>
+                <span class="text-xs font-mono text-slate-500">Error: Debounce Latency</span>
+            </div>
+            <div class="p-6">
+                <h4 class="text-greg-green text-xs font-bold uppercase mb-2">The Cure</h4>
+                <p class="text-sm text-slate-400">
+                    Physics updates are delayed by 0.2s to prevent frame drops. This is a trade-off for performance. For "instant" feedback, you would need to accept significant FPS loss on complex meshes.
+                </p>
+            </div>
+        </div>
+
+        <!-- ISSUE 3: Unresponsive Terrain -->
+        <div class="bg-greg-panel border border-greg-border rounded-lg overflow-hidden">
+            <div class="p-4 border-b border-greg-border flex justify-between items-center bg-[#0D1117]">
+                <span class="text-red-400 font-bold text-sm">SYMPTOM: Terrain is unresponsive to sculpting</span>
+                <span class="text-xs font-mono text-slate-500">Error: Manager / Asset Setup</span>
+            </div>
+            <div class="p-6">
+                <h4 class="text-greg-green text-xs font-bold uppercase mb-2">The Cure</h4>
+                <p class="text-sm text-slate-400 mb-2">
+                    1. <strong>Manager Check:</strong> Ensure an <code>ATerraDyneManager</code> is present in the level and registered with the TerraDyne subsystem.
+                    <br>2. <strong>Chunk Check:</strong> Confirm the active chunk map contains the terrain around your brush target and that collision rebuild warnings are not being logged for invalid sample counts.
+                    <br>3. <strong>Optional Hybrid Visuals:</strong> If you enabled render-target brush materials, verify those assets are assigned correctly. CPU sculpting does not require them.
+                </p>
+            </div>
+        </div>
+
+        <!-- ISSUE 4: Parity / Floating -->
+        <div class="bg-greg-panel border border-greg-border rounded-lg overflow-hidden">
+            <div class="p-4 border-b border-greg-border flex justify-between items-center bg-[#0D1117]">
+                <span class="text-red-400 font-bold text-sm">SYMPTOM: Character floats above crater (Visual mismatch)</span>
+                <span class="text-xs font-mono text-slate-500">Error: Z-Scale Parity</span>
+            </div>
+            <div class="p-6">
+                <h4 class="text-greg-green text-xs font-bold uppercase mb-2">The Cure</h4>
+                <p class="text-sm text-slate-400">
+                    The runtime chunk mesh and any custom material-driven displacement must use the same Z scale. If you see this, check for a manual chunk override or a material parameter that no longer matches <code>ZScale</code>.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- SECTION: ABOUT & ORIGIN -->
+<section id="about" class="mb-24 scroll-mt-24 border-t border-greg-border pt-16">
+    
+    <div class="relative bg-[#080c14] rounded-2xl border border-greg-green/20 overflow-hidden p-8 md:p-12 group">
+        
+        <!-- Animated Background Mesh -->
+        <div class="absolute inset-0 opacity-10 pointer-events-none">
+            <svg class="h-full w-full" preserveAspectRatio="none">
+                <defs>
+                    <pattern id="grid-pattern" width="40" height="40" patternUnits="userSpaceOnUse">
+                        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#10b981" stroke-width="0.5"/>
+                    </pattern>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#grid-pattern)" />
+            </svg>
+        </div>
+
+        <div class="relative z-10 grid grid-cols-1 lg:grid-cols-3 gap-12 items-center">
+            
+            <!-- AVATAR / ORIGIN ILLUSTRATION -->
+            <div class="flex justify-center lg:justify-start">
+                <div class="relative w-48 h-48">
+                    <!-- Rotating Rings -->
+                    <div class="absolute inset-0 rounded-full border border-greg-green/30 animate-[spin_10s_linear_infinite]"></div>
+                    <div class="absolute inset-4 rounded-full border border-dashed border-greg-green/50 animate-[spin_15s_linear_infinite_reverse]"></div>
+                    
+                    <!-- Core Identity SVG -->
+                    <div class="absolute inset-0 flex items-center justify-center bg-greg-dark/80 backdrop-blur-sm rounded-full border border-greg-border shadow-[0_0_40px_rgba(16,185,129,0.1)]">
+                        <svg viewBox="0 0 100 100" class="w-24 h-24 text-greg-green">
+                            <!-- G Logo Concept -->
+                            <path d="M50,20 L80,35 L80,75 L50,90 L20,75 L20,35 Z" fill="none" stroke="currentColor" stroke-width="2" />
+                            <path d="M50,35 L65,42 L65,60 L50,68 L35,60 L35,42 Z" fill="currentColor" opacity="0.2" />
+                            <circle cx="50" cy="50" r="4" fill="#fff">
+                                <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite" />
+                            </circle>
+                            <!-- Connection Lines -->
+                            <path d="M50,50 L80,20 M50,50 L20,20 M50,50 L50,90" stroke="currentColor" stroke-width="0.5" stroke-dasharray="2" opacity="0.5"/>
+                        </svg>
+                    </div>
+                    
+                    <!-- Location Marker -->
+                    <div class="absolute -bottom-4 -right-4 bg-[#0f172a] px-3 py-1 rounded-full border border-greg-border flex items-center gap-2 shadow-lg">
+                        <span class="relative flex h-2 w-2">
+                          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-greg-green opacity-75"></span>
+                          <span class="relative inline-flex rounded-full h-2 w-2 bg-greg-green"></span>
+                        </span>
+                        <span class="text-[10px] font-mono text-slate-400">Budapest, HU</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BIO CONTENT -->
+            <div class="lg:col-span-2 text-center lg:text-left">
+                <h2 class="text-3xl font-bold text-white mb-2 tracking-tight">GregOrigin</h2>
+                <div class="h-1 w-20 bg-greg-green rounded mb-6 mx-auto lg:mx-0"></div>
+                
+                <p class="text-lg text-slate-300 mb-6 leading-relaxed">
+                    Created by <a href="mailto:andras@gregorigin.com" class="text-greg-green hover:underline decoration-1 underline-offset-4 font-semibold transition-colors">Andras Gregori</a> @ Gregorigin, a single dad currently based outside Budapest, HU.
+                </p>
+                <p class="text-sm text-slate-500 mb-8 italic">
+                    "Building tools that empower creators to shape worlds."
+                </p>
+
+                <!-- LINKS GRID -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    
+                    <!-- Website -->
+                    <a href="https://www.gregorigin.com" target="_blank" class="group/btn relative px-4 py-3 bg-[#0f172a] border border-greg-border rounded-lg hover:border-greg-green/50 transition-all duration-300 flex items-center justify-center gap-3 overflow-hidden">
+                        <div class="absolute inset-0 bg-greg-green/5 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>
+                        <svg class="w-5 h-5 text-slate-400 group-hover/btn:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path></svg>
+                        <span class="font-mono text-sm group-hover/btn:text-white font-medium z-10">gregorigin.com</span>
+                    </a>
+
+                    <!-- Fab -->
+                    <a href="https://www.fab.com/sellers/GregOrigin" target="_blank" class="group/btn relative px-4 py-3 bg-[#0f172a] border border-greg-border rounded-lg hover:border-blue-500/50 transition-all duration-300 flex items-center justify-center gap-3 overflow-hidden">
+                        <div class="absolute inset-0 bg-blue-500/5 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>
+                        <svg class="w-5 h-5 text-slate-400 group-hover/btn:text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5l-2.5 1.25L12 11zm0 2.5l-5-2.5-5 2.5L12 22l10-8.5-5-2.5-5 2.5z"/></svg>
+                        <span class="font-mono text-sm group-hover/btn:text-white font-medium z-10">Fab Store</span>
+                    </a>
+
+                    <!-- GitHub -->
+                    <a href="https://github.com/gregorik" target="_blank" class="group/btn relative px-4 py-3 bg-[#0f172a] border border-greg-border rounded-lg hover:border-purple-500/50 transition-all duration-300 flex items-center justify-center gap-3 overflow-hidden">
+                        <div class="absolute inset-0 bg-purple-500/5 translate-y-full group-hover/btn:translate-y-0 transition-transform duration-300"></div>
+                        <svg class="w-5 h-5 text-slate-400 group-hover/btn:text-white" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"></path></svg>
+                        <span class="font-mono text-sm group-hover/btn:text-white font-medium z-10">@gregorik</span>
+                    </a>
+
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+        </div>
+    </main>
+
+    <!-- Sidebar Highlighting Script -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const sections = document.querySelectorAll('section[id]');
+            const navLinks = document.querySelectorAll('.nav-item');
+            const breadcrumbActive = document.getElementById('breadcrumb-active');
+
+            const observerOptions = {
+                root: document.getElementById('main-scroller'),
+                rootMargin: '-10% 0px -70% 0px', // Trigger when section is near top
+                threshold: 0
+            };
+
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const id = entry.target.getAttribute('id');
+                        
+                        // Update Sidebar
+                        navLinks.forEach(link => {
+                            link.classList.remove('active');
+                            if (link.getAttribute('href') === `#${id}`) {
+                                link.classList.add('active');
+                                
+                                // Update Breadcrumb text
+                                if (breadcrumbActive) {
+                                    breadcrumbActive.textContent = link.textContent;
+                                }
+                            }
+                        });
+                    }
+                });
+            }, observerOptions);
+
+            sections.forEach(section => {
+                observer.observe(section);
+            });
+        });
+    </script>
+
+    <!-- Syntax Highlighting Script -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-clike.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-cpp.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-csharp.min.js"></script>
+
+</body>
+</html>

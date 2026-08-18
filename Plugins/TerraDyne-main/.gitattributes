@@ -1,0 +1,35 @@
+# Normalize text files in the repo, checkout native on Windows.
+* text=auto
+
+# Unreal binary assets. These MUST be marked binary: with core.autocrlf enabled (the Windows
+# default, and what this machine uses) any file git misclassifies as text gets its LF bytes
+# rewritten to CRLF on checkout, which silently corrupts the asset.
+*.uasset    binary
+*.umap      binary
+*.upk       binary
+*.udk       binary
+
+# Common binary payloads
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.tga       binary
+*.bmp       binary
+*.dds       binary
+*.exr       binary
+*.hdr       binary
+*.fbx       binary
+*.wav       binary
+*.ogg       binary
+*.dll       binary
+*.lib       binary
+*.pdb       binary
+*.sav       binary
+
+# Source stays LF in the repo
+*.cpp       text eol=lf
+*.h         text eol=lf
+*.cs        text eol=lf
+*.ini       text eol=lf
+*.md        text eol=lf
+*.uplugin   text eol=lf

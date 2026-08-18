@@ -1,0 +1,542 @@
+// Copyright (c) 2026 GregOrigin. All Rights Reserved.
+#include "CoreMinimal.h"
+#include "Misc/AutomationTest.h"
+#include "Core/TerraDyneManager.h"
+#include "World/TerraDyneChunk.h"
+#include "World/TerraDyneOrchestrator.h"
+#include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
+
+#if WITH_EDITOR
+#include "Tests/AutomationEditorCommon.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneMigrationSaveLoadTest,
+	"TerraDyne.Migration.SaveLoadRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneMigrationSaveLoadTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull("World", World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
+	TestNotNull("Manager", Manager);
+	if (!Manager)
+	{
+		return false;
+	}
+
+	Manager->SetActorLocation(FVector(123.0f, 456.0f, 789.0f));
+	Manager->GlobalChunkSize = 2048.0f;
+	Manager->MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+
+	Manager->LandscapeMigrationState.bWasImportedFromLandscape = true;
+	Manager->LandscapeMigrationState.bImportedPaintLayers = true;
+	Manager->LandscapeMigrationState.bSourceLandscapeHidden = true;
+	Manager->LandscapeMigrationState.SourceLandscapeName = TEXT("TestLandscape");
+	Manager->LandscapeMigrationState.SourceLandscapePath = TEXT("/Game/Test/TestLandscape");
+	Manager->LandscapeMigrationState.SourceLandscapeMaterialPath = TEXT("/Game/Test/M_Landscape");
+	Manager->LandscapeMigrationState.ImportedChunkSize = 2048.0f;
+	Manager->LandscapeMigrationState.ImportedComponentCount = 4;
+	Manager->LandscapeMigrationState.ImportedAtIso8601 = TEXT("2026-03-14T12:00:00Z");
+	Manager->ProceduralWorldSettings.WorldSeed = 20260314;
+	Manager->ProceduralWorldSettings.bEnableSeededOutskirts = true;
+	Manager->ProceduralWorldSettings.ProceduralOutskirtsExtent = 3;
+
+	FTerraDyneBiomeOverlay ForestBiome;
+	ForestBiome.BiomeTag = TEXT("Forest");
+	ForestBiome.bApplyToProceduralChunks = true;
+	ForestBiome.ProceduralNoiseMin = 0.0f;
+	ForestBiome.ProceduralNoiseMax = 1.0f;
+	ForestBiome.Priority = 1;
+	Manager->BiomeOverlays.Add(ForestBiome);
+
+	FTerraDyneBuildPermissionZone BuildZone;
+	BuildZone.ZoneId = TEXT("NoBuildCore");
+	BuildZone.Permission = ETerraDyneBuildPermission::Blocked;
+	BuildZone.Reason = TEXT("Core settlement reserve");
+	Manager->BuildPermissionZones.Add(BuildZone);
+
+	FTerraDyneLandscapeLayerMapping GrassLayer;
+	GrassLayer.SourceLayerName = TEXT("Grass");
+	Manager->LandscapeMigrationState.LayerMappings.Add(GrassLayer);
+
+	FTerraDyneLandscapeLayerMapping RockLayer;
+	RockLayer.SourceLayerName = TEXT("Rock");
+	Manager->LandscapeMigrationState.LayerMappings.Add(RockLayer);
+
+	Manager->LandscapeMigrationState.UnmappedLayerNames.Add(TEXT("Snow"));
+
+	const FString SlotName = FString::Printf(TEXT("TerraDyneMigration_%s"),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	Manager->SaveWorld(SlotName);
+
+	Manager->SetActorLocation(FVector::ZeroVector);
+	Manager->GlobalChunkSize = 1.0f;
+	Manager->MasterMaterial = nullptr;
+	Manager->LandscapeMigrationState = FTerraDyneLandscapeMigrationState();
+
+	Manager->LoadWorld(SlotName);
+
+	TestEqual("Manager location restored", Manager->GetActorLocation(), FVector(123.0f, 456.0f, 789.0f));
+	TestEqual("GlobalChunkSize restored", Manager->GlobalChunkSize, 2048.0f);
+	TestTrue("Landscape migration flag restored", Manager->LandscapeMigrationState.bWasImportedFromLandscape);
+	TestEqual("Source landscape name restored", Manager->LandscapeMigrationState.SourceLandscapeName, FString(TEXT("TestLandscape")));
+	TestEqual("Layer mapping count restored", Manager->LandscapeMigrationState.LayerMappings.Num(), 2);
+	TestEqual("Unmapped layer count restored", Manager->LandscapeMigrationState.UnmappedLayerNames.Num(), 1);
+	TestEqual("Procedural seed restored", Manager->ProceduralWorldSettings.WorldSeed, 20260314);
+	TestEqual("Biome overlay count restored", Manager->BiomeOverlays.Num(), 1);
+	TestEqual("Build permission zone count restored", Manager->BuildPermissionZones.Num(), 1);
+	TestNotNull("Master material restored", Manager->MasterMaterial.Get());
+
+	UGameplayStatics::DeleteGameInSlot(SlotName, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneShowcaseMaterialSelectionTest,
+	"TerraDyne.Demo.ShowcaseMaterialSelection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneShowcaseMaterialSelectionTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull("World", World);
+	if (!World)
+	{
+		return false;
+	}
+
+	UGameplayStatics::DeleteGameInSlot(TEXT("TerraDyne_ShowcaseBaseline"), 0);
+
+	ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
+	TestNotNull("Manager", Manager);
+	if (!Manager)
+	{
+		return false;
+	}
+
+	Manager->bSpawnDefaultChunksOnBeginPlay = false;
+	Manager->bSetupDefaultLightingOnBeginPlay = false;
+	Manager->bSpawnShowcaseOnBeginPlay = false;
+	Manager->MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	Manager->LandscapeMigrationState.SourceLandscapeMaterialPath =
+		TEXT("/Game/MWLandscapeAutoMaterial/Materials/Landscape/MTL_MWAM_Landscape_MountainRangeExample.MTL_MWAM_Landscape_MountainRangeExample");
+
+	ATerraDyneOrchestrator* Orchestrator = World->SpawnActor<ATerraDyneOrchestrator>();
+	TestNotNull("Orchestrator", Orchestrator);
+	if (!Orchestrator)
+	{
+		return false;
+	}
+
+	Orchestrator->DispatchBeginPlay();
+
+	TestNotNull("Showcase material assigned", Manager->MasterMaterial.Get());
+	if (!Manager->MasterMaterial)
+	{
+		return false;
+	}
+
+	TestEqual(
+		TEXT("Showcase uses the TerraDyne mesh-compatible terrain material"),
+		Manager->MasterMaterial->GetPathName(),
+		FString(TEXT("/TerraDyne/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain")));
+
+	ATerraDyneChunk* Chunk = Manager->GetChunkAtCoord(FIntPoint::ZeroValue);
+	TestNotNull("Showcase authored chunk spawned", Chunk);
+
+	UGameplayStatics::DeleteGameInSlot(TEXT("TerraDyne_ShowcaseBaseline"), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneChunkMaterialBindingTest,
+	"TerraDyne.Rendering.MaterialBindings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneChunkMaterialBindingTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull("World", World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneChunk* Chunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Chunk", Chunk);
+	if (!Chunk)
+	{
+		return false;
+	}
+
+	Chunk->GridCoordinate = FIntPoint::ZeroValue;
+	Chunk->WorldSize = 2048.0f;
+	Chunk->ChunkSizeWorldUnits = 2048.0f;
+	Chunk->ZScale = 768.0f;
+	Chunk->BrushMaterialBase = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/TerraDyne/Materials/Tools/M_HeightBrush.M_HeightBrush"));
+	UMaterialInterface* MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/TerraDyne/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain"));
+	TestNotNull("Height brush material", Chunk->BrushMaterialBase.Get());
+	TestNotNull("Master material", MasterMaterial);
+	if (!Chunk->BrushMaterialBase || !MasterMaterial)
+	{
+		return false;
+	}
+
+	Chunk->Initialize(32, 2048.0f);
+
+	// The chunk feeds the material its height data from one of two textures, and which one is not
+	// about the RHI: ATerraDyneChunk::Initialize() deliberately does not call SetupGPU() (see the
+	// comment there — it built render targets and stalled on a readback to serve ApplyBrushGPU,
+	// which nothing invokes), so bUseGPU is currently always false and HeightRT is always null.
+	// Assert against whichever texture is actually live rather than assuming the GPU one, so this
+	// test keeps verifying the binding instead of just failing on the path not taken.
+	UTexture* ExpectedHeightTexture = nullptr;
+	if (Chunk->IsUsingGPU())
+	{
+		AddInfo(TEXT("GPU terrain path active; validating material bindings against HeightRT."));
+		ExpectedHeightTexture = Chunk->HeightRT;
+	}
+	else
+	{
+		AddInfo(TEXT("GPU terrain path inactive (SetupGPU is not called); validating material bindings against CPUHeightTexture."));
+		ExpectedHeightTexture = Chunk->CPUHeightTexture;
+	}
+	TestNotNull("Chunk height texture created", ExpectedHeightTexture);
+
+	Chunk->SetMaterial(MasterMaterial);
+	UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Chunk->DynamicMeshComp->GetMaterial(0));
+	TestNotNull("Dynamic terrain MID", MID);
+	if (!MID)
+	{
+		return false;
+	}
+
+	TestEqual("HeightMap bound to the chunk's live height texture",
+		MID->K2_GetTextureParameterValue(TEXT("HeightMap")), ExpectedHeightTexture);
+	TestTrue("WorldSize scalar synced",
+		FMath::IsNearlyEqual(MID->K2_GetScalarParameterValue(TEXT("WorldSize")), Chunk->WorldSize, KINDA_SMALL_NUMBER));
+	TestTrue("ZScale scalar synced",
+		FMath::IsNearlyEqual(MID->K2_GetScalarParameterValue(TEXT("ZScale")), Chunk->ZScale, KINDA_SMALL_NUMBER));
+	TestTrue("TexelStep scalar set", MID->K2_GetScalarParameterValue(TEXT("TexelStep")) > 0.0f);
+
+	const int32 NumSamples = Chunk->Resolution * Chunk->Resolution;
+	Chunk->BaseBuffer.Init(0.6f, NumSamples);
+	Chunk->SculptBuffer.Init(0.0f, NumSamples);
+	Chunk->DetailBuffer.Init(0.0f, NumSamples);
+	Chunk->HeightBuffer.Init(0.6f, NumSamples);
+	Chunk->RebuildPhysicsMesh();
+
+	const FTerraDyneChunkData SerializedData = Chunk->GetSerializedData();
+	TestEqual("Serialized height sample count", SerializedData.HeightData.Num(), NumSamples);
+	TestTrue("Height RT stays synchronized after CPU mesh rebuild",
+		SerializedData.HeightData.Num() > 0 &&
+		FMath::IsNearlyEqual(SerializedData.HeightData[0], 0.6f, 0.02f));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneChunkSerializationSanitizesResolutionTest,
+	"TerraDyne.Rendering.SerializationSanitizesResolution",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneChunkSerializationSanitizesResolutionTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull("World", World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneChunk* SourceChunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Source chunk", SourceChunk);
+	if (!SourceChunk)
+	{
+		return false;
+	}
+
+	SourceChunk->GridCoordinate = FIntPoint::ZeroValue;
+	SourceChunk->WorldSize = 1000.0f;
+	SourceChunk->ChunkSizeWorldUnits = 1000.0f;
+	SourceChunk->Initialize(128, 1000.0f);
+
+	const int32 TrueResolution = SourceChunk->Resolution;
+	TestEqual("Source chunk initialized to 128", TrueResolution, 128);
+
+	SourceChunk->Resolution = 96;
+	const FTerraDyneChunkData SerializedData = SourceChunk->GetSerializedData();
+	TestEqual("Serialized resolution derived from buffer size", SerializedData.Resolution, TrueResolution);
+	TestEqual("Serialized height sample count preserved", SerializedData.HeightData.Num(), TrueResolution * TrueResolution);
+
+	ATerraDyneChunk* LoadedChunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Loaded chunk", LoadedChunk);
+	if (!LoadedChunk)
+	{
+		return false;
+	}
+
+	LoadedChunk->GridCoordinate = FIntPoint::ZeroValue;
+	LoadedChunk->WorldSize = 1000.0f;
+	LoadedChunk->ChunkSizeWorldUnits = 1000.0f;
+	LoadedChunk->LoadFromData(SerializedData);
+
+	TestEqual("Loaded resolution corrected from serialized data", LoadedChunk->Resolution, TrueResolution);
+	TestEqual("Loaded height data count matches corrected resolution", LoadedChunk->HeightBuffer.Num(), TrueResolution * TrueResolution);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneTransferredFoliageRoundTripTest,
+	"TerraDyne.Migration.TransferredFoliageRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneTransferredFoliageRoundTripTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull("World", World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneChunk* SourceChunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Source chunk", SourceChunk);
+	if (!SourceChunk)
+	{
+		return false;
+	}
+
+	SourceChunk->GridCoordinate = FIntPoint::ZeroValue;
+	SourceChunk->WorldSize = 1000.0f;
+	SourceChunk->ChunkSizeWorldUnits = 1000.0f;
+	SourceChunk->Initialize(16, 1000.0f);
+
+	const int32 NumSamples = SourceChunk->Resolution * SourceChunk->Resolution;
+	SourceChunk->BaseBuffer.Init(0.25f, NumSamples);
+	SourceChunk->SculptBuffer.Init(0.0f, NumSamples);
+	SourceChunk->DetailBuffer.Init(0.0f, NumSamples);
+	SourceChunk->HeightBuffer.Init(0.25f, NumSamples);
+	SourceChunk->RebuildPhysicsMesh();
+
+	const FVector LocalPointA(-100.0f, -100.0f, 0.0f);
+	const FVector LocalPointB(120.0f, 150.0f, 0.0f);
+	const float HeightA = SourceChunk->GetHeightAtLocation(LocalPointA);
+	const float HeightB = SourceChunk->GetHeightAtLocation(LocalPointB);
+
+	TArray<FString> StaticMeshPaths;
+	StaticMeshPaths.Add(TEXT("/Engine/BasicShapes/Cube.Cube"));
+
+	TArray<int32> MaterialCounts;
+	MaterialCounts.Add(0);
+
+	TArray<int32> DefinitionIndices;
+	DefinitionIndices.Add(0);
+	DefinitionIndices.Add(0);
+
+	TArray<FTransform> LocalTransforms;
+	{
+		FTransform TransformA;
+		TransformA.SetLocation(FVector(LocalPointA.X, LocalPointA.Y, HeightA + 50.0f));
+		TransformA.SetScale3D(FVector(1.0f, 1.0f, 1.0f));
+		LocalTransforms.Add(TransformA);
+
+		FTransform TransformB;
+		TransformB.SetLocation(FVector(LocalPointB.X, LocalPointB.Y, HeightB + 10.0f));
+		TransformB.SetScale3D(FVector(0.75f, 0.75f, 1.25f));
+		LocalTransforms.Add(TransformB);
+	}
+
+	TArray<float> TerrainOffsets;
+	TerrainOffsets.Add(50.0f);
+	TerrainOffsets.Add(10.0f);
+
+	SourceChunk->SetTransferredFoliageData(
+		StaticMeshPaths,
+		MaterialCounts,
+		TArray<FString>(),
+		DefinitionIndices,
+		LocalTransforms,
+		TerrainOffsets,
+		true);
+
+	TestEqual("Transferred foliage definition count", SourceChunk->GetTransferredFoliageDefinitionCount(), 1);
+	TestEqual("Transferred foliage instance count", SourceChunk->GetTransferredFoliageInstanceCount(), 2);
+	TestEqual("Transferred foliage component count", SourceChunk->TransferredFoliageISMs.Num(), 1);
+
+	FTransform InitialInstanceTransform;
+	TestTrue("Initial foliage instance available",
+		SourceChunk->TransferredFoliageISMs[0] &&
+		SourceChunk->TransferredFoliageISMs[0]->GetInstanceTransform(0, InitialInstanceTransform, false));
+	TestTrue("Initial foliage Z snapped to terrain plus offset",
+		FMath::IsNearlyEqual(
+			InitialInstanceTransform.GetLocation().Z,
+			static_cast<float>(HeightA + 50.0f),
+			UE_KINDA_SMALL_NUMBER));
+
+	SourceChunk->BaseBuffer.Init(0.5f, NumSamples);
+	SourceChunk->HeightBuffer.Init(0.5f, NumSamples);
+	SourceChunk->RebuildPhysicsMesh();
+	SourceChunk->RefreshTransferredFoliagePlacement(true);
+
+	FTransform UpdatedInstanceTransform;
+	TestTrue("Updated foliage instance available",
+		SourceChunk->TransferredFoliageISMs[0] &&
+		SourceChunk->TransferredFoliageISMs[0]->GetInstanceTransform(0, UpdatedInstanceTransform, false));
+	TestTrue("Updated foliage Z follows terrain plus offset",
+		FMath::IsNearlyEqual(
+			UpdatedInstanceTransform.GetLocation().Z,
+			static_cast<float>(SourceChunk->GetHeightAtLocation(LocalPointA) + 50.0f),
+			UE_KINDA_SMALL_NUMBER));
+
+	const FTerraDyneChunkData SerializedData = SourceChunk->GetSerializedData();
+
+	ATerraDyneChunk* LoadedChunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Loaded chunk", LoadedChunk);
+	if (!LoadedChunk)
+	{
+		return false;
+	}
+
+	LoadedChunk->GridCoordinate = FIntPoint::ZeroValue;
+	LoadedChunk->WorldSize = 1000.0f;
+	LoadedChunk->ChunkSizeWorldUnits = 1000.0f;
+	LoadedChunk->Initialize(16, 1000.0f);
+	LoadedChunk->LoadFromData(SerializedData);
+
+	TestEqual("Loaded chunk transferred foliage definition count", LoadedChunk->GetTransferredFoliageDefinitionCount(), 1);
+	TestEqual("Loaded chunk transferred foliage instance count", LoadedChunk->GetTransferredFoliageInstanceCount(), 2);
+	TestEqual("Loaded chunk foliage component count", LoadedChunk->TransferredFoliageISMs.Num(), 1);
+
+	FTransform LoadedInstanceTransform;
+	TestTrue("Loaded foliage instance available",
+		LoadedChunk->TransferredFoliageISMs[0] &&
+		LoadedChunk->TransferredFoliageISMs[0]->GetInstanceTransform(0, LoadedInstanceTransform, false));
+	TestEqual("Loaded foliage Z preserved", LoadedInstanceTransform.GetLocation().Z, UpdatedInstanceTransform.GetLocation().Z);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneTransferredActorFoliageRoundTripTest,
+	"TerraDyne.Migration.TransferredActorFoliageRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneTransferredActorFoliageRoundTripTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull("World", World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneChunk* SourceChunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Source chunk", SourceChunk);
+	if (!SourceChunk)
+	{
+		return false;
+	}
+
+	SourceChunk->GridCoordinate = FIntPoint::ZeroValue;
+	SourceChunk->WorldSize = 1000.0f;
+	SourceChunk->ChunkSizeWorldUnits = 1000.0f;
+	SourceChunk->Initialize(16, 1000.0f);
+
+	const int32 NumSamples = SourceChunk->Resolution * SourceChunk->Resolution;
+	SourceChunk->BaseBuffer.Init(0.20f, NumSamples);
+	SourceChunk->SculptBuffer.Init(0.0f, NumSamples);
+	SourceChunk->DetailBuffer.Init(0.0f, NumSamples);
+	SourceChunk->HeightBuffer.Init(0.20f, NumSamples);
+	SourceChunk->RebuildPhysicsMesh();
+
+	const FVector LocalPoint(-80.0f, 110.0f, 0.0f);
+	const float InitialHeight = SourceChunk->GetHeightAtLocation(LocalPoint);
+
+	TArray<FString> ActorClassPaths;
+	ActorClassPaths.Add(TEXT("/Script/Engine.StaticMeshActor"));
+
+	TArray<uint8> AttachFlags;
+	AttachFlags.Add(1);
+
+	TArray<int32> DefinitionIndices;
+	DefinitionIndices.Add(0);
+
+	TArray<FTransform> LocalTransforms;
+	FTransform ActorLocalTransform;
+	ActorLocalTransform.SetLocation(FVector(LocalPoint.X, LocalPoint.Y, InitialHeight + 75.0f));
+	LocalTransforms.Add(ActorLocalTransform);
+
+	TArray<float> TerrainOffsets;
+	TerrainOffsets.Add(75.0f);
+
+	SourceChunk->SetTransferredActorFoliageData(
+		ActorClassPaths,
+		AttachFlags,
+		DefinitionIndices,
+		LocalTransforms,
+		TerrainOffsets);
+	SourceChunk->SetTransferredFoliageFollowsTerrain(true);
+	SourceChunk->RefreshTransferredActorFoliagePlacement(true);
+
+	TestEqual("Transferred actor foliage definition count", SourceChunk->GetTransferredActorFoliageDefinitionCount(), 1);
+	TestEqual("Transferred actor foliage instance count", SourceChunk->GetTransferredActorFoliageInstanceCount(), 1);
+
+	FTransform InitialActorTransform;
+	TestTrue("Transferred actor foliage instance available",
+		SourceChunk->GetTransferredActorFoliageInstanceTransform(0, InitialActorTransform));
+	TestTrue("Transferred actor foliage Z snapped to terrain plus offset",
+		FMath::IsNearlyEqual(
+			InitialActorTransform.GetLocation().Z,
+			static_cast<float>(InitialHeight + 75.0f),
+			UE_KINDA_SMALL_NUMBER));
+
+	SourceChunk->BaseBuffer.Init(0.45f, NumSamples);
+	SourceChunk->HeightBuffer.Init(0.45f, NumSamples);
+	SourceChunk->RebuildPhysicsMesh();
+	SourceChunk->RefreshTransferredActorFoliagePlacement(true);
+
+	FTransform UpdatedActorTransform;
+	TestTrue("Updated transferred actor foliage instance available",
+		SourceChunk->GetTransferredActorFoliageInstanceTransform(0, UpdatedActorTransform));
+	TestTrue("Transferred actor foliage follows terrain plus offset",
+		FMath::IsNearlyEqual(
+			UpdatedActorTransform.GetLocation().Z,
+			static_cast<float>(SourceChunk->GetHeightAtLocation(LocalPoint) + 75.0f),
+			UE_KINDA_SMALL_NUMBER));
+
+	const FTerraDyneChunkData SerializedData = SourceChunk->GetSerializedData();
+
+	ATerraDyneChunk* LoadedChunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull("Loaded chunk", LoadedChunk);
+	if (!LoadedChunk)
+	{
+		return false;
+	}
+
+	LoadedChunk->GridCoordinate = FIntPoint::ZeroValue;
+	LoadedChunk->WorldSize = 1000.0f;
+	LoadedChunk->ChunkSizeWorldUnits = 1000.0f;
+	LoadedChunk->Initialize(16, 1000.0f);
+	LoadedChunk->LoadFromData(SerializedData);
+
+	TestEqual("Loaded actor foliage definition count", LoadedChunk->GetTransferredActorFoliageDefinitionCount(), 1);
+	TestEqual("Loaded actor foliage instance count", LoadedChunk->GetTransferredActorFoliageInstanceCount(), 1);
+
+	FTransform LoadedActorTransform;
+	TestTrue("Loaded transferred actor foliage instance available",
+		LoadedChunk->GetTransferredActorFoliageInstanceTransform(0, LoadedActorTransform));
+	TestEqual("Loaded transferred actor foliage Z preserved",
+		LoadedActorTransform.GetLocation().Z,
+		UpdatedActorTransform.GetLocation().Z);
+
+	return true;
+}
+#endif
