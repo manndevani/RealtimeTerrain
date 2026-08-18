@@ -13,6 +13,8 @@
 #include "Components/InputComponent.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/Pawn.h"
+// Controller.h only forward-declares APlayerState; the rejection log upcasts it to UObject*.
+#include "GameFramework/PlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "Camera/PlayerCameraManager.h"
 
@@ -35,6 +37,27 @@ bool ATerraDyneEditController::IsInstructor() const
 	// On a listen server the host is both local and authoritative; remote clients can edit if bCanEditTerrain is enabled
 	return IsLocalController() && (HasAuthority() || bCanEditTerrain);
 }
+
+bool ATerraDyneEditController::HasEditAuthority() const
+{
+	return IsLocalController() || bCanEditTerrain;
+}
+
+/**
+ * Rejects a Server RPC from a controller with no edit rights, and logs who tried.
+ *
+ * Every Server_* body starts with this. Without it the RPCs were open to any connected client:
+ * bCanEditTerrain gated the tool UI on the sending machine only, and a client that never opens
+ * that UI can still call the RPC.
+ */
+#define TERRADYNE_REQUIRE_EDIT_AUTHORITY()                                                      \
+	if (!HasEditAuthority())                                                                    \
+	{                                                                                           \
+		UE_LOG(LogTerraDyne, Warning,                                                           \
+			TEXT("Rejected %hs from '%s' — controller has no edit rights (bCanEditTerrain)."),  \
+			__func__, *GetNameSafe(PlayerState));                                               \
+		return;                                                                                 \
+	}
 
 ATerraDyneManager* ATerraDyneEditController::GetManager() const
 {
@@ -771,6 +794,8 @@ void ATerraDyneEditController::RequestBeginStroke(FVector WorldLocation, float R
 
 void ATerraDyneEditController::Server_BeginStroke_Implementation(FVector WorldLocation, float Radius)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	if (ATerraDyneManager* Manager = GetManager())
 	{
 		Manager->BeginStroke(WorldLocation, Radius, this);
@@ -791,6 +816,8 @@ void ATerraDyneEditController::RequestBrush(const FTerraDyneBrushParams& Params)
 
 void ATerraDyneEditController::Server_ApplyBrush_Implementation(const FTerraDyneBrushParams& Params)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	ApplyAndBroadcast(Params);
 }
 
@@ -811,6 +838,8 @@ void ATerraDyneEditController::RequestCommitStroke()
 
 void ATerraDyneEditController::Server_CommitStroke_Implementation()
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	if (ATerraDyneManager* Manager = GetManager())
 	{
 		Manager->CommitStroke(this);
@@ -834,6 +863,8 @@ void ATerraDyneEditController::RequestUndo()
 
 void ATerraDyneEditController::Server_Undo_Implementation()
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	if (ATerraDyneManager* Manager = GetManager())
 	{
 		Manager->Undo(this);
@@ -857,6 +888,8 @@ void ATerraDyneEditController::RequestRedo()
 
 void ATerraDyneEditController::Server_Redo_Implementation()
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	if (ATerraDyneManager* Manager = GetManager())
 	{
 		Manager->Redo(this);
@@ -908,6 +941,8 @@ void ATerraDyneEditController::RequestPlaceBuilding(TSubclassOf<ATerraDyneBuildi
 
 void ATerraDyneEditController::Server_PlaceBuilding_Implementation(TSubclassOf<ATerraDyneBuildingActor> BuildingClass, FTransform WorldTransform, int32 FloorCount)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestPlaceBuilding(BuildingClass, WorldTransform, FloorCount);
 }
 
@@ -928,6 +963,8 @@ void ATerraDyneEditController::RequestMoveBuilding(ATerraDyneBuildingActor* Buil
 
 void ATerraDyneEditController::Server_MoveBuilding_Implementation(ATerraDyneBuildingActor* Building, FTransform NewTransform)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestMoveBuilding(Building, NewTransform);
 }
 
@@ -946,6 +983,8 @@ void ATerraDyneEditController::RequestSetBuildingFloorCount(ATerraDyneBuildingAc
 
 void ATerraDyneEditController::Server_SetBuildingFloorCount_Implementation(ATerraDyneBuildingActor* Building, int32 NewFloorCount)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestSetBuildingFloorCount(Building, NewFloorCount);
 }
 
@@ -964,6 +1003,8 @@ void ATerraDyneEditController::RequestSetBuildingSplinePoints(ATerraDyneBuilding
 
 void ATerraDyneEditController::Server_SetBuildingSplinePoints_Implementation(ATerraDyneBuildingActor* Building, const TArray<FVector>& NewPoints)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestSetBuildingSplinePoints(Building, NewPoints);
 }
 
@@ -982,6 +1023,8 @@ void ATerraDyneEditController::RequestAddSplinePoint(ATerraDyneBuildingActor* Bu
 
 void ATerraDyneEditController::Server_AddSplinePoint_Implementation(ATerraDyneBuildingActor* Building)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestAddSplinePoint(Building);
 }
 
@@ -1000,6 +1043,8 @@ void ATerraDyneEditController::RequestRemoveSplinePoint(ATerraDyneBuildingActor*
 
 void ATerraDyneEditController::Server_RemoveSplinePoint_Implementation(ATerraDyneBuildingActor* Building, int32 PointIndex)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestRemoveSplinePoint(Building, PointIndex);
 }
 
@@ -1018,6 +1063,8 @@ void ATerraDyneEditController::RequestResetFootprint(ATerraDyneBuildingActor* Bu
 
 void ATerraDyneEditController::Server_ResetFootprint_Implementation(ATerraDyneBuildingActor* Building)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestResetFootprint(Building);
 }
 
@@ -1037,6 +1084,8 @@ void ATerraDyneEditController::RequestRelevelBuilding(ATerraDyneBuildingActor* B
 
 void ATerraDyneEditController::Server_RelevelBuilding_Implementation(ATerraDyneBuildingActor* Building)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestRelevelBuilding(Building);
 }
 
@@ -1055,6 +1104,8 @@ void ATerraDyneEditController::RequestDeleteBuilding(ATerraDyneBuildingActor* Bu
 
 void ATerraDyneEditController::Server_DeleteBuilding_Implementation(ATerraDyneBuildingActor* Building)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestDeleteBuilding(Building);
 }
 
@@ -1075,6 +1126,8 @@ void ATerraDyneEditController::RequestHarvestPopulation(const FGuid& PopulationI
 
 void ATerraDyneEditController::Server_HarvestPopulation_Implementation(FGuid PopulationId)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestHarvestPopulation(PopulationId);
 }
 
@@ -1095,6 +1148,8 @@ void ATerraDyneEditController::RequestSetPopulationDestroyed(const FGuid& Popula
 
 void ATerraDyneEditController::Server_SetPopulationDestroyed_Implementation(FGuid PopulationId, bool bDestroyed)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestSetPopulationDestroyed(PopulationId, bDestroyed);
 }
 
@@ -1115,6 +1170,8 @@ void ATerraDyneEditController::RequestSaveWorldToFile(const FString& FilePath)
 
 void ATerraDyneEditController::Server_SaveWorldToFile_Implementation(const FString& FilePath)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestSaveWorldToFile(FilePath);
 }
 
@@ -1135,5 +1192,7 @@ void ATerraDyneEditController::RequestLoadWorldFromFile(const FString& FilePath)
 
 void ATerraDyneEditController::Server_LoadWorldFromFile_Implementation(const FString& FilePath)
 {
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
 	RequestLoadWorldFromFile(FilePath);
 }

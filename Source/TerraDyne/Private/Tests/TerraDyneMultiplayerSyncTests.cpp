@@ -324,5 +324,62 @@ bool FTerraDyneNoDuplicateChunksOnBeginPlayTest::RunTest(const FString& Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTerraDyneEditAuthorityTest,
+	"TerraDyne.Multiplayer.ServerRejectsUnauthorizedEdits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * Locks in the permission model for Server RPCs.
+ *
+ * Every Server_* body on ATerraDyneEditController is gated on HasEditAuthority(). This test pins
+ * the two things that gate has to get right, because both were wrong before it existed: the flag
+ * must actually deny, and IsInstructor() must not be mistaken for the server-side check.
+ */
+bool FTerraDyneEditAuthorityTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull(TEXT("World exists"), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneEditController* Controller = World->SpawnActor<ATerraDyneEditController>();
+	TestNotNull(TEXT("Controller spawned"), Controller);
+	if (!Controller)
+	{
+		return false;
+	}
+
+	// A controller with no Player is not a local controller — which is exactly the state a remote
+	// client's controller is in on the server, and the case the guard exists to judge.
+	const bool bIsLocal = Controller->IsLocalController();
+	TestFalse(TEXT("Test controller stands in for a remote client (not local)"), bIsLocal);
+	if (bIsLocal)
+	{
+		return false;
+	}
+
+	Controller->bCanEditTerrain = false;
+	TestFalse(
+		TEXT("Server denies a controller that was never granted edit rights"),
+		Controller->HasEditAuthority());
+
+	Controller->bCanEditTerrain = true;
+	TestTrue(
+		TEXT("Server allows the same controller once bCanEditTerrain is granted"),
+		Controller->HasEditAuthority());
+
+	// The reason the guard is not IsInstructor(): that predicate requires IsLocalController(), so
+	// on the server it reads false for every remote client no matter what rights they hold. Used as
+	// an RPC guard it would deny everyone while looking like a permission check.
+	TestFalse(
+		TEXT("IsInstructor stays false for a remote controller even with full edit rights"),
+		Controller->IsInstructor());
+
+	return true;
+}
+
 #endif
 

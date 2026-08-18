@@ -52,6 +52,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Roles")
 	bool IsInstructor() const;
 
+	/**
+	 * Server-side permission check — the counterpart to IsInstructor(), and the one every Server
+	 * RPC is gated on.
+	 *
+	 * IsInstructor() cannot do this job. It requires IsLocalController(), which is false for a
+	 * remote client's controller *on the server* — so as a Server RPC guard it would reject every
+	 * client unconditionally while appearing to check a permission. This asks the question the
+	 * authority can actually answer: the listen-server host owns a local controller and always
+	 * passes; everyone else passes only on bCanEditTerrain, whose authoritative copy lives here.
+	 *
+	 * On a dedicated server no controller is local, so every player is governed by the flag.
+	 */
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|Roles")
+	bool HasEditAuthority() const;
+
 	/** Open an undo snapshot covering everything the coming stroke touches. */
 	void RequestBeginStroke(FVector WorldLocation, float Radius);
 
