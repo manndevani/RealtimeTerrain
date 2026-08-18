@@ -3,6 +3,15 @@
 #include "Misc/AutomationTest.h"
 #include "Core/TerraDyneManager.h"
 #include "Modules/ModuleManager.h"
+#include "Building/TerraDyneGizmoActor.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+
+#if WITH_EDITOR
+#include "Tests/AutomationEditorCommon.h"
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneLoadTest, "TerraDyne.Basic.ModuleLoad", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -156,3 +165,74 @@ bool FTerraDyneChunk0AndChunk1CheckTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+#if WITH_EDITOR
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FTerraDyneGizmoRuntimeAssetsTest,
+    "TerraDyne.Building.GizmoRuntimeAssets",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/**
+ * The move gizmo is a RUNTIME tool, so it has to hold up outside the editor. Two things about it
+ * were wrong and neither showed up in the editor, which is why they are pinned here.
+ */
+bool FTerraDyneGizmoRuntimeAssetsTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+    TestNotNull(TEXT("World exists"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    ATerraDyneGizmoActor* GizmoA = World->SpawnActor<ATerraDyneGizmoActor>();
+    ATerraDyneGizmoActor* GizmoB = World->SpawnActor<ATerraDyneGizmoActor>();
+    TestNotNull(TEXT("First gizmo spawned"), GizmoA);
+    TestNotNull(TEXT("Second gizmo spawned"), GizmoB);
+    if (!GizmoA || !GizmoB)
+    {
+        return false;
+    }
+
+    // Handle meshes must resolve. The spline-point sphere in particular was held in a Transient
+    // property, so it was never serialized into the CDO and never seen by the cooker.
+    UStaticMesh* ShaftMesh = GizmoA->MeshShaftX->GetStaticMesh();
+    UStaticMesh* TipMesh = GizmoA->MeshTipX->GetStaticMesh();
+    TestNotNull(TEXT("Axis shaft mesh resolved"), ShaftMesh);
+    TestNotNull(TEXT("Axis tip mesh resolved"), TipMesh);
+
+    UMaterialInterface* AxisMat = GizmoA->MeshShaftX->GetMaterial(0);
+    TestNotNull(TEXT("Axis handle has a material"), AxisMat);
+    if (!AxisMat)
+    {
+        return false;
+    }
+
+    // The base material must come from a tree that survives cooking. /Engine/EditorMaterials and
+    // /Engine/VREditor are editor-only and are simply absent from a packaged build.
+    UMaterialInterface* BaseMat = AxisMat;
+    if (UMaterialInstanceDynamic* AsMID = Cast<UMaterialInstanceDynamic>(AxisMat))
+    {
+        BaseMat = Cast<UMaterialInterface>(AsMID->Parent);
+    }
+    TestNotNull(TEXT("Resolved a base material behind the MID"), BaseMat);
+    if (BaseMat)
+    {
+        const FString BasePath = BaseMat->GetPathName();
+        TestFalse(
+            FString::Printf(TEXT("Base material is not editor-only content (%s)"), *BasePath),
+            BasePath.StartsWith(TEXT("/Engine/EditorMaterials")) || BasePath.StartsWith(TEXT("/Engine/VREditor")));
+    }
+
+    // Each gizmo needs its own MIDs. Built in the constructor they belonged to the CDO, so every
+    // spawned gizmo shared one set and highlighting an axis on one recoloured all of them.
+    UMaterialInterface* MatA = GizmoA->MeshShaftX->GetMaterial(0);
+    UMaterialInterface* MatB = GizmoB->MeshShaftX->GetMaterial(0);
+    TestNotNull(TEXT("Second gizmo has its own axis material"), MatB);
+    TestNotEqual(TEXT("Two gizmos do not share one dynamic material instance"), MatA, MatB);
+
+    return true;
+}
+
+#endif
