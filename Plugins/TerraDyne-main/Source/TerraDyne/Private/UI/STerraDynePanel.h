@@ -86,6 +86,9 @@ private:
 	FReply OnRelevelClicked();
 	FReply OnDeleteBuildingClicked();
 
+	// Roads & Junctions
+	FText GetRoadStatusText() const;
+
 	// Visualization
 	FText GetStatsText() const;
 	FText GetGPUStatsText() const;

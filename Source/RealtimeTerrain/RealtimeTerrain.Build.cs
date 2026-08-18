@@ -8,7 +8,18 @@ public class RealtimeTerrain : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+		PublicDependencyModuleNames.AddRange(new string[] { 
+			"Core", 
+			"CoreUObject", 
+			"Engine", 
+			"InputCore", 
+			"EnhancedInput",
+			"GeometryCore",
+			"GeometryFramework",
+			"GeometryScriptingCore",
+			"DynamicMesh",
+			"TerraDyne"
+		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 

@@ -161,10 +161,31 @@ private:
 	 */
 	void HandleBuildingClick();
 
+public:
+	/**
+	 * Road tool press and release.
+	 *
+	 * Virtual because road actors live in the game module, which this plugin cannot reference. The
+	 * base implementations reach for them by name through reflection, which works but cannot see
+	 * their real API; a subclass in the game module overrides these to call it directly.
+	 */
+	virtual void HandleRoadClick();
+
+	/** Called on mouse release while a road tool is active. Nothing to release by default. */
+	virtual void HandleRoadRelease() {}
+
+protected:
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AActor> SelectedRoadActor;
+
+	int32 SelectedRoadPointIndex = INDEX_NONE;
+
 	/** Traces the cursor against terrain and buildings. Returns false when nothing was hit. */
 	bool TraceUnderCursor(FHitResult& OutHit) const;
 
 	class UTerraDyneToolWidget* GetToolWidget() const;
+
+private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_BeginStroke(FVector WorldLocation, float Radius);

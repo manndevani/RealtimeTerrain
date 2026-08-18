@@ -330,15 +330,128 @@ void ATerraDyneEditController::OnLeftClickStart()
 		}
 	}
 
-	if (ToolUI && IsBuildingToolMode(ToolUI->CurrentTool))
+	if (ToolUI && (IsBuildingToolMode(ToolUI->CurrentTool) || IsRoadToolMode(ToolUI->CurrentTool)))
 	{
 		// Deliberately does NOT set bIsClicking: that flag is what makes Tick keep re-applying the
 		// action, which is right for a brush and wrong for placing an actor.
-		HandleBuildingClick();
+		if (IsBuildingToolMode(ToolUI->CurrentTool))
+		{
+			HandleBuildingClick();
+		}
+		else if (IsRoadToolMode(ToolUI->CurrentTool))
+		{
+			HandleRoadClick();
+		}
 		return;
 	}
 
 	bIsClicking = true;
+}
+
+void ATerraDyneEditController::HandleRoadClick()
+{
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (!ToolUI)
+	{
+		return;
+	}
+
+	FHitResult Hit;
+	if (!TraceUnderCursor(Hit))
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	UClass* SplineRoadClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadSplineActor"));
+	UClass* JunctionClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadJunctionActor"));
+
+	if (ToolUI->CurrentTool == ETerraDyneToolMode::PlaceJunction)
+	{
+		if (JunctionClass)
+		{
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			World->SpawnActor<AActor>(JunctionClass, Hit.Location, FRotator::ZeroRotator, SpawnParams);
+		}
+		return;
+	}
+
+	if (ToolUI->CurrentTool == ETerraDyneToolMode::DrawPavedRoad || ToolUI->CurrentTool == ETerraDyneToolMode::DrawRoughRoad)
+	{
+		if (!SplineRoadClass)
+		{
+			return;
+		}
+
+		const uint8 TargetRoadType = (ToolUI->CurrentTool == ETerraDyneToolMode::DrawPavedRoad) ? 1 : 0; // 0 = Rough, 1 = Paved
+
+		// 1. If we already have a selected road, extend it to the clicked destination!
+		if (SelectedRoadActor.IsValid())
+		{
+			AActor* Road = SelectedRoadActor.Get();
+			UFunction* ExtendFunc = Road->FindFunction(FName("ExtendFromPointToLocation"));
+			if (ExtendFunc)
+			{
+				struct FExtendParams
+				{
+					int32 FromPointIndex;
+					FVector TargetWorldLocation;
+					float MaxSegmentSpacing;
+				};
+				FExtendParams Params;
+				Params.FromPointIndex = SelectedRoadPointIndex != INDEX_NONE ? SelectedRoadPointIndex : 0;
+				Params.TargetWorldLocation = Hit.Location;
+				Params.MaxSegmentSpacing = 800.0f;
+				Road->ProcessEvent(ExtendFunc, &Params);
+
+				// Update selected point index to the new end of the spline so consecutive clicks continue extending seamlessly!
+				if (USplineComponent* SplineComp = Cast<USplineComponent>(Road->GetComponentByClass(USplineComponent::StaticClass())))
+				{
+					SelectedRoadPointIndex = FMath::Max(0, SplineComp->GetNumberOfSplinePoints() - 1);
+				}
+			}
+			return;
+		}
+
+		// 2. Otherwise: spawn a brand new road at the clicked location
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AActor* NewRoad = World->SpawnActor<AActor>(SplineRoadClass, Hit.Location, FRotator::ZeroRotator, SpawnParams);
+		if (NewRoad)
+		{
+			// Set RoadType byte/enum property
+			if (FByteProperty* TypeProp = CastField<FByteProperty>(NewRoad->GetClass()->FindPropertyByName(FName("RoadType"))))
+			{
+				TypeProp->SetPropertyValue_InContainer(NewRoad, TargetRoadType);
+			}
+			else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(NewRoad->GetClass()->FindPropertyByName(FName("RoadType"))))
+			{
+				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(EnumProp->ContainerPtrToValuePtr<void>(NewRoad), static_cast<int64>(TargetRoadType));
+			}
+
+			// Add initial point
+			UFunction* SetPointsFunc = NewRoad->FindFunction(FName("SetPointsRealtime"));
+			if (SetPointsFunc)
+			{
+				struct FSetPointsParams
+				{
+					TArray<FVector> WorldPoints;
+				};
+				FSetPointsParams Params;
+				Params.WorldPoints.Add(Hit.Location);
+				NewRoad->ProcessEvent(SetPointsFunc, &Params);
+			}
+
+			SelectedRoadActor = NewRoad;
+			SelectedRoadPointIndex = 0;
+		}
+	}
 }
 
 void ATerraDyneEditController::HandleBuildingClick()
@@ -384,6 +497,18 @@ void ATerraDyneEditController::OnLeftClickStop()
 {
 	bIsClicking = false;
 	bFlattenHeightLocked = false;
+
+	// Road tools get the release too, so a subclass can end a point drag. Road and building modes
+	// are mutually exclusive, and a road press never begins a stroke, so there is nothing below
+	// this that a road release needs to fall through to.
+	if (const UTerraDyneToolWidget* RoadToolUI = GetToolWidget())
+	{
+		if (IsRoadToolMode(RoadToolUI->CurrentTool))
+		{
+			HandleRoadRelease();
+			return;
+		}
+	}
 
 	if (DraggingSplinePointIndex != INDEX_NONE)
 	{

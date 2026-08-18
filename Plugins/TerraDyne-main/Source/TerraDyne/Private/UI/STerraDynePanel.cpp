@@ -431,6 +431,62 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						]
 					]
 
+					//--- ROADS & JUNCTIONS SECTION ---
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0, 5)
+					[
+						SNew(SBorder)
+						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+						.BorderBackgroundColor(SectionBGColor)
+						.Padding(8.0f)
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
+							[
+								SNew(STextBlock).Text(LOCTEXT("RoadsHeader", "ROADS & JUNCTIONS")).Font(HeaderFont)
+							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 5)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("ModePavedRoad", "Paved Road"))
+									.ToolTipText(LOCTEXT("TipPavedRoad", "Click and draw 3D paved road with curbs & sidewalks."))
+									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::DrawPavedRoad); })
+									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::DrawPavedRoad)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("ModeRoughRoad", "Rough Trail"))
+									.ToolTipText(LOCTEXT("TipRoughRoad", "Click and draw dirt trail with scattered rocks."))
+									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::DrawRoughRoad); })
+									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::DrawRoughRoad)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("ModeJunction", "Junction"))
+									.ToolTipText(LOCTEXT("TipJunction", "Click terrain to place a multi-way junction."))
+									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::PlaceJunction); })
+									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::PlaceJunction)
+									.HAlign(HAlign_Center)
+								]
+							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+							[
+								SNew(STextBlock)
+								.Text(this, &STerraDynePanel::GetRoadStatusText)
+								.Font(LabelFont)
+								.ColorAndOpacity(FLinearColor(0.25f, 0.8f, 0.5f))
+							]
+						]
+					]
+
 					//--- TELEMETRY SECTION ---
 					+ SVerticalBox::Slot()
 					.AutoHeight()
@@ -1077,6 +1133,26 @@ FReply STerraDynePanel::OnRedoClicked()
 		}
 	}
 	return FReply::Unhandled();
+}
+
+FText STerraDynePanel::GetRoadStatusText() const
+{
+	if (OwnerWidget.IsValid())
+	{
+		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::DrawPavedRoad)
+		{
+			return LOCTEXT("RoadStatusPaved", "Active: Click terrain to draw Paved Road.");
+		}
+		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::DrawRoughRoad)
+		{
+			return LOCTEXT("RoadStatusRough", "Active: Click terrain to draw Rough Trail.");
+		}
+		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::PlaceJunction)
+		{
+			return LOCTEXT("RoadStatusJunction", "Active: Click terrain to place Junction.");
+		}
+	}
+	return LOCTEXT("RoadStatusIdle", "Select a road tool above to begin.");
 }
 
 #undef LOCTEXT_NAMESPACE

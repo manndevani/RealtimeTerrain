@@ -20,13 +20,25 @@ enum class ETerraDyneToolMode : uint8
 	/** Next terrain click drops a building. */
 	PlaceBuilding,
 	/** Clicks select a building instead of sculpting. */
-	SelectBuilding
+	SelectBuilding,
+
+	/** Draw interactive realtime paved road */
+	DrawPavedRoad,
+	/** Draw interactive realtime rough dirt trail */
+	DrawRoughRoad,
+	/** Place interactive realtime multi-way junction */
+	PlaceJunction
 };
 
 /** Building tools take a single click; sculpt tools apply continuously while held. */
 inline bool IsBuildingToolMode(ETerraDyneToolMode Mode)
 {
 	return Mode == ETerraDyneToolMode::PlaceBuilding || Mode == ETerraDyneToolMode::SelectBuilding;
+}
+
+inline bool IsRoadToolMode(ETerraDyneToolMode Mode)
+{
+	return Mode == ETerraDyneToolMode::DrawPavedRoad || Mode == ETerraDyneToolMode::DrawRoughRoad || Mode == ETerraDyneToolMode::PlaceJunction;
 }
 
 /**

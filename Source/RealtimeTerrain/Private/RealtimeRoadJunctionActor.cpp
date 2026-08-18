@@ -1,0 +1,606 @@
+// Copyright (c) 2026 RealtimeTerrain. All Rights Reserved.
+
+#include "RealtimeRoadJunctionActor.h"
+
+#include "RoadMeshBuilder.h"
+
+#include "Algo/Reverse.h"
+#include "Components/DynamicMeshComponent.h"
+#include "UDynamicMesh.h"
+#include "DynamicMesh/DynamicMesh3.h"
+#include "GeometryScript/MeshNormalsFunctions.h"
+#include "Materials/MaterialInterface.h"
+#include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
+#include "Core/TerraDyneManager.h"
+#include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+	/** A leg with its angle normalised and its width and local axes resolved. */
+	struct FResolvedLeg
+	{
+		double AngleRad = 0.0;
+		double HalfWidth = 0.0;
+		double ArmLength = 0.0;
+		FVector2D Dir = FVector2D(1.0, 0.0);
+		/** Dir rotated 90 degrees counter-clockwise. */
+		FVector2D Perp = FVector2D(0.0, 1.0);
+	};
+
+	FORCEINLINE double Cross2D(const FVector2D& A, const FVector2D& B)
+	{
+		return A.X * B.Y - A.Y * B.X;
+	}
+
+	/** Beyond this gap there is no corner to round: the two legs are opposite or leave a reflex wedge. */
+	constexpr double StraightGapThresholdDegrees = 178.0;
+
+	/** How much wider than the roadside band a fillet has to be before the band stays well formed. */
+	constexpr double BandRadiusSafetyFactor = 1.35;
+}
+
+ARealtimeRoadJunctionActor::ARealtimeRoadJunctionActor()
+{
+	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = true;
+
+	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
+	SetRootComponent(SceneRoot);
+
+	JunctionMeshComponent = CreateDefaultSubobject<UDynamicMeshComponent>(TEXT("JunctionMeshComponent"));
+	JunctionMeshComponent->SetupAttachment(SceneRoot);
+	JunctionMeshComponent->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+	JunctionMeshComponent->SetGenerateOverlapEvents(false);
+	JunctionMeshComponent->bEnableComplexCollision = true;
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/Roads/Materials/M_Proto_Asphalt.M_Proto_Asphalt"));
+	if (AsphaltFinder.Succeeded()) AsphaltMaterial = AsphaltFinder.Object;
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CurbFinder(TEXT("/Game/Roads/Materials/M_Proto_Curb.M_Proto_Curb"));
+	if (CurbFinder.Succeeded()) CurbMaterial = CurbFinder.Object;
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FootpathFinder(TEXT("/Game/Roads/Materials/M_Proto_Footpath.M_Proto_Footpath"));
+	if (FootpathFinder.Succeeded()) FootpathMaterial = FootpathFinder.Object;
+
+	SyncPresetLegs();
+}
+
+void ARealtimeRoadJunctionActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, JunctionType);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, RoadWidth);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, CornerFilletRadius);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, FilletSegments);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, CurbHeight);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, CurbWidth);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, FootpathWidth);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, FootpathHeight);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, RoadThickness);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, UVTilingScale);
+	DOREPLIFETIME(ARealtimeRoadJunctionActor, Legs);
+}
+
+void ARealtimeRoadJunctionActor::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+	RebuildJunction();
+}
+
+void ARealtimeRoadJunctionActor::BeginPlay()
+{
+	Super::BeginPlay();
+	RebuildJunction();
+}
+
+#if WITH_EDITOR
+void ARealtimeRoadJunctionActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	const FName ChangedName = PropertyChangedEvent.GetPropertyName();
+
+	// Switching preset used to do nothing, because leg regeneration only ran from the constructor
+	// and when Legs happened to be empty.
+	if (ChangedName == GET_MEMBER_NAME_CHECKED(ARealtimeRoadJunctionActor, JunctionType))
+	{
+		SyncPresetLegs();
+	}
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
+void ARealtimeRoadJunctionActor::OnRep_JunctionConfig()
+{
+	RebuildJunction();
+}
+
+void ARealtimeRoadJunctionActor::OnRep_Legs()
+{
+	RebuildJunction();
+}
+
+void ARealtimeRoadJunctionActor::SyncPresetLegs()
+{
+	auto Preset = [this](std::initializer_list<float> Angles)
+	{
+		Legs.Reset();
+		for (float Angle : Angles)
+		{
+			FRoadJunctionLeg Leg;
+			Leg.AngleDegrees = Angle;
+			Leg.ArmLength = 500.0f;
+			Leg.CustomRoadWidth = 0.0f;
+			Legs.Add(Leg);
+		}
+	};
+
+	switch (JunctionType)
+	{
+	case ERoadJunctionType::T_Junction:
+		Preset({ 0.0f, 90.0f, 270.0f });
+		break;
+
+	case ERoadJunctionType::Cross_4Way:
+		Preset({ 0.0f, 90.0f, 180.0f, 270.0f });
+		break;
+
+	case ERoadJunctionType::Y_Fork:
+		Preset({ 0.0f, 135.0f, 225.0f });
+		break;
+
+	case ERoadJunctionType::Custom_N_Way:
+	default:
+		// Authored legs: leave them alone.
+		break;
+	}
+}
+
+void ARealtimeRoadJunctionActor::SetIsHolographicPreview(bool bHolographic)
+{
+	bIsHolographicPreview = bHolographic;
+
+	if (bIsHolographicPreview)
+	{
+		JunctionMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		if (HasAuthority())
+		{
+			SetReplicates(false);
+		}
+	}
+	else
+	{
+		JunctionMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		if (HasAuthority())
+		{
+			SetReplicates(true);
+		}
+	}
+
+	ApplyMaterials();
+	RebuildJunction();
+}
+
+void ARealtimeRoadJunctionActor::AddLegRealtime(float AngleDegrees, float ArmLength, float CustomRoadWidth)
+{
+	JunctionType = ERoadJunctionType::Custom_N_Way;
+	Legs.Add({ AngleDegrees, ArmLength, CustomRoadWidth });
+	RebuildJunction();
+}
+
+float ARealtimeRoadJunctionActor::GetLegWidth(int32 LegIndex) const
+{
+	if (!Legs.IsValidIndex(LegIndex))
+	{
+		return RoadWidth;
+	}
+	return (Legs[LegIndex].CustomRoadWidth > 0.0f) ? Legs[LegIndex].CustomRoadWidth : RoadWidth;
+}
+
+bool ARealtimeRoadJunctionActor::FindClosestLeg(const FVector& WorldLocation, int32& OutLegIndex, float& OutDistance) const
+{
+	OutLegIndex = INDEX_NONE;
+	OutDistance = MAX_FLT;
+
+	for (int32 i = 0; i < Legs.Num(); ++i)
+	{
+		FTransform LegTransform;
+		if (GetLegConnectionTransform(i, LegTransform))
+		{
+			const float Distance = FVector::Dist(WorldLocation, LegTransform.GetLocation());
+			if (Distance < OutDistance)
+			{
+				OutDistance = Distance;
+				OutLegIndex = i;
+			}
+		}
+	}
+
+	return OutLegIndex != INDEX_NONE;
+}
+
+bool ARealtimeRoadJunctionActor::GetLegConnectionTransform(int32 LegIndex, FTransform& OutTransform) const
+{
+	if (!Legs.IsValidIndex(LegIndex))
+	{
+		return false;
+	}
+
+	const FRoadJunctionLeg& Leg = Legs[LegIndex];
+	const double Radians = FMath::DegreesToRadians(static_cast<double>(Leg.AngleDegrees));
+	const FVector LocalDirection(FMath::Cos(Radians), FMath::Sin(Radians), 0.0);
+
+	const FTransform ActorTransform = GetActorTransform();
+	const FVector WorldDirection = ActorTransform.TransformVector(LocalDirection).GetSafeNormal2D();
+	const FVector ActorLocation = ActorTransform.GetLocation();
+
+	// The socket sits on the junction plane rather than at the actor's authored Z, so a road pinned
+	// to it lands exactly on the slab.
+	const FVector SocketLocation(
+		ActorLocation.X + WorldDirection.X * Leg.ArmLength,
+		ActorLocation.Y + WorldDirection.Y * Leg.ArmLength,
+		ConformedPlaneWorldZ);
+
+	OutTransform = FTransform(WorldDirection.Rotation(), SocketLocation);
+	return true;
+}
+
+//--------------------------------------------------------------------------------------------
+// Terrain
+//--------------------------------------------------------------------------------------------
+
+bool ARealtimeRoadJunctionActor::SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const
+{
+	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ);
+}
+
+double ARealtimeRoadJunctionActor::ResolvePlaneWorldZ() const
+{
+	const FTransform ActorTransform = GetActorTransform();
+	const FVector ActorLocation = ActorTransform.GetLocation();
+
+	if (!bConformToTerrain)
+	{
+		return ActorLocation.Z;
+	}
+
+	// Averaging the centre with every arm end grades the intersection to the mean of the ground it
+	// spans, which is what keeps all of its connecting roads reachable rather than favouring one.
+	TArray<FVector2D> Samples;
+	Samples.Reserve(Legs.Num() + 1);
+	Samples.Add(FVector2D(ActorLocation.X, ActorLocation.Y));
+
+	for (const FRoadJunctionLeg& Leg : Legs)
+	{
+		const double Radians = FMath::DegreesToRadians(static_cast<double>(Leg.AngleDegrees));
+		const FVector LocalDirection(FMath::Cos(Radians), FMath::Sin(Radians), 0.0);
+		const FVector WorldDirection = ActorTransform.TransformVector(LocalDirection).GetSafeNormal2D();
+		Samples.Add(FVector2D(
+			ActorLocation.X + WorldDirection.X * Leg.ArmLength,
+			ActorLocation.Y + WorldDirection.Y * Leg.ArmLength));
+	}
+
+	double Sum = 0.0;
+	int32 Count = 0;
+	for (const FVector2D& Sample : Samples)
+	{
+		float GroundZ = 0.0f;
+		if (SampleTerrainHeightAtXY(Sample, GroundZ))
+		{
+			Sum += GroundZ;
+			++Count;
+		}
+	}
+
+	if (Count == 0)
+	{
+		// Terrain is streamed out under every sample; the authored Z is the best guess available.
+		return ActorLocation.Z;
+	}
+
+	return Sum / static_cast<double>(Count) + TerrainSurfaceOffset;
+}
+
+//--------------------------------------------------------------------------------------------
+// Boundary construction
+//--------------------------------------------------------------------------------------------
+
+bool ARealtimeRoadJunctionActor::BuildBoundary(
+	TArray<FVector>& OutBoundary,
+	TArray<TArray<FVector>>& OutCornerChains,
+	double& OutMaxBandWidth) const
+{
+	OutBoundary.Reset();
+	OutCornerChains.Reset();
+	OutMaxBandWidth = TNumericLimits<double>::Max();
+
+	if (Legs.Num() < 2)
+	{
+		return false;
+	}
+
+	TArray<FResolvedLeg> Resolved;
+	Resolved.Reserve(Legs.Num());
+	for (const FRoadJunctionLeg& Leg : Legs)
+	{
+		FResolvedLeg Entry;
+		Entry.AngleRad = FMath::DegreesToRadians(static_cast<double>(FRotator::ClampAxis(Leg.AngleDegrees)));
+		Entry.HalfWidth = FMath::Max(100.0f, (Leg.CustomRoadWidth > 0.0f) ? Leg.CustomRoadWidth : RoadWidth) * 0.5;
+		Entry.ArmLength = FMath::Max(100.0f, Leg.ArmLength);
+		Entry.Dir = FVector2D(FMath::Cos(Entry.AngleRad), FMath::Sin(Entry.AngleRad));
+		Entry.Perp = FVector2D(-Entry.Dir.Y, Entry.Dir.X);
+		Resolved.Add(Entry);
+	}
+
+	// Sorting by angle is what makes "the next leg" mean "the next one round the circle", which the
+	// corner construction depends on. It also makes the traversal counter-clockwise, which the
+	// prism and sweep winding rules both assume.
+	Resolved.Sort([](const FResolvedLeg& A, const FResolvedLeg& B) { return A.AngleRad < B.AngleRad; });
+
+	const int32 NumLegs = Resolved.Num();
+	const int32 Segments = FMath::Clamp(FilletSegments, 1, 32);
+	const double StraightThreshold = FMath::DegreesToRadians(StraightGapThresholdDegrees);
+
+	const FTransform ActorTransform = GetActorTransform();
+	const FVector ActorLocation = ActorTransform.GetLocation();
+	const double PlaneZ = ConformedPlaneWorldZ;
+
+	// Local XY is rotated into world by the actor's yaw, but Z always comes from the junction
+	// plane, so a tilted actor transform cannot tip the slab out of horizontal.
+	auto ToWorld = [&](const FVector2D& Local) -> FVector
+	{
+		const FVector Rotated = ActorTransform.TransformVector(FVector(Local.X, Local.Y, 0.0));
+		return FVector(ActorLocation.X + Rotated.X, ActorLocation.Y + Rotated.Y, PlaneZ);
+	};
+
+	OutCornerChains.SetNum(NumLegs);
+
+	for (int32 i = 0; i < NumLegs; ++i)
+	{
+		const FResolvedLeg& Current = Resolved[i];
+		const FResolvedLeg& Next = Resolved[(i + 1) % NumLegs];
+
+		const FVector2D ArmClockwise = Current.Dir * Current.ArmLength - Current.Perp * Current.HalfWidth;
+		const FVector2D ArmCounterClockwise = Current.Dir * Current.ArmLength + Current.Perp * Current.HalfWidth;
+
+		OutBoundary.Add(ToWorld(ArmClockwise));
+		OutBoundary.Add(ToWorld(ArmCounterClockwise));
+
+		double Gap = Next.AngleRad - Current.AngleRad;
+		while (Gap <= 0.0)
+		{
+			Gap += UE_DOUBLE_PI * 2.0;
+		}
+
+		const double HalfAngle = Gap * 0.5;
+		TArray<FVector2D> Chain;
+
+		// Fallback used whenever there is no well-formed corner to round: a single point on the
+		// gap's bisector. For a T-junction's 180 degree gap this lands exactly on the straight
+		// edge joining the two opposite legs; for a wider gap it bulges outward, which is what
+		// stops the reflex case folding the boundary back through itself.
+		auto AddBisectorPoint = [&]()
+		{
+			const double BisectorAngle = Current.AngleRad + HalfAngle;
+			const double Radius = FMath::Max(Current.HalfWidth, Next.HalfWidth);
+			Chain.Add(FVector2D(FMath::Cos(BisectorAngle), FMath::Sin(BisectorAngle)) * Radius);
+		};
+
+		if (Gap >= StraightThreshold)
+		{
+			AddBisectorPoint();
+		}
+		else
+		{
+			const FVector2D OriginA = Current.Perp * Current.HalfWidth;
+			const FVector2D OriginB = -Next.Perp * Next.HalfWidth;
+			const double Denominator = Cross2D(Current.Dir, Next.Dir);
+
+			bool bResolvedCorner = false;
+
+			if (FMath::Abs(Denominator) > 1.0e-6)
+			{
+				const FVector2D Delta = OriginB - OriginA;
+				const double DistanceA = Cross2D(Delta, Next.Dir) / Denominator;
+				const double DistanceB = Cross2D(Delta, Current.Dir) / Denominator;
+
+				// A corner behind the centre, or past the arm ends, means the legs overlap rather
+				// than meeting cleanly. The bisector fallback handles those.
+				if (DistanceA > -Current.ArmLength && DistanceA < Current.ArmLength &&
+					DistanceB > -Next.ArmLength && DistanceB < Next.ArmLength)
+				{
+					const FVector2D Corner = OriginA + Current.Dir * DistanceA;
+					const double TanHalf = FMath::Tan(HalfAngle);
+					const double SinHalf = FMath::Sin(HalfAngle);
+
+					if (TanHalf > 1.0e-4 && SinHalf > 1.0e-4)
+					{
+						// The tangent points have to stay between the corner and the arm ends.
+						const double RoomA = FMath::Max(0.0, (Current.ArmLength - DistanceA) * 0.85) * TanHalf;
+						const double RoomB = FMath::Max(0.0, (Next.ArmLength - DistanceB) * 0.85) * TanHalf;
+						const double Radius = FMath::Min3(static_cast<double>(CornerFilletRadius), RoomA, RoomB);
+
+						if (Radius > 1.0)
+						{
+							const double TangentDistance = Radius / TanHalf;
+							const FVector2D TangentA = Corner + Current.Dir * TangentDistance;
+							const FVector2D TangentB = Corner + Next.Dir * TangentDistance;
+							const FVector2D Bisector = (Current.Dir + Next.Dir).GetSafeNormal();
+							const FVector2D Centre = Corner + Bisector * (Radius / SinHalf);
+
+							double StartAngle = FMath::Atan2(TangentA.Y - Centre.Y, TangentA.X - Centre.X);
+							const double EndAngle = FMath::Atan2(TangentB.Y - Centre.Y, TangentB.X - Centre.X);
+
+							double Sweep = EndAngle - StartAngle;
+							while (Sweep > UE_DOUBLE_PI) Sweep -= UE_DOUBLE_PI * 2.0;
+							while (Sweep < -UE_DOUBLE_PI) Sweep += UE_DOUBLE_PI * 2.0;
+
+							for (int32 k = 0; k <= Segments; ++k)
+							{
+								const double Angle = StartAngle + Sweep * (static_cast<double>(k) / Segments);
+								Chain.Add(Centre + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+							}
+
+							// The roadside band offsets toward this arc's centre, so it cannot be
+							// wider than the radius allows.
+							OutMaxBandWidth = FMath::Min(OutMaxBandWidth, Radius / BandRadiusSafetyFactor);
+							bResolvedCorner = true;
+						}
+						else
+						{
+							// Fillet collapsed against a short arm: keep the sharp corner.
+							Chain.Add(Corner);
+							bResolvedCorner = true;
+						}
+					}
+				}
+			}
+
+			if (!bResolvedCorner)
+			{
+				AddBisectorPoint();
+			}
+		}
+
+		// The band runs from this leg's counter-clockwise arm corner, round the corner, to the next
+		// leg's clockwise arm corner, so it meets the curbs of both connecting roads.
+		TArray<FVector>& BandChain = OutCornerChains[i];
+		BandChain.Reserve(Chain.Num() + 2);
+		BandChain.Add(ToWorld(ArmCounterClockwise));
+
+		for (const FVector2D& Point : Chain)
+		{
+			const FVector WorldPoint = ToWorld(Point);
+			OutBoundary.Add(WorldPoint);
+			BandChain.Add(WorldPoint);
+		}
+
+		const FVector2D NextArmClockwise = Next.Dir * Next.ArmLength - Next.Perp * Next.HalfWidth;
+		BandChain.Add(ToWorld(NextArmClockwise));
+
+		// Swept frames take Right from world up crossed with the tangent, which points inward along
+		// a counter-clockwise path. Reversing the chain turns it outward, which is the direction the
+		// roadside section is authored in.
+		Algo::Reverse(BandChain);
+	}
+
+	return OutBoundary.Num() >= 3;
+}
+
+//--------------------------------------------------------------------------------------------
+// Mesh generation
+//--------------------------------------------------------------------------------------------
+
+void ARealtimeRoadJunctionActor::ApplyMaterials()
+{
+	if (!JunctionMeshComponent) return;
+
+	TArray<UMaterialInterface*> MaterialSet;
+	MaterialSet.SetNum(RoadMesh::Slots::Count);
+
+	if (bIsHolographicPreview && HolographicMaterial)
+	{
+		for (UMaterialInterface*& Slot : MaterialSet)
+		{
+			Slot = HolographicMaterial;
+		}
+	}
+	else
+	{
+		MaterialSet[RoadMesh::Slots::Surface] = AsphaltMaterial;
+		MaterialSet[RoadMesh::Slots::Curb] = CurbMaterial;
+		MaterialSet[RoadMesh::Slots::Footpath] = FootpathMaterial;
+	}
+
+	JunctionMeshComponent->ConfigureMaterialSet(MaterialSet);
+}
+
+void ARealtimeRoadJunctionActor::RebuildJunction()
+{
+	if (!JunctionMeshComponent) return;
+
+	// Presets own their legs; only Custom_N_Way is expected to arrive with an authored list.
+	if (JunctionType != ERoadJunctionType::Custom_N_Way && Legs.Num() == 0)
+	{
+		SyncPresetLegs();
+	}
+
+	ApplyMaterials();
+
+	UDynamicMesh* DynamicMesh = JunctionMeshComponent->GetDynamicMesh();
+	if (!DynamicMesh) return;
+
+	ConformedPlaneWorldZ = ResolvePlaneWorldZ();
+
+	TArray<FVector> Boundary;
+	TArray<TArray<FVector>> CornerChains;
+	double MaxBandWidth = 0.0;
+
+	if (!BuildBoundary(Boundary, CornerChains, MaxBandWidth))
+	{
+		DynamicMesh->Reset();
+		JunctionMeshComponent->NotifyMeshUpdated();
+		return;
+	}
+
+	const float UVScale = FMath::Max(1.0e-5f, UVTilingScale);
+	const double Thickness = FMath::Max(2.0f, RoadThickness);
+
+	// Scale the band down if the tightest corner cannot carry it at full width.
+	const double RequestedBand = FMath::Max(0.0f, CurbWidth) + FMath::Max(0.0f, FootpathWidth);
+	const double BandScale = (RequestedBand > UE_KINDA_SMALL_NUMBER)
+		? FMath::Clamp(MaxBandWidth / RequestedBand, 0.0, 1.0)
+		: 0.0;
+
+	RoadMesh::FSection BandSection;
+	if (BandScale > 0.05)
+	{
+		RoadMesh::BuildRoadsideSection(
+			CurbWidth * BandScale,
+			CurbHeight,
+			FootpathWidth * BandScale,
+			FootpathHeight,
+			Thickness,
+			BandSection);
+	}
+
+	const FTransform WorldToLocal = JunctionMeshComponent->GetComponentTransform().Inverse();
+
+	DynamicMesh->Reset();
+	DynamicMesh->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
+	{
+		RoadMesh::AppendPrism(
+			Mesh, Boundary, Thickness,
+			RoadMesh::Slots::Surface, RoadMesh::Slots::Flank,
+			WorldToLocal, UVScale);
+
+		if (BandSection.Num() < 2)
+		{
+			return;
+		}
+
+		RoadMesh::FSweepOptions BandOptions;
+		BandOptions.UVScale = UVScale;
+		// An open strip: the junction slab's own skirt already occupies the plane where this
+		// band's inner wall would sit, and two coincident faces would z-fight.
+		BandOptions.bSectionIsClosed = false;
+		BandOptions.bCapStart = false;
+		BandOptions.bCapEnd = false;
+
+		for (const TArray<FVector>& Chain : CornerChains)
+		{
+			TArray<RoadMesh::FFrame> Frames;
+			if (RoadMesh::BuildFramesFromPolyline(Chain, Frames))
+			{
+				RoadMesh::SweepSection(Mesh, BandSection, Frames, WorldToLocal, BandOptions);
+			}
+		}
+	});
+
+	UGeometryScriptLibrary_MeshNormalsFunctions::ComputeSplitNormals(
+		DynamicMesh,
+		FGeometryScriptSplitNormalsOptions(),
+		FGeometryScriptCalculateNormalsOptions());
+
+	JunctionMeshComponent->NotifyMeshUpdated();
+}
