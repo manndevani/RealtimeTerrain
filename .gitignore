@@ -33,11 +33,13 @@ DDC/
 # as-is -- and redistributing purchased marketplace assets is a licensing
 # question in its own right.
 #
-# NewWorld.umap is the one hand-authored asset in this tree and is currently
-# unversioned; consider carving it out of this rule rather than tracking all
-# 8.5 GB.
+# Leading slash matters: it anchors this to the project's own Content/ only.
+# Without it the pattern matches Content/ at ANY depth, which silently swallowed
+# Plugins/TerraDyne-main/Content/ -- the plugin's tracked assets survived only
+# because ignore rules do not apply to already-tracked files, so the breakage
+# showed up as newly added plugin content being quietly dropped.
 # ---------------------------------------------------------------------------
-Content/
+/Content/
 
 # ---------------------------------------------------------------------------
 # Nested plugin repositories.
