@@ -210,54 +210,21 @@ void ATerraDyneOrchestrator::BeginPlay()
 	InitShowcaseSequence();
 	InitPhaseConfigs();
 
-	// Setup UI and Player
-	if (APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0))
+	// Adopt the tool panel if one is already up, so the showcase can read values from it.
+	//
+	// This actor deliberately does NOT create a panel. The tool UI and sculpt input live on
+	// ATerraDyneEditController, which unlike this actor exists on clients too; creating a second
+	// panel here would double up on a listen server and still leave clients with nothing.
+	if (UGameplayStatics::GetPlayerController(this, 0))
 	{
-		// 1. Check if ANY ToolWidget already exists (handles duplication robustly)
 		TArray<UUserWidget*> FoundWidgets;
 		UWidgetBlueprintLibrary::GetAllWidgetsOfClass(GetWorld(), FoundWidgets, UTerraDyneToolWidget::StaticClass(), false);
 
-		if (FoundWidgets.Num() == 0)
+		if (FoundWidgets.Num() > 0)
 		{
-			// Try to load WBP from Settings, else fallback
-			UClass* WidgetClass = nullptr;
-			if (const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>())
-			{
-				if (Settings->HUDWidgetPath.IsValid())
-				{
-					UClass* LoadedClass = Cast<UClass>(Settings->HUDWidgetPath.TryLoad());
-					if (LoadedClass && LoadedClass->IsChildOf(UUserWidget::StaticClass()))
-					{
-						WidgetClass = LoadedClass;
-					}
-				}
-			}
-
-			if (!WidgetClass)
-			{
-				WidgetClass = LoadClass<UUserWidget>(nullptr, TEXT("/Game/TerraDyne/Blueprints/WBP_TerraDyneHUD.WBP_TerraDyneHUD_C"));
-			}
-
-			if (!WidgetClass)
-			{
-				WidgetClass = UTerraDyneToolWidget::StaticClass();
-			}
-
-			if (WidgetClass)
-			{
-				// The tool panel and sculpt input now live on ATerraDyneEditController, which unlike
-				// this actor exists on clients too. Creating a second panel here would double up on
-				// a listen server and still leave clients with nothing.
-			}
-
-		}
-		else
-		{
-			// Grab the existing one so we can read values from it
 			ActiveUI = FoundWidgets[0];
 			UE_LOG(LogTemp, Log, TEXT("Showcase: Connected to existing ToolWidget."));
 		}
-
 	}
 
 	RestartShowcase();
