@@ -39,7 +39,7 @@ DDC/
 # because ignore rules do not apply to already-tracked files, so the breakage
 # showed up as newly added plugin content being quietly dropped.
 # ---------------------------------------------------------------------------
-/Content/
+/Content/*
 
 # ---------------------------------------------------------------------------
 # Nested plugin repositories.
@@ -53,3 +53,143 @@ DDC/
 # merge with its history intact.
 # ---------------------------------------------------------------------------
 Plugins/Monolith/
+
+# ---------------------------------------------------------------------------
+# UnrealDrive_CitySample: MetaRoad's CitySample-styled content pack, otherwise
+# covered by the /Content/* rule above. Carves out only the road-material and
+# roadside-prop assets RealtimeRoadSplineActor/RealtimeRoadJunctionActor
+# actually reference -- traced as a real dependency closure (recursively
+# grepping each .uasset for embedded /Game/... asset-path strings, not
+# hand-picked), 78 files / ~719 MB of the pack's full ~3.8 GB.
+#
+# Git will not look inside an excluded directory for negation patterns at
+# all (a bare 'dir/' ignore rule is atomic), so every level has to be
+# negated-then-re-wildcard-ignored in a cascade -- !dir/ to allow descent,
+# dir/* to re-ignore its contents as individual (negatable) entries again --
+# down to each leaf directory, where the specific files below are negated
+# individually instead of the whole directory.
+# ---------------------------------------------------------------------------
+!/Content/UnrealDrive_CitySample/
+/Content/UnrealDrive_CitySample/*
+!/Content/UnrealDrive_CitySample/MasterMaterials/
+/Content/UnrealDrive_CitySample/MasterMaterials/*
+!/Content/UnrealDrive_CitySample/Materials/
+/Content/UnrealDrive_CitySample/Materials/*
+!/Content/UnrealDrive_CitySample/Meshes/
+/Content/UnrealDrive_CitySample/Meshes/*
+!/Content/UnrealDrive_CitySample/Textures/
+/Content/UnrealDrive_CitySample/Textures/*
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/
+/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/*
+!/Content/UnrealDrive_CitySample/MasterMaterials/PhysMaterial/
+/Content/UnrealDrive_CitySample/MasterMaterials/PhysMaterial/*
+!/Content/UnrealDrive_CitySample/Materials/MI_Asphalt/
+/Content/UnrealDrive_CitySample/Materials/MI_Asphalt/*
+!/Content/UnrealDrive_CitySample/Materials/MI_Concrete/
+/Content/UnrealDrive_CitySample/Materials/MI_Concrete/*
+!/Content/UnrealDrive_CitySample/Materials/MI_Sidewalks/
+/Content/UnrealDrive_CitySample/Materials/MI_Sidewalks/*
+!/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/
+/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/*
+!/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/
+/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/*
+!/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/
+/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/*
+!/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/
+/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/*
+!/Content/UnrealDrive_CitySample/Textures/Asphalt_Road/
+/Content/UnrealDrive_CitySample/Textures/Asphalt_Road/*
+!/Content/UnrealDrive_CitySample/Textures/Base/
+/Content/UnrealDrive_CitySample/Textures/Base/*
+!/Content/UnrealDrive_CitySample/Textures/Debris_Manmade/
+/Content/UnrealDrive_CitySample/Textures/Debris_Manmade/*
+!/Content/UnrealDrive_CitySample/Textures/Dirty_Sidewalk/
+/Content/UnrealDrive_CitySample/Textures/Dirty_Sidewalk/*
+!/Content/UnrealDrive_CitySample/Textures/Frost/
+/Content/UnrealDrive_CitySample/Textures/Frost/*
+!/Content/UnrealDrive_CitySample/Textures/Metal_Painted_vdpncdn/
+/Content/UnrealDrive_CitySample/Textures/Metal_Painted_vdpncdn/*
+!/Content/UnrealDrive_CitySample/Textures/Road_Debris/
+/Content/UnrealDrive_CitySample/Textures/Road_Debris/*
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/
+/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/*
+!/Content/UnrealDrive_CitySample/Textures/Tram/
+/Content/UnrealDrive_CitySample/Textures/Tram/*
+!/Content/UnrealDrive_CitySample/MasterMaterials/MS_DefaultMaterial.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/M_Freeway_Asphalt.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/M_Sidewalk.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MFI_Puddle_Ground.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_DetailTexturing_Road.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_MaskEdge.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_PostMA_Road.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_Puddle_v2.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_TextureCellBombing.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_WorldAlignedTexture_Offset.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/MF_WorldNoise.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/MaterialFunction/Voronoi_Perturbed_2k_RGBA8_nonVT.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/PhysMaterial/PM_Road_Surface.uasset
+!/Content/UnrealDrive_CitySample/MasterMaterials/PhysMaterial/PM_Sidewalk_Surface.uasset
+!/Content/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Mark.uasset
+!/Content/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Road.uasset
+!/Content/UnrealDrive_CitySample/Materials/MI_Concrete/M_roadcurb_master_concrete_instance.uasset
+!/Content/UnrealDrive_CitySample/Materials/MI_Sidewalks/MI_Sidewalk.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/Concrete_Barrier_Albedo_2K.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/Concrete_Barrier_LOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/Concrete_Barrier_Normal_2K_LOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/Concrete_Barrier_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Concrete_Barrier/Concrete_Barrier_inst.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/Metal_Bollard_Albedo.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/Metal_Bollard_LOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/Metal_Bollard_NormalLOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/Metal_Bollard_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Metal_Bollard/Metal_Bollard_inst.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/Modular_Rail_Albedo_2K.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/Modular_Rail_Guard_4m_00_inst.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/Modular_Rail_Guard_4m_LOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/Modular_Rail_Normal_2K_LOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Rail_Guard/Modular_Rail_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/Traffic_Cone_01_inst.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/Traffic_Cone_Albedo.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/Traffic_Cone_LOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/Traffic_Cone_NormalLOD0.uasset
+!/Content/UnrealDrive_CitySample/Meshes/Traffic_Cone/Traffic_Cone_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Textures/8K_Albedo.uasset
+!/Content/UnrealDrive_CitySample/Textures/Asphalt_Road/4K_Normal.uasset
+!/Content/UnrealDrive_CitySample/Textures/Asphalt_Road/8K_AO.uasset
+!/Content/UnrealDrive_CitySample/Textures/Asphalt_Road/8K_Albedo.uasset
+!/Content/UnrealDrive_CitySample/Textures/Asphalt_Road/8K_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Textures/Base/T_UVCheck_VT.uasset
+!/Content/UnrealDrive_CitySample/Textures/Debris_Manmade/8K_Albedo.uasset
+!/Content/UnrealDrive_CitySample/Textures/Debris_Manmade/8K_Opacity.uasset
+!/Content/UnrealDrive_CitySample/Textures/Dirty_Sidewalk/2K_Normal.uasset
+!/Content/UnrealDrive_CitySample/Textures/Dirty_Sidewalk/4K_AO.uasset
+!/Content/UnrealDrive_CitySample/Textures/Dirty_Sidewalk/4K_Albedo.uasset
+!/Content/UnrealDrive_CitySample/Textures/Dirty_Sidewalk/4K_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Textures/Frost/4K_Mask.uasset
+!/Content/UnrealDrive_CitySample/Textures/Frost/4K_Roughness.uasset
+!/Content/UnrealDrive_CitySample/Textures/Metal_Painted_vdpncdn/2K_AOMRD.uasset
+!/Content/UnrealDrive_CitySample/Textures/Patch.uasset
+!/Content/UnrealDrive_CitySample/Textures/Road_Debris/4K_Normal.uasset
+!/Content/UnrealDrive_CitySample/Textures/Road_Debris/8K_AlbedoOpacity.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_AsphaltNoise_packedA.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_AsphaltNoise_packedB.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_CrackTileLarge_C.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_CrackTileLarge_N.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_GrimeDrip_Breakup_Mask.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_Imperfection_4K.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_Puddles_4k.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_RooftopPuddle.uasset
+!/Content/UnrealDrive_CitySample/Textures/SurfaceFeature/T_tiled_shoeprints_random.uasset
+!/Content/UnrealDrive_CitySample/Textures/Tram/TCom_Road_Railway2_2K_albedo.uasset
+!/Content/UnrealDrive_CitySample/Textures/Tram/TCom_Road_Railway2_2K_alpha_rails_only.uasset
+!/Content/UnrealDrive_CitySample/Textures/Tram/TCom_Road_Railway2_2K_ao.uasset
+!/Content/UnrealDrive_CitySample/Textures/Tram/TCom_Road_Railway2_2K_metallic.uasset
+!/Content/UnrealDrive_CitySample/Textures/Tram/TCom_Road_Railway2_2K_normal.uasset
+!/Content/UnrealDrive_CitySample/Textures/Tram/TCom_Road_Railway2_2K_roughness.uasset
+!/Content/UnrealDrive_CitySample/Textures/freeway_gradientLines_packed_v03a_v02_circleAlpha.uasset
+!/Content/UnrealDrive_CitySample/Textures/freeway_gradientLines_packed_v03a_v03_circleAlpha.uasset
+!/Content/UnrealDrive_CitySample/Textures/freeway_gradient_packed_v02.uasset
+!/Content/UnrealDrive_CitySample/Textures/freeway_tireLines_blurred.uasset
+!/Content/UnrealDrive_CitySample/Textures/ground_trash_01_basecolor.uasset
+!/Content/UnrealDrive_CitySample/Textures/ground_trash_mask95_trashMask.uasset
+!/Content/UnrealDrive_CitySample/Textures/patch_04.uasset
