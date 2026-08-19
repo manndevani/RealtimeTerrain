@@ -40,13 +40,17 @@ ARealtimeRoadSplineActor::ARealtimeRoadSplineActor()
 	ScatterHISMComponent->SetupAttachment(SplineComponent);
 	ScatterHISMComponent->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/Roads/Materials/M_Proto_Asphalt.M_Proto_Asphalt"));
+	// Defaults to the CitySample-styled road materials (Content/UnrealDrive_CitySample) rather than
+	// the flat Proto placeholders, since RoadMeshBuilder's UVs are world-scaled and these tile
+	// cleanly at that density. Still EditAnywhere, so any road can override back to Proto or
+	// anything else per instance.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Road.MI_FreewayAsphalt_Road"));
 	if (AsphaltFinder.Succeeded()) AsphaltMaterial = AsphaltFinder.Object;
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CurbFinder(TEXT("/Game/Roads/Materials/M_Proto_Curb.M_Proto_Curb"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CurbFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Concrete/M_roadcurb_master_concrete_instance.M_roadcurb_master_concrete_instance"));
 	if (CurbFinder.Succeeded()) CurbMaterial = CurbFinder.Object;
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FootpathFinder(TEXT("/Game/Roads/Materials/M_Proto_Footpath.M_Proto_Footpath"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FootpathFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Sidewalks/MI_Sidewalk.MI_Sidewalk"));
 	if (FootpathFinder.Succeeded()) FootpathMaterial = FootpathFinder.Object;
 
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> RoughFinder(TEXT("/Game/Roads/Materials/M_Proto_RoughRoad.M_Proto_RoughRoad"));

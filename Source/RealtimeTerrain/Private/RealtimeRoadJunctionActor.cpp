@@ -61,13 +61,15 @@ ARealtimeRoadJunctionActor::ARealtimeRoadJunctionActor()
 	JunctionMeshComponent->SetGenerateOverlapEvents(false);
 	JunctionMeshComponent->bEnableComplexCollision = true;
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/Roads/Materials/M_Proto_Asphalt.M_Proto_Asphalt"));
+	// Matches ARealtimeRoadSplineActor's own defaults so a junction and the roads meeting it use the
+	// same materials without per-actor setup. Still EditAnywhere, so any junction can override.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Road.MI_FreewayAsphalt_Road"));
 	if (AsphaltFinder.Succeeded()) AsphaltMaterial = AsphaltFinder.Object;
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CurbFinder(TEXT("/Game/Roads/Materials/M_Proto_Curb.M_Proto_Curb"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CurbFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Concrete/M_roadcurb_master_concrete_instance.M_roadcurb_master_concrete_instance"));
 	if (CurbFinder.Succeeded()) CurbMaterial = CurbFinder.Object;
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FootpathFinder(TEXT("/Game/Roads/Materials/M_Proto_Footpath.M_Proto_Footpath"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FootpathFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Sidewalks/MI_Sidewalk.MI_Sidewalk"));
 	if (FootpathFinder.Succeeded()) FootpathMaterial = FootpathFinder.Object;
 
 	SyncPresetLegs();
