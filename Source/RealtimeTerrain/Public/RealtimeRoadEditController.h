@@ -34,4 +34,9 @@ public:
 
 	virtual void HandleRoadClick() override;
 	virtual void HandleRoadRelease() override;
+
+	virtual bool TryRoadUndo() override;
+	virtual bool TryRoadRedo() override;
+	virtual void DeleteSelectedRoadPoint() override;
+	virtual bool HasRoadPointSelected() const override;
 };

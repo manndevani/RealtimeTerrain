@@ -174,6 +174,22 @@ public:
 	/** Called on mouse release while a road tool is active. Nothing to release by default. */
 	virtual void HandleRoadRelease() {}
 
+	/**
+	 * Road editing history and point removal.
+	 *
+	 * Roads live in the game module and are invisible from here, so a subclass supplies these. The
+	 * undo hooks are tried before the terrain stack: if a road edit was undone, the sculpt history
+	 * is left alone, so one shortcut serves both without either stealing the other's steps.
+	 */
+	virtual bool TryRoadUndo() { return false; }
+	virtual bool TryRoadRedo() { return false; }
+
+	/** Removes the selected road control point, if there is one. */
+	virtual void DeleteSelectedRoadPoint() {}
+
+	/** Whether a road control point is currently selected, for enabling UI. */
+	virtual bool HasRoadPointSelected() const { return false; }
+
 protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AActor> SelectedRoadActor;

@@ -377,6 +377,8 @@ bool URealtimeRoadBuilderComponent::BeginPointDrag()
 		DragPlane = FPlane(DragStartPointLocation, Normal);
 		IntersectCursorWithPlane(DragPlane, DragStartIntersection);
 
+		RecordUndo(SelectedRoadActor.Get());
+
 		bIsDraggingPoint = true;
 		return true;
 	}
@@ -402,6 +404,10 @@ bool URealtimeRoadBuilderComponent::BeginPointDrag()
 
 	DragAxis = ETerraDyneGizmoAxis::None;
 	DragStartPointLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
+
+	// Once, here, rather than per frame: undo should step back to where the point started, not
+	// crawl back along the path it was dragged over.
+	RecordUndo(SelectedRoadActor.Get());
 
 	// Grab where the point already is, relative to the cursor, so it moves with the cursor instead
 	// of jumping to it.
@@ -436,6 +442,140 @@ void URealtimeRoadBuilderComponent::EndPointDrag()
 		SelectedRoadActor->RebuildRoad();
 		SelectedRoadActor->RefreshAffectedJunctions();
 	}
+}
+
+bool URealtimeRoadBuilderComponent::HasPointSelected() const
+{
+	return SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE;
+}
+
+bool URealtimeRoadBuilderComponent::CaptureSnapshot(
+	ARealtimeRoadSplineActor* Road, FRoadEditSnapshot& OutSnapshot) const
+{
+	if (!Road || !Road->SplineComponent) return false;
+
+	const int32 Num = Road->SplineComponent->GetNumberOfSplinePoints();
+	if (Num == 0) return false;
+
+	OutSnapshot.Road = Road;
+	OutSnapshot.Points.Reset(Num);
+	for (int32 i = 0; i < Num; ++i)
+	{
+		OutSnapshot.Points.Add(Road->GetSplinePointWorldLocation(i));
+	}
+	return true;
+}
+
+bool URealtimeRoadBuilderComponent::ApplySnapshot(const FRoadEditSnapshot& Snapshot)
+{
+	ARealtimeRoadSplineActor* Road = Snapshot.Road.Get();
+	if (!Road || Snapshot.Points.Num() < 1) return false;
+
+	Road->SetPointsRealtime(Snapshot.Points);
+	Road->RebuildRoad();
+
+	// Intersections were solved against the old shape, so they have to be reconciled against this
+	// one or the road would snap back while its junctions stayed where they were.
+	Road->RefreshAffectedJunctions();
+
+	SelectedRoadActor = Road;
+	SelectedPointIndex = FMath::Clamp(SelectedPointIndex, 0, Snapshot.Points.Num() - 1);
+	OverlayBuiltForRoad = nullptr;
+	return true;
+}
+
+void URealtimeRoadBuilderComponent::RecordUndo(ARealtimeRoadSplineActor* Road)
+{
+	FRoadEditSnapshot Snapshot;
+	if (!CaptureSnapshot(Road, Snapshot)) return;
+
+	UndoStack.Add(MoveTemp(Snapshot));
+
+	// A fresh edit invalidates anything that was undone past.
+	RedoStack.Reset();
+
+	const int32 Limit = FMath::Max(1, MaxUndoSteps);
+	while (UndoStack.Num() > Limit)
+	{
+		UndoStack.RemoveAt(0);
+	}
+}
+
+bool URealtimeRoadBuilderComponent::UndoRoadEdit()
+{
+	while (UndoStack.Num() > 0)
+	{
+		FRoadEditSnapshot Snapshot = UndoStack.Pop();
+		if (!Snapshot.Road.IsValid())
+		{
+			// The road was destroyed since; that step can never be replayed.
+			continue;
+		}
+
+		FRoadEditSnapshot Current;
+		if (CaptureSnapshot(Snapshot.Road.Get(), Current))
+		{
+			RedoStack.Add(MoveTemp(Current));
+		}
+
+		return ApplySnapshot(Snapshot);
+	}
+	return false;
+}
+
+bool URealtimeRoadBuilderComponent::RedoRoadEdit()
+{
+	while (RedoStack.Num() > 0)
+	{
+		FRoadEditSnapshot Snapshot = RedoStack.Pop();
+		if (!Snapshot.Road.IsValid())
+		{
+			continue;
+		}
+
+		FRoadEditSnapshot Current;
+		if (CaptureSnapshot(Snapshot.Road.Get(), Current))
+		{
+			UndoStack.Add(MoveTemp(Current));
+		}
+
+		return ApplySnapshot(Snapshot);
+	}
+	return false;
+}
+
+bool URealtimeRoadBuilderComponent::DeleteSelectedPoint()
+{
+	if (!HasPointSelected()) return false;
+
+	ARealtimeRoadSplineActor* Road = SelectedRoadActor.Get();
+	if (!Road || !Road->SplineComponent) return false;
+
+	const int32 Num = Road->SplineComponent->GetNumberOfSplinePoints();
+
+	// Two points is the least a road can be built from, so this refuses rather than silently
+	// leaving a road that cannot generate a mesh.
+	if (Num <= 2 || SelectedPointIndex < 0 || SelectedPointIndex >= Num) return false;
+
+	RecordUndo(Road);
+
+	TArray<FVector> Points;
+	Points.Reserve(Num - 1);
+	for (int32 i = 0; i < Num; ++i)
+	{
+		if (i != SelectedPointIndex)
+		{
+			Points.Add(Road->GetSplinePointWorldLocation(i));
+		}
+	}
+
+	Road->SetPointsRealtime(Points);
+	Road->RebuildRoad();
+	Road->RefreshAffectedJunctions();
+
+	SelectedPointIndex = FMath::Clamp(SelectedPointIndex, 0, Points.Num() - 1);
+	OverlayBuiltForRoad = nullptr;
+	return true;
 }
 
 bool URealtimeRoadBuilderComponent::HasAuthority() const
@@ -659,6 +799,8 @@ void URealtimeRoadBuilderComponent::HandleWorldClick(const FVector& ClickedWorld
 		const FVector Destination = ResolvePlacementLocation(ClickedWorldLocation, SnappedJunction, SnappedLeg);
 
 		const bool bExtendingFromStart = (SelectedPointIndex == 0);
+
+		RecordUndo(Road);
 		Road->ExtendFromPointToLocation(SelectedPointIndex, Destination, AutoPointSpacing);
 
 		if (SnappedJunction)

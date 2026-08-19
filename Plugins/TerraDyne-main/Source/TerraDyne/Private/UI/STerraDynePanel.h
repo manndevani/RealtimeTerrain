@@ -52,6 +52,9 @@ private:
 
 	// Tools
 	FReply SetToolMode(ETerraDyneToolMode NewMode);
+
+	FReply DeleteRoadPoint();
+	bool HasRoadPointSelected() const;
 	FSlateColor GetToolModeColor(ETerraDyneToolMode Mode) const;
 	FReply SetActiveLayer(ETerraDyneLayer NewLayer);
 	FSlateColor GetLayerColor(ETerraDyneLayer Layer) const;

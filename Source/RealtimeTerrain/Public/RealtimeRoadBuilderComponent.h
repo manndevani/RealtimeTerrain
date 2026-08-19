@@ -15,6 +15,25 @@ class ARoadEditOverlayActor;
 class ATerraDyneGizmoActor;
 class APlayerController;
 
+/**
+ * A road's control points as they were before an edit.
+ *
+ * Whole-road snapshots rather than per-operation deltas: a road is a short list of points, and
+ * storing the list outright means undo cannot drift out of step with the geometry the way replaying
+ * inverse operations can.
+ */
+USTRUCT()
+struct FRoadEditSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<ARealtimeRoadSplineActor> Road;
+
+	UPROPERTY()
+	TArray<FVector> Points;
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRoadPlaced, ARealtimeRoadSplineActor*, PlacedRoad);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnRoadPointSelected, ARealtimeRoadSplineActor*, RoadActor, int32, PointIndex);
 
@@ -121,6 +140,36 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road Builder|Overlay", meta = (ClampMin = "0.0"))
 	float JunctionResolveInterval = 0.08f;
+
+	//--- EDIT HISTORY ---
+
+	/**
+	 * Records a road's current points so the next edit to it can be taken back.
+	 *
+	 * Call before mutating, not after. A drag records once when it begins rather than per frame,
+	 * so undo steps back to where the point started rather than crawling back along its path.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder|History")
+	void RecordUndo(ARealtimeRoadSplineActor* Road);
+
+	/** Takes back the last road edit. False when there is nothing to undo. */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder|History")
+	bool UndoRoadEdit();
+
+	/** Reapplies the last undone road edit. False when there is nothing to redo. */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder|History")
+	bool RedoRoadEdit();
+
+	/** Removes the selected control point. Refuses to take a road below two points. */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder")
+	bool DeleteSelectedPoint();
+
+	UFUNCTION(BlueprintCallable, Category = "Road Builder")
+	bool HasPointSelected() const;
+
+	/** How many edits the history keeps. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road Builder|History", meta = (ClampMin = "1", ClampMax = "256"))
+	int32 MaxUndoSteps = 64;
 
 	/** Ends the drag and forces the collision-bearing rebuild immediately. */
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
@@ -253,6 +302,18 @@ protected:
 
 private:
 	mutable TWeakObjectPtr<ATerraDyneManager> CachedTerraDyneManager;
+
+	UPROPERTY(Transient)
+	TArray<FRoadEditSnapshot> UndoStack;
+
+	UPROPERTY(Transient)
+	TArray<FRoadEditSnapshot> RedoStack;
+
+	/** Captures a road's points, or returns false when there is nothing to capture. */
+	bool CaptureSnapshot(ARealtimeRoadSplineActor* Road, FRoadEditSnapshot& OutSnapshot) const;
+
+	/** Puts a snapshot back and rebuilds everything that depends on it. */
+	bool ApplySnapshot(const FRoadEditSnapshot& Snapshot);
 
 	/**
 	 * Road the overlay geometry was last built for. Rebuilding the route line means refilling

@@ -58,6 +58,29 @@ void ARealtimeRoadEditController::HandleRoadClick()
 	}
 }
 
+bool ARealtimeRoadEditController::TryRoadUndo()
+{
+	return RoadBuilder && RoadBuilder->UndoRoadEdit();
+}
+
+bool ARealtimeRoadEditController::TryRoadRedo()
+{
+	return RoadBuilder && RoadBuilder->RedoRoadEdit();
+}
+
+void ARealtimeRoadEditController::DeleteSelectedRoadPoint()
+{
+	if (RoadBuilder)
+	{
+		RoadBuilder->DeleteSelectedPoint();
+	}
+}
+
+bool ARealtimeRoadEditController::HasRoadPointSelected() const
+{
+	return RoadBuilder && RoadBuilder->HasPointSelected();
+}
+
 void ARealtimeRoadEditController::HandleRoadRelease()
 {
 	if (RoadBuilder)

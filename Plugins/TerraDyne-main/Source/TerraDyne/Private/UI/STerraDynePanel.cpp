@@ -459,6 +459,35 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 									.HAlign(HAlign_Center)
 								]
 							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("RoadUndo", "Undo"))
+									.ToolTipText(LOCTEXT("TipRoadUndo", "Take back the last road edit."))
+									.OnClicked(this, &STerraDynePanel::OnUndoClicked)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("RoadRedo", "Redo"))
+									.ToolTipText(LOCTEXT("TipRoadRedo", "Reapply the last undone road edit."))
+									.OnClicked(this, &STerraDynePanel::OnRedoClicked)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.4f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("RoadDeletePoint", "Delete Point"))
+									.ToolTipText(LOCTEXT("TipRoadDeletePoint", "Remove the selected control point."))
+									.OnClicked(this, &STerraDynePanel::DeleteRoadPoint)
+									.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
+									.HAlign(HAlign_Center)
+								]
+							]
 							+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
 							[
 								SNew(STextBlock)
@@ -1085,6 +1114,16 @@ FReply STerraDynePanel::OnUndoClicked()
 	// always failed and the button silently did nothing.
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		// Road edits first, so one control serves both histories without either swallowing the
+		// other's steps.
+		if (ATerraDyneEditController* EditPC = Cast<ATerraDyneEditController>(PC))
+		{
+			if (EditPC->TryRoadUndo())
+			{
+				return FReply::Handled();
+			}
+		}
+
 		if (ATerraDyneManager* Mgr = GetManager())
 		{
 			Mgr->Undo(PC);
@@ -1101,6 +1140,14 @@ FReply STerraDynePanel::OnRedoClicked()
 	if (!World) return FReply::Unhandled();
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		if (ATerraDyneEditController* EditPC = Cast<ATerraDyneEditController>(PC))
+		{
+			if (EditPC->TryRoadRedo())
+			{
+				return FReply::Handled();
+			}
+		}
+
 		if (ATerraDyneManager* Mgr = GetManager())
 		{
 			Mgr->Redo(PC);
@@ -1108,6 +1155,31 @@ FReply STerraDynePanel::OnRedoClicked()
 		}
 	}
 	return FReply::Unhandled();
+}
+
+FReply STerraDynePanel::DeleteRoadPoint()
+{
+	if (OwnerWidget.IsValid())
+	{
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->DeleteSelectedRoadPoint();
+			return FReply::Handled();
+		}
+	}
+	return FReply::Unhandled();
+}
+
+bool STerraDynePanel::HasRoadPointSelected() const
+{
+	if (OwnerWidget.IsValid())
+	{
+		if (const ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			return PC->HasRoadPointSelected();
+		}
+	}
+	return false;
 }
 
 FText STerraDynePanel::GetRoadStatusText() const

@@ -548,8 +548,21 @@ void ATerraDyneEditController::OnLeftClickStop()
 	}
 }
 
-void ATerraDyneEditController::OnUndoPressed() { RequestUndo(); }
-void ATerraDyneEditController::OnRedoPressed() { RequestRedo(); }
+void ATerraDyneEditController::OnUndoPressed()
+{
+	// Road history first. Only fall through to terrain when there was no road edit to take back.
+	if (!TryRoadUndo())
+	{
+		RequestUndo();
+	}
+}
+void ATerraDyneEditController::OnRedoPressed()
+{
+	if (!TryRoadRedo())
+	{
+		RequestRedo();
+	}
+}
 
 void ATerraDyneEditController::PerformToolAction()
 {
