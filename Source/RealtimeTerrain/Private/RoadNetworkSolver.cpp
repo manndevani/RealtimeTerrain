@@ -51,6 +51,18 @@ namespace
 		return true;
 	}
 
+	/** Drops consecutive duplicates from a boundary, keeping each vertex's provenance with it. */
+	void WeldBoundary(TArray<FBoundaryVertex>& Points)
+	{
+		for (int32 i = Points.Num() - 1; i > 0; --i)
+		{
+			if (FVector2D::DistSquared(Points[i].Position, Points[i - 1].Position) < WeldTolerance * WeldTolerance)
+			{
+				Points.RemoveAt(i);
+			}
+		}
+	}
+
 	/** Drops consecutive duplicates, which otherwise produce zero-length segments and NaN normals. */
 	void WeldPolyline(TArray<FVector2D>& Points)
 	{
@@ -456,22 +468,28 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 		const int32 Next = (i + 1) % NumArms;
 
 		// Right side first, then left: crossing the cap that way is counter-clockwise about
-		// the node.
-		Solution.Boundary.Add(CapRight[i]);
-		Solution.Boundary.Add(CapLeft[i]);
+		// the node. Both sit at alpha zero, so they take this arm's height exactly.
+		Solution.Boundary.Add({ CapRight[i], i, 0.0f });
+		Solution.Boundary.Add({ CapLeft[i], i, 0.0f });
 
-		// The corner runs from this arm's left edge to the next arm's right edge, which is exactly
-		// where the walk needs to go next. Corners with no collision simply join the two caps.
-		TArray<FVector2D>& Chain = Solution.RoadsideChains[i];
-		Chain.Add(CapLeft[i]);
+		TArray<FBoundaryVertex>& Chain = Solution.RoadsideChains[i];
+		Chain.Add({ CapLeft[i], i, 0.0f });
 
 		if (HasCollision[i])
 		{
-			Solution.Boundary.Append(CornerArcs[i]);
-			Chain.Append(CornerArcs[i]);
+			// Alpha walks from this arm to the next across the corner, so height crosses with it.
+			const int32 ArcCount = CornerArcs[i].Num();
+			for (int32 k = 0; k < ArcCount; ++k)
+			{
+				const float Alpha = (ArcCount > 1)
+					? static_cast<float>(k) / static_cast<float>(ArcCount - 1)
+					: 0.5f;
+				Solution.Boundary.Add({ CornerArcs[i][k], i, Alpha });
+				Chain.Add({ CornerArcs[i][k], i, Alpha });
+			}
 		}
 
-		Chain.Add(CapRight[Next]);
+		Chain.Add({ CapRight[Next], i, 1.0f });
 	}
 
 	if (Solution.Boundary.Num() < 3)
@@ -479,9 +497,10 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 		return Solution;
 	}
 
-	WeldPolyline(Solution.Boundary);
+	WeldBoundary(Solution.Boundary);
 	if (Solution.Boundary.Num() >= 2 &&
-		FVector2D::DistSquared(Solution.Boundary[0], Solution.Boundary.Last()) < WeldTolerance * WeldTolerance)
+		FVector2D::DistSquared(Solution.Boundary[0].Position, Solution.Boundary.Last().Position)
+			< WeldTolerance * WeldTolerance)
 	{
 		Solution.Boundary.Pop();
 	}

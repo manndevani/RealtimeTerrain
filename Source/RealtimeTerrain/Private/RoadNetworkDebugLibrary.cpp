@@ -42,7 +42,11 @@ bool URoadNetworkDebugLibrary::SolveStraightNode(
 
 	const RoadNetworkSolver::FNodeSolution Solution = RoadNetworkSolver::SolveNode(NodeLocation, Arms);
 
-	OutBoundary = Solution.Boundary;
+	OutBoundary.Reserve(Solution.Boundary.Num());
+	for (const RoadNetworkSolver::FBoundaryVertex& Vertex : Solution.Boundary)
+	{
+		OutBoundary.Add(Vertex.Position);
+	}
 
 	// Arms come back sorted, so report trims against the caller's original ordering.
 	OutTrimDistances.Init(0.0f, HeadingsDegrees.Num());

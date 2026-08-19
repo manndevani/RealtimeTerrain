@@ -247,13 +247,20 @@ private:
 	double ConformedPlaneWorldZ = 0.0;
 
 	/**
-	 * Surface solved from nearby roads, in world XY. Empty when the junction is running on
-	 * authored legs instead.
+	 * Surface solved from nearby roads, in world space and no longer flat.
+	 *
+	 * Each vertex carries a real height: an arm's cap sits at that road's surface, and a vertex
+	 * partway round a corner blends between the two roads either side of it. The ear-clipped
+	 * interior then interpolates across those, so the intersection drapes over the landform the
+	 * way the roads do instead of sitting on it as one flat slab.
 	 */
-	TArray<FVector2D> SolvedBoundary;
+	TArray<FVector> SolvedBoundary;
 
 	/** Stretches of SolvedBoundary that are roadside rather than a road connection. */
-	TArray<TArray<FVector2D>> SolvedRoadsideChains;
+	TArray<TArray<FVector>> SolvedRoadsideChains;
+
+	/** Surface height at each leg's socket, so a connecting road pins to its own arm, not a plane. */
+	TArray<float> SolvedLegHeights;
 
 	/** Guards the road-rebuild cycle described on IsAnySolveInProgress. */
 	static bool bAnySolveInProgress;

@@ -72,10 +72,29 @@ namespace RoadNetworkSolver
 		int32 ArcSegments = 8;
 	};
 
+	/**
+	 * One vertex of the intersection outline, and where it came from.
+	 *
+	 * The provenance is what lets the surface stop being flat. A vertex on an arm's cap belongs to
+	 * that road and should sit at its height; a vertex partway round a corner belongs between two
+	 * roads and should blend between them. Without this the caller only has positions in plan and
+	 * no way to decide a height other than picking one for the whole junction.
+	 */
+	struct FBoundaryVertex
+	{
+		FVector2D Position = FVector2D::ZeroVector;
+
+		/** Arm this vertex leaves from, indexing into the sorted Arms array. */
+		int32 Arm = 0;
+
+		/** 0 on that arm's own cap, rising to 1 at the next arm's cap around the corner. */
+		float ArcAlpha = 0.0f;
+	};
+
 	struct FNodeSolution
 	{
 		/** Counter-clockwise boundary of the intersection surface in world XY. */
-		TArray<FVector2D> Boundary;
+		TArray<FBoundaryVertex> Boundary;
 
 		/**
 		 * Per corner, the stretch of boundary running between two adjacent arms.
@@ -84,7 +103,7 @@ namespace RoadNetworkSolver
 		 * so it is where kerbs and footpaths belong. The arm caps are deliberately excluded: those
 		 * abut the road that continues, and putting a kerb across them would wall the road off.
 		 */
-		TArray<TArray<FVector2D>> RoadsideChains;
+		TArray<TArray<FBoundaryVertex>> RoadsideChains;
 
 		/** False when the node had too few arms, or the boundary collapsed. */
 		bool bValid = false;

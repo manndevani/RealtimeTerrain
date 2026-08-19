@@ -240,12 +240,16 @@ bool ARealtimeRoadJunctionActor::GetLegConnectionTransform(int32 LegIndex, FTran
 	const FVector WorldDirection = ActorTransform.TransformVector(LocalDirection).GetSafeNormal2D();
 	const FVector ActorLocation = ActorTransform.GetLocation();
 
-	// The socket sits on the junction plane rather than at the actor's authored Z, so a road pinned
-	// to it lands exactly on the slab.
+	// Each socket sits at its own arm's height. Using one shared plane here is what made a road
+	// approaching a sloped intersection step up or down as it arrived.
+	const double SocketZ = SolvedLegHeights.IsValidIndex(LegIndex)
+		? static_cast<double>(SolvedLegHeights[LegIndex])
+		: ConformedPlaneWorldZ;
+
 	const FVector SocketLocation(
 		ActorLocation.X + WorldDirection.X * Leg.ArmLength,
 		ActorLocation.Y + WorldDirection.Y * Leg.ArmLength,
-		ConformedPlaneWorldZ);
+		SocketZ);
 
 	OutTransform = FTransform(WorldDirection.Rotation(), SocketLocation);
 	return true;
@@ -626,8 +630,56 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 		return false;
 	}
 
-	SolvedBoundary = Solution.Boundary;
-	SolvedRoadsideChains = Solution.RoadsideChains;
+	// Height per arm, taken where that road meets the node. The junction is no longer one plane:
+	// it takes its height from the roads themselves, so it follows the ground they follow.
+	TArray<float> ArmHeights;
+	ArmHeights.SetNumZeroed(Arms.Num());
+
+	for (int32 i = 0; i < Arms.Num(); ++i)
+	{
+		const RoadNetworkSolver::FArm& Arm = Arms[i];
+		const FVector2D Tip = RoadNetworkSolver::PointAtDistance(Arm.Centreline, Arm.TrimDistance);
+
+		float GroundZ = 0.0f;
+		if (!SampleTerrainHeightAtXY(Tip, GroundZ))
+		{
+			GroundZ = static_cast<float>(ConformedPlaneWorldZ);
+		}
+
+		float Lift = TerrainSurfaceOffset;
+		if (Sources.IsValidIndex(Arm.UserData) && Sources[Arm.UserData].Road)
+		{
+			Lift = Sources[Arm.UserData].Road->TerrainSurfaceOffset;
+		}
+		ArmHeights[i] = GroundZ + Lift;
+	}
+
+	auto HeightAt = [&ArmHeights](const RoadNetworkSolver::FBoundaryVertex& Vertex) -> float
+	{
+		if (ArmHeights.Num() == 0) return 0.0f;
+		const int32 A = FMath::Clamp(Vertex.Arm, 0, ArmHeights.Num() - 1);
+		const int32 B = (A + 1) % ArmHeights.Num();
+		return FMath::Lerp(ArmHeights[A], ArmHeights[B], FMath::Clamp(Vertex.ArcAlpha, 0.0f, 1.0f));
+	};
+
+	SolvedBoundary.Reset(Solution.Boundary.Num());
+	for (const RoadNetworkSolver::FBoundaryVertex& Vertex : Solution.Boundary)
+	{
+		SolvedBoundary.Add(FVector(Vertex.Position.X, Vertex.Position.Y, HeightAt(Vertex)));
+	}
+
+	SolvedRoadsideChains.Reset(Solution.RoadsideChains.Num());
+	for (const TArray<RoadNetworkSolver::FBoundaryVertex>& Chain : Solution.RoadsideChains)
+	{
+		TArray<FVector>& Out = SolvedRoadsideChains.AddDefaulted_GetRef();
+		Out.Reserve(Chain.Num());
+		for (const RoadNetworkSolver::FBoundaryVertex& Vertex : Chain)
+		{
+			Out.Add(FVector(Vertex.Position.X, Vertex.Position.Y, HeightAt(Vertex)));
+		}
+	}
+
+	SolvedLegHeights = ArmHeights;
 
 	// Rebuild Legs from the solved arms. Roads still pin themselves to leg sockets, so the legs
 	// have to agree with what the solver decided rather than with whatever was authored before.
@@ -736,23 +788,14 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 
 	if (bSolveFromNearbyRoads && SolveIntersection() && SolvedBoundary.Num() >= 3)
 	{
-		const double PlaneZ = ConformedPlaneWorldZ;
-
-		Boundary.Reset(SolvedBoundary.Num());
-		for (const FVector2D& P : SolvedBoundary)
-		{
-			Boundary.Add(FVector(P.X, P.Y, PlaneZ));
-		}
+		Boundary = SolvedBoundary;
 
 		CornerChains.Reset(SolvedRoadsideChains.Num());
-		for (const TArray<FVector2D>& Chain : SolvedRoadsideChains)
+		for (const TArray<FVector>& Chain : SolvedRoadsideChains)
 		{
 			TArray<FVector>& Out = CornerChains.AddDefaulted_GetRef();
-			Out.Reserve(Chain.Num());
-			for (const FVector2D& P : Chain)
-			{
-				Out.Add(FVector(P.X, P.Y, PlaneZ));
-			}
+			Out = Chain;
+
 			// Swept frames take Right from world up crossed with the tangent, which points inward
 			// along a counter-clockwise path; reversing turns it outward.
 			Algo::Reverse(Out);
