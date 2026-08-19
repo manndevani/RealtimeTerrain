@@ -49,6 +49,29 @@ namespace RoadNetworkSolver
 		double AngleRad = 0.0;
 	};
 
+	/** Tuning for how the intersection surface is shaped. */
+	struct FNodeOptions
+	{
+		/**
+		 * Radius of the circular arc rounding each outer corner, in cm.
+		 *
+		 * The corner between two adjacent arms is an arc tangent to both of their facing edges,
+		 * which is how real kerb returns are built. Clamped per corner against the edge length
+		 * actually available, so a tight corner rounds by less rather than overshooting.
+		 *
+		 * This drives how large the whole intersection becomes, and is the main dial for its look.
+		 * The tangent point sits Radius/tan(half-angle) beyond where the two edges cross, and every
+		 * arm has to be trimmed back that far to leave the curve room — so on a square four-way,
+		 * each arm trims by half its width plus roughly this radius. Around a third of the road
+		 * width reads as a normal street corner; larger values give sweeping highway-style returns
+		 * and a much bigger junction.
+		 */
+		double CornerRadius = 300.0;
+
+		/** Segments per corner arc. */
+		int32 ArcSegments = 8;
+	};
+
 	struct FNodeSolution
 	{
 		/** Counter-clockwise boundary of the intersection surface in world XY. */
@@ -101,5 +124,8 @@ namespace RoadNetworkSolver
 	 * Arms are sorted counter-clockwise in place and have TrimDistance and AngleRad written into
 	 * them, so the caller can cut each road back by the amount this decided.
 	 */
-	FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms);
+	FNodeSolution SolveNode(
+		const FVector2D& NodeLocation,
+		TArray<FArm>& Arms,
+		const FNodeOptions& Options = FNodeOptions());
 }

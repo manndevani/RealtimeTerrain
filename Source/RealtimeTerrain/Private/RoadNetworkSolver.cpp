@@ -263,7 +263,7 @@ bool IntersectPolylines(
 	return bFound;
 }
 
-FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms)
+FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const FNodeOptions& Options)
 {
 	FNodeSolution Solution;
 
@@ -304,8 +304,9 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms)
 
 	// Collision per adjacent pair. Going counter-clockwise, arm i's left side and arm i+1's right
 	// side are the two edges bounding the wedge between them, so those are the ones that collide.
-	TArray<FVector2D> CollisionPoints;
-	CollisionPoints.SetNum(NumArms);
+	// Each corner keeps the arc that rounds it, tangent to the two edges that meet there.
+	TArray<TArray<FVector2D>> CornerArcs;
+	CornerArcs.SetNum(NumArms);
 	TArray<bool> HasCollision;
 	HasCollision.Init(false, NumArms);
 
@@ -326,17 +327,78 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms)
 			continue;
 		}
 
-		CollisionPoints[i] = Point;
 		HasCollision[i] = true;
 		ArmConstrained[i] = true;
 		ArmConstrained[Next] = true;
 
-		// The collision is on the offset sides; the trim has to be expressed on the centreline, so
-		// project it back. Each arm trims to the furthest demand made of it by either neighbour.
+		// Round the corner with an arc tangent to both edges, the way a real kerb return is built.
+		//
+		// Both edges leave the collision heading away from the node. A circle of radius R tangent
+		// to both touches them at distance R/tan(half-angle) from the corner, centred along the
+		// bisector at R/sin(half-angle).
+		const FVector2D DirA = DirectionAtDistance(LeftSides[i], AlongLeft);
+		const FVector2D DirB = DirectionAtDistance(RightSides[Next], AlongRight);
+
+		const double CosOpening = FMath::Clamp(FVector2D::DotProduct(DirA, DirB), -1.0, 1.0);
+		const double HalfAngle = FMath::Acos(CosOpening) * 0.5;
+
+		const double TanHalf = FMath::Tan(HalfAngle);
+		const double SinHalf = FMath::Sin(HalfAngle);
+
+		FVector2D TangentA = Point;
+		FVector2D TangentB = Point;
+
+		if (TanHalf > 1.0e-4 && SinHalf > 1.0e-4)
+		{
+			// The tangent points sit further out along each edge than the corner does, so the arc
+			// has to fit in the edge that is actually left beyond the collision.
+			const double AvailableA = FMath::Max(0.0, PolylineLength(LeftSides[i]) - AlongLeft);
+			const double AvailableB = FMath::Max(0.0, PolylineLength(RightSides[Next]) - AlongRight);
+			const double MaxTangent = FMath::Min(AvailableA, AvailableB) * 0.9;
+
+			const double Radius = FMath::Min(Options.CornerRadius, MaxTangent * TanHalf);
+			const double TangentDistance = Radius / TanHalf;
+
+			if (Radius > WeldTolerance && TangentDistance > WeldTolerance)
+			{
+				TangentA = Point + DirA * TangentDistance;
+				TangentB = Point + DirB * TangentDistance;
+
+				const FVector2D Bisector = (DirA + DirB).GetSafeNormal();
+				if (!Bisector.IsNearlyZero())
+				{
+					const FVector2D Centre = Point + Bisector * (Radius / SinHalf);
+
+					double StartAngle = FMath::Atan2(TangentA.Y - Centre.Y, TangentA.X - Centre.X);
+					const double EndAngle = FMath::Atan2(TangentB.Y - Centre.Y, TangentB.X - Centre.X);
+
+					double Sweep = EndAngle - StartAngle;
+					while (Sweep > UE_DOUBLE_PI) Sweep -= UE_DOUBLE_PI * 2.0;
+					while (Sweep < -UE_DOUBLE_PI) Sweep += UE_DOUBLE_PI * 2.0;
+
+					const int32 Segments = FMath::Clamp(Options.ArcSegments, 1, 32);
+					CornerArcs[i].Reserve(Segments + 1);
+					for (int32 k = 0; k <= Segments; ++k)
+					{
+						const double Angle = StartAngle + Sweep * (static_cast<double>(k) / Segments);
+						CornerArcs[i].Add(Centre + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+					}
+				}
+			}
+		}
+
+		if (CornerArcs[i].Num() == 0)
+		{
+			// No room to round it, so the corner stays sharp.
+			CornerArcs[i].Add(Point);
+		}
+
+		// Trim to the tangent points, not the collision. The arc starts further out along each
+		// edge, so trimming only to the corner would leave the curve no room to exist.
 		Arms[i].TrimDistance = FMath::Max(
-			Arms[i].TrimDistance, ProjectOntoPolyline(Arms[i].Centreline, Point));
+			Arms[i].TrimDistance, ProjectOntoPolyline(Arms[i].Centreline, TangentA));
 		Arms[Next].TrimDistance = FMath::Max(
-			Arms[Next].TrimDistance, ProjectOntoPolyline(Arms[Next].Centreline, Point));
+			Arms[Next].TrimDistance, ProjectOntoPolyline(Arms[Next].Centreline, TangentB));
 	}
 
 	// An arm that no neighbour collided with — two opposite arms, or a lone stub — is otherwise
@@ -364,58 +426,39 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms)
 		Arms[i].TrimDistance = FMath::Clamp(Trim, 0.0, Available * 0.9);
 	}
 
-	// Boundary: each arm contributes its trimmed end projected to both sides, and each corner
-	// contributes its collision point. Including the collisions is what stops the polygon
-	// ballooning out past the corners.
-	struct FBoundaryPoint
-	{
-		FVector2D Position;
-		double Angle;
-	};
-
-	TArray<FBoundaryPoint> Points;
-	Points.Reserve(NumArms * 3);
-
-	auto AddPoint = [&Points, &NodeLocation](const FVector2D& Position)
-	{
-		const FVector2D Offset = Position - NodeLocation;
-		if (Offset.IsNearlyZero())
-		{
-			return;
-		}
-		Points.Add({ Position, FMath::Atan2(Offset.Y, Offset.X) });
-	};
-
+	// Boundary, walked in order rather than sorted by angle.
+	//
+	// A/B Street sorts candidate points around the node and flags that step as fragile — it
+	// degrades when arms curve near the node and can emit a self-intersecting bowtie. That sort is
+	// only necessary without a known ordering. The arms here are already sorted counter-clockwise,
+	// so the boundary can simply be walked: across one arm's cap, round the corner arc, across the
+	// next arm's cap. The result is correctly wound by construction and cannot bowtie.
 	for (int32 i = 0; i < NumArms; ++i)
 	{
+		const int32 Next = (i + 1) % NumArms;
+
 		const FVector2D End = PointAtDistance(Arms[i].Centreline, Arms[i].TrimDistance);
 		const FVector2D Direction = DirectionAtDistance(Arms[i].Centreline, Arms[i].TrimDistance);
 		const FVector2D Normal = LeftNormal(Direction);
 
-		AddPoint(End - Normal * Arms[i].HalfWidth);
-		AddPoint(End + Normal * Arms[i].HalfWidth);
+		// Right side first, then left: crossing the cap that way is counter-clockwise about
+		// the node.
+		Solution.Boundary.Add(End - Normal * Arms[i].HalfWidth);
+		Solution.Boundary.Add(End + Normal * Arms[i].HalfWidth);
 
+		// The arc runs from this arm's left edge to the next arm's right edge, which is exactly
+		// where the walk needs to go next. Corners with no collision simply join the two caps.
 		if (HasCollision[i])
 		{
-			AddPoint(CollisionPoints[i]);
+			Solution.Boundary.Append(CornerArcs[i]);
 		}
+
+		(void)Next;
 	}
 
-	if (Points.Num() < 3)
+	if (Solution.Boundary.Num() < 3)
 	{
 		return Solution;
-	}
-
-	// Sorting boundary points by angle about the node is the step A/B Street flags as fragile: it
-	// degrades when arms curve sharply near the node and can produce a bowtie. It holds for the
-	// straight-ish approaches roads are drawn with here, and the weld below removes the
-	// near-duplicates that would otherwise make a self-intersection certain.
-	Points.Sort([](const FBoundaryPoint& A, const FBoundaryPoint& B) { return A.Angle < B.Angle; });
-
-	Solution.Boundary.Reserve(Points.Num());
-	for (const FBoundaryPoint& Point : Points)
-	{
-		Solution.Boundary.Add(Point.Position);
 	}
 
 	WeldPolyline(Solution.Boundary);
