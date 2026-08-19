@@ -594,13 +594,31 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 			Arm.HalfWidth = HalfWidth;
 			Arm.UserData = Sources.Num();
 
+			// Every arm has to start at the node itself.
+			//
+			// Sampling straight from each road's own closest point instead left the arms radiating
+			// from slightly different origins, and the solver's collisions are between the sides of
+			// arms assumed to share one. The corners then missed each other entirely: two arms fell
+			// back to the bare half-width stand-off while the others overshot to nearly three times
+			// it, which is what tore the intersection into sprawling flanges.
+			Arm.Centreline.Add(CentreXY);
+
+			// Start a full step out, never at the node itself. The road's closest point sits a few
+			// centimetres from the node, so sampling it would make the arm's first segment a
+			// near-zero step whose direction is noise — and the solver reads the arm's heading from
+			// exactly that segment. Both directions of a road then reported the same angle.
 			const double Reach = FMath::Min(SampleReach, Available);
-			for (double T = 0.0; T <= Reach + UE_KINDA_SMALL_NUMBER; T += SampleStep)
+			for (double T = SampleStep; T <= Reach + UE_KINDA_SMALL_NUMBER; T += SampleStep)
 			{
 				const double D = bForward ? (NodeDistance + T) : (NodeDistance - T);
 				const FVector P = Spline->GetLocationAtDistanceAlongSpline(
 					FMath::Clamp(D, 0.0, Length), ESplineCoordinateSpace::World);
-				Arm.Centreline.Add(FVector2D(P.X, P.Y));
+
+				const FVector2D Sample(P.X, P.Y);
+				if (FVector2D::DistSquared(Sample, Arm.Centreline.Last()) > 1.0)
+				{
+					Arm.Centreline.Add(Sample);
+				}
 			}
 
 			if (Arm.Centreline.Num() < 2) return;
