@@ -100,6 +100,87 @@ void ARealtimeRoadJunctionActor::BeginPlay()
 	RebuildJunction();
 }
 
+void ARealtimeRoadJunctionActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	ClearTerrainPad();
+	Super::EndPlay(EndPlayReason);
+}
+
+void ARealtimeRoadJunctionActor::Destroyed()
+{
+	ClearTerrainPad();
+	Super::Destroyed();
+}
+
+void ARealtimeRoadJunctionActor::ClearTerrainPad()
+{
+	ATerraDyneManager* Manager = CachedTerraDyneManager.Get();
+	if (!Manager) return;
+
+	const FBox2D Bounds = Manager->GetExternalPadBounds(this);
+	Manager->ClearExternalPadStamps(this);
+
+	if (Bounds.bIsValid)
+	{
+		Manager->RefreshBuildingPads(Bounds);
+	}
+}
+
+void ARealtimeRoadJunctionActor::UpdateTerrainPad()
+{
+	// Warm the manager cache through the sampler the rest of the class already uses.
+	float Unused = 0.0f;
+	SampleTerrainHeightAtXY(FVector2D(GetActorLocation().X, GetActorLocation().Y), Unused);
+
+	ATerraDyneManager* Manager = CachedTerraDyneManager.Get();
+	if (!Manager) return;
+
+	const FBox2D PreviousBounds = Manager->GetExternalPadBounds(this);
+
+	TArray<FTerraDynePadStamp> Stamps;
+
+	if (bRebaseTerrain && !bIsHolographicPreview && SolvedBoundary.Num() >= 3)
+	{
+		FVector2D Centroid = FVector2D::ZeroVector;
+		for (const FVector2D& P : SolvedBoundary)
+		{
+			Centroid += P;
+		}
+		Centroid /= static_cast<double>(SolvedBoundary.Num());
+
+		FTerraDynePadStamp Stamp;
+		Stamp.Falloff = FMath::Max(1.0f, PadFalloff);
+		Stamp.TargetWorldZ = static_cast<float>(
+			ConformedPlaneWorldZ
+			- FMath::Max(2.0f, RoadThickness)
+			- FMath::Max(0.0f, PadDepthBelowSurface));
+
+		// The outline pushed outward, so levelled ground reaches past the kerb rather than
+		// stopping exactly at it.
+		Stamp.PolygonWorldXY.Reserve(SolvedBoundary.Num());
+		for (const FVector2D& P : SolvedBoundary)
+		{
+			const FVector2D Outward = (P - Centroid).GetSafeNormal();
+			Stamp.PolygonWorldXY.Add(P + Outward * FMath::Max(0.0f, PadMargin));
+		}
+
+		Stamps.Add(MoveTemp(Stamp));
+	}
+
+	Manager->SetExternalPadStamps(this, Stamps);
+
+	// Union of old and new, so ground the junction has moved off is recomposed too.
+	FBox2D Refresh = Manager->GetExternalPadBounds(this);
+	if (PreviousBounds.bIsValid)
+	{
+		Refresh = Refresh.bIsValid ? (Refresh + PreviousBounds) : PreviousBounds;
+	}
+	if (Refresh.bIsValid)
+	{
+		Manager->RefreshBuildingPads(Refresh);
+	}
+}
+
 #if WITH_EDITOR
 void ARealtimeRoadJunctionActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -830,4 +911,9 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 		FGeometryScriptCalculateNormalsOptions());
 
 	JunctionMeshComponent->NotifyMeshUpdated();
+
+	// Level the ground under the slab. A junction is a single flat plane, so on any slope the
+	// terrain is above it at one end and below it at the other; without this it is the one place
+	// in the network with nothing rebasing the landscape beneath it.
+	UpdateTerrainPad();
 }
