@@ -65,29 +65,11 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						.BorderBackgroundColor(FLinearColor::Transparent)
 						.Padding(2.0f)
 						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(STextBlock)
-								.Text(LOCTEXT("Title", "TERRADYNE"))
-								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 20))
-								.ColorAndOpacity(TitleColor)
-							]
-							+ SHorizontalBox::Slot()
-							.FillWidth(1.0f)
-							[
-								SNew(SSpacer)
-							]
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Bottom)
-							[
-								SNew(STextBlock)
-								.Text(LOCTEXT("Version", "v0.3"))
-								.Font(LabelFont)
-								.ColorAndOpacity(FLinearColor::Gray)
-							]
+							// Empty strip. The panel's drag handle is a coordinate hit test over the
+							// top 50 px in OnMouseButtonDown, so this has to keep occupying that
+							// space even with the title text gone.
+							SNew(SBox)
+							.HeightOverride(18.0f)
 						]
 					]
 
@@ -470,6 +452,15 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
 								[
 									SNew(SButton)
+									.Text(LOCTEXT("ModeSelectRoad", "Select"))
+									.ToolTipText(LOCTEXT("TipSelectRoad", "Click a road to show its points, then drag a point to move it."))
+									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::SelectRoad); })
+									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::SelectRoad)
+									.HAlign(HAlign_Center)
+								]
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
 									.Text(LOCTEXT("ModeJunction", "Junction"))
 									.ToolTipText(LOCTEXT("TipJunction", "Click terrain to place a multi-way junction."))
 									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::PlaceJunction); })
@@ -506,13 +497,6 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 							[
 								SNew(STextBlock)
 								.Text(this, &STerraDynePanel::GetStatsText)
-								.Font(LabelFont)
-							]
-							+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
-							[
-								SNew(STextBlock)
-								.Text(this, &STerraDynePanel::GetGPUStatsText)
-								.ColorAndOpacity(this, &STerraDynePanel::GetGPUStatusColor)
 								.Font(LabelFont)
 							]
 						]
@@ -1150,6 +1134,10 @@ FText STerraDynePanel::GetRoadStatusText() const
 		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::PlaceJunction)
 		{
 			return LOCTEXT("RoadStatusJunction", "Active: Click terrain to place Junction.");
+		}
+		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::SelectRoad)
+		{
+			return LOCTEXT("RoadStatusSelect", "Active: Click a road, then drag its points.");
 		}
 	}
 	return LOCTEXT("RoadStatusIdle", "Select a road tool above to begin.");

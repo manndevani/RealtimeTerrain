@@ -79,6 +79,29 @@ struct FTerraDyneLandscapeMigrationOptions
 	bool bTransferredFoliageFollowsTerrain = true;
 };
 
+/**
+ * One patch of ground an actor wants levelled to a height, with a skirt blending back to natural
+ * terrain. Applied through the same non-destructive pad layer buildings use, so it never touches
+ * the sculpt buffer and disappears cleanly when its owner does.
+ */
+USTRUCT()
+struct FTerraDynePadStamp
+{
+	GENERATED_BODY()
+
+	/** Footprint in world XY. Needs at least three points. */
+	UPROPERTY()
+	TArray<FVector2D> PolygonWorldXY;
+
+	/** World height the ground inside the footprint is pulled to. */
+	UPROPERTY()
+	float TargetWorldZ = 0.0f;
+
+	/** Width in cm of the blend from the footprint edge back to natural ground. */
+	UPROPERTY()
+	float Falloff = 250.0f;
+};
+
 UCLASS(Blueprintable)
 class TERRADYNE_API ATerraDyneManager : public AActor
 {
@@ -220,6 +243,22 @@ public:
 
 	/** Rebuilds one chunk's pad layer from scratch. Cheap no-op when no building overlaps it. */
 	void RefreshBuildingPadsForChunk(ATerraDyneChunk* Chunk);
+
+	/**
+	 * Pads contributed by actors that are not buildings — roads being the reason this exists.
+	 *
+	 * Buildings each own one footprint, so they are registered as actors and their polygon is asked
+	 * for on demand. A road is a long strip that has to step its target height along its length, so
+	 * it supplies many small quads instead. Both end up in the same PadWeightBuffer, composed by
+	 * whichever stamp wants the ground flattest.
+	 *
+	 * Keyed by owner: setting again replaces that owner's stamps rather than accumulating them.
+	 */
+	void SetExternalPadStamps(AActor* PadOwner, const TArray<FTerraDynePadStamp>& Stamps);
+	void ClearExternalPadStamps(AActor* PadOwner);
+
+	/** World-space XY bounds covering every stamp an owner contributed. Invalid when it has none. */
+	FBox2D GetExternalPadBounds(AActor* PadOwner) const;
 
 	/** World-space XY bounds of a chunk. */
 	FBox2D GetChunkBoundsXY(const ATerraDyneChunk* Chunk) const;
@@ -441,6 +480,15 @@ private:
 
 	/** Live buildings, for pad rebuilds. Weak so a destroyed building needs no explicit cleanup. */
 	TArray<TWeakObjectPtr<class ATerraDyneBuildingActor>> RegisteredBuildings;
+
+	struct FExternalPadEntry
+	{
+		TWeakObjectPtr<AActor> Owner;
+		TArray<FTerraDynePadStamp> Stamps;
+	};
+
+	/** Non-building pad contributors. Weak owners, so a destroyed one drops out on the next sweep. */
+	TArray<FExternalPadEntry> ExternalPadEntries;
 
 	bool bMaterialsLoaded = false;
 	float LODTimer = 0.25f;

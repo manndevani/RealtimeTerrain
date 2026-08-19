@@ -79,7 +79,15 @@ void ARealtimeRoadSplineActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		World->GetTimerManager().ClearTimer(SettleTimerHandle);
 	}
+	ClearTerrainPad();
 	Super::EndPlay(EndPlayReason);
+}
+
+void ARealtimeRoadSplineActor::Destroyed()
+{
+	// A road deleted outside of EndPlay — in the editor, say — still has to give the ground back.
+	ClearTerrainPad();
+	Super::Destroyed();
 }
 
 void ARealtimeRoadSplineActor::OnConstruction(const FTransform& Transform)
@@ -841,6 +849,116 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	}
 
 	GenerateScatter(RunFrames);
+
+	// Rebasing rasterises into every chunk the road touches and rebuilds their meshes, so it waits
+	// for the settle pass rather than running on each frame of a drag.
+	if (bUpdateCollision)
+	{
+		UpdateTerrainPad(RunFrames);
+	}
+}
+
+void ARealtimeRoadSplineActor::ClearTerrainPad()
+{
+	ATerraDyneManager* Manager = CachedTerraDyneManager.Get();
+	if (!Manager)
+	{
+		return;
+	}
+
+	const FBox2D Bounds = Manager->GetExternalPadBounds(this);
+	Manager->ClearExternalPadStamps(this);
+
+	if (Bounds.bIsValid)
+	{
+		Manager->RefreshBuildingPads(Bounds);
+	}
+}
+
+void ARealtimeRoadSplineActor::UpdateTerrainPad(const TArray<TArray<RoadMesh::FFrame>>& RunFrames)
+{
+	// Resolving through the sampler keeps the manager cache warm and shared with height queries.
+	float Unused = 0.0f;
+	SampleTerrainHeightAtXY(FVector2D(GetActorLocation().X, GetActorLocation().Y), Unused);
+
+	ATerraDyneManager* Manager = CachedTerraDyneManager.Get();
+	if (!Manager)
+	{
+		return;
+	}
+
+	// The union of where the pad was and where it now is, so ground the road has moved off is
+	// recomposed too — otherwise a moved road leaves its old trench behind.
+	const FBox2D PreviousBounds = Manager->GetExternalPadBounds(this);
+
+	TArray<FTerraDynePadStamp> Stamps;
+
+	if (bRebaseTerrain && !bIsHolographicPreview)
+	{
+		const double HalfWidth =
+			FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5
+			+ FMath::Max(0.0f, CrossSectionSettings.bHasCurbs ? CrossSectionSettings.CurbWidth : 0.0f)
+			+ FMath::Max(0.0f, CrossSectionSettings.bHasFootpaths ? CrossSectionSettings.FootpathWidth : 0.0f)
+			+ FMath::Max(0.0f, PadWidthMargin);
+
+		const double Depth = FMath::Max(2.0f, CrossSectionSettings.RoadThickness) + FMath::Max(0.0f, PadDepthBelowSurface);
+		const double Spacing = FMath::Max(100.0f, PadSampleSpacing);
+
+		for (const TArray<RoadMesh::FFrame>& Frames : RunFrames)
+		{
+			if (Frames.Num() < 2)
+			{
+				continue;
+			}
+
+			const RoadMesh::FFrame* Anchor = &Frames[0];
+
+			for (int32 i = 1; i < Frames.Num(); ++i)
+			{
+				const RoadMesh::FFrame& Current = Frames[i];
+				const bool bFinal = (i == Frames.Num() - 1);
+
+				if (!bFinal && (Current.DistanceAlong - Anchor->DistanceAlong) < Spacing)
+				{
+					continue;
+				}
+
+				const FVector AnchorLeft = Anchor->Origin - Anchor->Right * HalfWidth;
+				const FVector AnchorRight = Anchor->Origin + Anchor->Right * HalfWidth;
+				const FVector CurrentLeft = Current.Origin - Current.Right * HalfWidth;
+				const FVector CurrentRight = Current.Origin + Current.Right * HalfWidth;
+
+				FTerraDynePadStamp Stamp;
+				Stamp.Falloff = FMath::Max(1.0f, PadFalloff);
+
+				// Each quad is level, so it takes the mean of its two ends. Shorter spacing tracks
+				// a sloping road more closely.
+				Stamp.TargetWorldZ = static_cast<float>((Anchor->Origin.Z + Current.Origin.Z) * 0.5 - Depth);
+
+				Stamp.PolygonWorldXY.Reserve(4);
+				Stamp.PolygonWorldXY.Emplace(AnchorLeft.X, AnchorLeft.Y);
+				Stamp.PolygonWorldXY.Emplace(AnchorRight.X, AnchorRight.Y);
+				Stamp.PolygonWorldXY.Emplace(CurrentRight.X, CurrentRight.Y);
+				Stamp.PolygonWorldXY.Emplace(CurrentLeft.X, CurrentLeft.Y);
+
+				Stamps.Add(MoveTemp(Stamp));
+				Anchor = &Current;
+			}
+		}
+	}
+
+	Manager->SetExternalPadStamps(this, Stamps);
+
+	FBox2D Refresh = Manager->GetExternalPadBounds(this);
+	if (PreviousBounds.bIsValid)
+	{
+		Refresh = Refresh.bIsValid ? (Refresh + PreviousBounds) : PreviousBounds;
+	}
+
+	if (Refresh.bIsValid)
+	{
+		Manager->RefreshBuildingPads(Refresh);
+	}
 }
 
 void ARealtimeRoadSplineActor::GenerateScatter(const TArray<TArray<RoadMesh::FFrame>>& RunFrames)

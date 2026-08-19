@@ -486,7 +486,80 @@ void URealtimeRoadBuilderComponent::HandleWorldClick(const FVector& ClickedWorld
 		return;
 	}
 
-	BeginRoadDraft(ClickedWorldLocation, DefaultRoadType);
+	// Nothing selected and nothing under the cursor: start a road here.
+	//
+	// This spawns a committed road rather than a holographic draft. A draft is excluded from both
+	// FindRoadPointNear and FindRoadLineNear above, so the next click could never find the thing
+	// just started — every click simply replaced the ghost and no road was ever finished.
+	ARealtimeRoadJunctionActor* StartJunctionHit = nullptr;
+	int32 StartLeg = INDEX_NONE;
+	const FVector Start = ResolvePlacementLocation(ClickedWorldLocation, StartJunctionHit, StartLeg);
+
+	if (ARealtimeRoadSplineActor* NewRoad = StartRoadAt(Start, DefaultRoadType))
+	{
+		if (StartJunctionHit)
+		{
+			NewRoad->StartJunction = StartJunctionHit;
+			NewRoad->StartJunctionLegIndex = StartLeg;
+		}
+		OnRoadPlaced.Broadcast(NewRoad);
+	}
+}
+
+ARealtimeRoadSplineActor* URealtimeRoadBuilderComponent::StartRoadAt(const FVector& WorldLocation, ERoadType RoadType)
+{
+	UWorld* World = GetWorld();
+	if (!World) return nullptr;
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ARealtimeRoadSplineActor* Road = World->SpawnActor<ARealtimeRoadSplineActor>(
+		ARealtimeRoadSplineActor::StaticClass(), WorldLocation, FRotator::ZeroRotator, SpawnParams);
+	if (!Road) return nullptr;
+
+	Road->RoadType = RoadType;
+
+	// One point builds no mesh — a road needs two stations to sweep. That is expected: the second
+	// click is what makes it appear.
+	TArray<FVector> Seed;
+	Seed.Add(WorldLocation);
+	Road->SetPointsRealtime(Seed);
+
+	SelectRoadPoint(Road, 0);
+	return Road;
+}
+
+bool URealtimeRoadBuilderComponent::SelectRoadNear(const FVector& WorldLocation)
+{
+	// An exact handle hit is unambiguous, so it wins.
+	if (HoveredRoadActor.IsValid() && HoveredPointIndex != INDEX_NONE)
+	{
+		SelectRoadPoint(HoveredRoadActor.Get(), HoveredPointIndex);
+		return true;
+	}
+
+	ARealtimeRoadSplineActor* Road = nullptr;
+	int32 PointIndex = INDEX_NONE;
+	if (FindRoadPointNear(WorldLocation, Road, PointIndex))
+	{
+		SelectRoadPoint(Road, PointIndex);
+		return true;
+	}
+
+	float Along = 0.0f;
+	if (FindRoadLineNear(WorldLocation, Road, Along))
+	{
+		const int32 Inserted = Road->InsertPointAtDistance(Along);
+		if (Inserted != INDEX_NONE)
+		{
+			SelectRoadPoint(Road, Inserted);
+			return true;
+		}
+	}
+
+	ClearSelection();
+	return false;
 }
 
 ARealtimeRoadSplineActor* URealtimeRoadBuilderComponent::BeginRoadDraft(const FVector& StartWorldLocation, ERoadType RoadType)

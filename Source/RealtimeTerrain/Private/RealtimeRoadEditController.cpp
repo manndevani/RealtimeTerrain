@@ -33,13 +33,29 @@ void ARealtimeRoadEditController::HandleRoadClick()
 		return;
 	}
 
+	// Select mode never draws. A press either grabs the handle under the cursor to drag it, or
+	// picks whatever road was clicked so its handles come up.
+	if (ToolUI->CurrentTool == ETerraDyneToolMode::SelectRoad)
+	{
+		if (RoadBuilder->BeginPointDrag())
+		{
+			return;
+		}
+
+		FHitResult Hit;
+		if (TraceUnderCursor(Hit))
+		{
+			RoadBuilder->SelectRoadNear(Hit.Location);
+		}
+		return;
+	}
+
 	// The tool decides which kind of road a fresh one becomes.
 	RoadBuilder->DefaultRoadType = (ToolUI->CurrentTool == ETerraDyneToolMode::DrawPavedRoad)
 		? ERoadType::PavedRoad
 		: ERoadType::RoughRoad;
 
-	// A press that lands on a control point handle starts a drag and consumes the click; the
-	// builder has already resolved what is under the cursor during its tick.
+	// Even while drawing, a press that lands on a handle drags it rather than extending the road.
 	if (RoadBuilder->BeginPointDrag())
 	{
 		return;

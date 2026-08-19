@@ -164,6 +164,18 @@ public:
 		ARealtimeRoadJunctionActor*& OutSnappedJunction,
 		int32& OutSnappedLeg) const;
 
+	/**
+	 * Selects whatever road is at a location without drawing anything: an exact handle hit first,
+	 * then a nearby control point, then the road's line — which gets an anchor point inserted so
+	 * there is something to grab. Used by the Select tool.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder")
+	bool SelectRoadNear(const FVector& WorldLocation);
+
+	/** Spawns a committed single-point road and selects it. The first click of a draw. */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder")
+	ARealtimeRoadSplineActor* StartRoadAt(const FVector& WorldLocation, ERoadType RoadType);
+
 	/** Creates an intersection where a road passes through a world location. */
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
 	ARealtimeRoadJunctionActor* CreateJunctionOnRoadAt(ARealtimeRoadSplineActor* Road, const FVector& WorldLocation);

@@ -519,6 +519,64 @@ void ATerraDyneManager::Multicast_RefreshBuildingPads_Implementation(FVector2D M
 	}
 }
 
+void ATerraDyneManager::SetExternalPadStamps(AActor* PadOwner, const TArray<FTerraDynePadStamp>& Stamps)
+{
+	if (!PadOwner)
+	{
+		return;
+	}
+
+	// Drop dead owners while we are here, so nothing leaks when an actor is destroyed without
+	// clearing its stamps first.
+	ExternalPadEntries.RemoveAll([PadOwner](const FExternalPadEntry& Entry)
+	{
+		return !Entry.Owner.IsValid() || Entry.Owner.Get() == PadOwner;
+	});
+
+	if (Stamps.Num() > 0)
+	{
+		FExternalPadEntry Entry;
+		Entry.Owner = PadOwner;
+		Entry.Stamps = Stamps;
+		ExternalPadEntries.Add(MoveTemp(Entry));
+	}
+}
+
+void ATerraDyneManager::ClearExternalPadStamps(AActor* PadOwner)
+{
+	ExternalPadEntries.RemoveAll([PadOwner](const FExternalPadEntry& Entry)
+	{
+		return !Entry.Owner.IsValid() || Entry.Owner.Get() == PadOwner;
+	});
+}
+
+FBox2D ATerraDyneManager::GetExternalPadBounds(AActor* PadOwner) const
+{
+	FBox2D Bounds(ForceInit);
+
+	for (const FExternalPadEntry& Entry : ExternalPadEntries)
+	{
+		if (Entry.Owner.Get() != PadOwner)
+		{
+			continue;
+		}
+		for (const FTerraDynePadStamp& Stamp : Entry.Stamps)
+		{
+			for (const FVector2D& Point : Stamp.PolygonWorldXY)
+			{
+				Bounds += Point;
+			}
+		}
+	}
+
+	if (Bounds.bIsValid)
+	{
+		// Room for the skirt, which reaches past the footprint itself.
+		Bounds = Bounds.ExpandBy(500.0f);
+	}
+	return Bounds;
+}
+
 void ATerraDyneManager::RefreshBuildingPadsForChunk(ATerraDyneChunk* Chunk)
 {
 	if (!Chunk)
@@ -551,8 +609,37 @@ void ATerraDyneManager::RefreshBuildingPadsForChunk(ATerraDyneChunk* Chunk)
 		}
 	}
 
+	// Non-building contributors reaching this chunk, gathered the same way.
+	TArray<const FTerraDynePadStamp*> OverlappingStamps;
+	for (const FExternalPadEntry& Entry : ExternalPadEntries)
+	{
+		if (!Entry.Owner.IsValid())
+		{
+			continue;
+		}
+		for (const FTerraDynePadStamp& Stamp : Entry.Stamps)
+		{
+			if (Stamp.PolygonWorldXY.Num() < 3)
+			{
+				continue;
+			}
+
+			FBox2D StampBox(ForceInit);
+			for (const FVector2D& Point : Stamp.PolygonWorldXY)
+			{
+				StampBox += Point;
+			}
+			StampBox = StampBox.ExpandBy(FMath::Max(Stamp.Falloff, 1.0f));
+
+			if (StampBox.Intersect(ChunkBox))
+			{
+				OverlappingStamps.Add(&Stamp);
+			}
+		}
+	}
+
 	const bool bHadPad = Chunk->HasBuildingPad();
-	if (Overlapping.Num() == 0 && !bHadPad)
+	if (Overlapping.Num() == 0 && OverlappingStamps.Num() == 0 && !bHadPad)
 	{
 		return;
 	}
@@ -577,6 +664,18 @@ void ATerraDyneManager::RefreshBuildingPadsForChunk(ATerraDyneChunk* Chunk)
 
 		const float TargetLocalZ = Building->ResolvePadTargetWorldZ() - ChunkOrigin.Z;
 		Chunk->StampBuildingPad(LocalPolygon, TargetLocalZ, Building->PadFalloff);
+	}
+
+	for (const FTerraDynePadStamp* Stamp : OverlappingStamps)
+	{
+		TArray<FVector2D> LocalPolygon;
+		LocalPolygon.Reserve(Stamp->PolygonWorldXY.Num());
+		for (const FVector2D& P : Stamp->PolygonWorldXY)
+		{
+			LocalPolygon.Emplace(P.X - ChunkOrigin.X, P.Y - ChunkOrigin.Y);
+		}
+
+		Chunk->StampBuildingPad(LocalPolygon, Stamp->TargetWorldZ - ChunkOrigin.Z, Stamp->Falloff);
 	}
 
 	Chunk->RecomputeHeightFromLayers();

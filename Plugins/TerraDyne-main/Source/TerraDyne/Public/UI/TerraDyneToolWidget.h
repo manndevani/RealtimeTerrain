@@ -27,7 +27,9 @@ enum class ETerraDyneToolMode : uint8
 	/** Draw interactive realtime rough dirt trail */
 	DrawRoughRoad,
 	/** Place interactive realtime multi-way junction */
-	PlaceJunction
+	PlaceJunction,
+	/** Clicks select and drag existing road control points instead of drawing new road. */
+	SelectRoad
 };
 
 /** Building tools take a single click; sculpt tools apply continuously while held. */
@@ -38,7 +40,10 @@ inline bool IsBuildingToolMode(ETerraDyneToolMode Mode)
 
 inline bool IsRoadToolMode(ETerraDyneToolMode Mode)
 {
-	return Mode == ETerraDyneToolMode::DrawPavedRoad || Mode == ETerraDyneToolMode::DrawRoughRoad || Mode == ETerraDyneToolMode::PlaceJunction;
+	return Mode == ETerraDyneToolMode::DrawPavedRoad
+		|| Mode == ETerraDyneToolMode::DrawRoughRoad
+		|| Mode == ETerraDyneToolMode::PlaceJunction
+		|| Mode == ETerraDyneToolMode::SelectRoad;
 }
 
 /**

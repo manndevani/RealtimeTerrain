@@ -37,6 +37,7 @@ public:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Destroyed() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Route of the road. Only the XY of this spline is used when terrain conforming is on. */
@@ -92,6 +93,37 @@ public:
 	/** Ceiling on terrain-driven cross slope, in degrees. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain", meta = (ClampMin = "0.0", ClampMax = "60.0", EditCondition = "bRoughRoadFollowsCrossSlope"))
 	float MaxCrossSlopeDegrees = 22.0f;
+
+	//--- TERRAIN REBASE ---
+
+	/**
+	 * Level the ground under the road to sit just beneath it.
+	 *
+	 * Uses TerraDyne's pad layer, the same non-destructive channel building foundations use, rather
+	 * than the flatten brush: the sculpt buffer is never written, so removing the road restores the
+	 * original landform exactly.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase")
+	bool bRebaseTerrain = true;
+
+	/** Extra ground levelled either side of the road's own width, in cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase", meta = (ClampMin = "0.0"))
+	float PadWidthMargin = 150.0f;
+
+	/** Width of the blend from the levelled strip back to natural ground, in cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase", meta = (ClampMin = "1.0"))
+	float PadFalloff = 350.0f;
+
+	/**
+	 * Spacing in cm between pad quads. Each quad is level, so this trades how closely the rebased
+	 * ground tracks a sloping road against how many stamps the terrain has to rasterise.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase", meta = (ClampMin = "100.0"))
+	float PadSampleSpacing = 400.0f;
+
+	/** How far below the road surface the ground is levelled, on top of the slab thickness. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase", meta = (ClampMin = "0.0"))
+	float PadDepthBelowSurface = 10.0f;
 
 	/** Whether this is a local placement preview ghost. Previews never replicate and never collide. */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Road|Realtime")
@@ -245,6 +277,12 @@ protected:
 	void RebuildInternal(bool bUpdateCollision);
 	void GenerateRoadMesh(bool bUpdateCollision);
 	void GenerateScatter(const TArray<TArray<RoadMesh::FFrame>>& RunFrames);
+
+	/** Pushes this road's pad footprint to the terrain manager and refreshes affected chunks. */
+	void UpdateTerrainPad(const TArray<TArray<RoadMesh::FFrame>>& RunFrames);
+
+	/** Drops this road's pad, restoring the natural landform underneath. */
+	void ClearTerrainPad();
 	void ApplyMaterials();
 	void SyncSplineFromReplicatedPoints();
 	void CaptureReplicatedPoints();
