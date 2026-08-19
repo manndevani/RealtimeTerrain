@@ -47,9 +47,16 @@ void URealtimeRoadBuilderComponent::TickComponent(
 			FVector Ground;
 			if (TraceGroundUnderCursor(Ground))
 			{
+				// Carry the grab offset in plan so the point tracks cursor movement rather than
+				// teleporting under it, and take height from the ground it lands on.
+				const FVector Target = ProjectOntoTerrain(FVector(
+					Ground.X + DragGrabOffset.X,
+					Ground.Y + DragGrabOffset.Y,
+					Ground.Z));
+
 				// MovePointRealtime refreshes the render mesh now and defers the collision cook,
 				// which is what keeps a drag smooth; EndPointDrag forces the real rebuild.
-				SelectedRoadActor->MovePointRealtime(SelectedPointIndex, Ground);
+				SelectedRoadActor->MovePointRealtime(SelectedPointIndex, Target);
 			}
 		}
 
@@ -344,8 +351,9 @@ void URealtimeRoadBuilderComponent::UpdateAxisDrag()
 
 bool URealtimeRoadBuilderComponent::BeginPointDrag()
 {
-	// An axis arrow wins over a point handle: it is the smaller, more deliberate target, and it is
-	// the only way to move a point somewhere the ground trace would never put it.
+	// An axis arrow wins over a point handle: it is the smaller, more deliberate target, it only
+	// exists on the already-selected point, and it is the only way to move a point somewhere the
+	// ground trace would never put it.
 	ETerraDyneGizmoAxis Axis = ETerraDyneGizmoAxis::None;
 	if (SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE && TraceGizmoAxisUnderCursor(Axis))
 	{
@@ -381,8 +389,27 @@ bool URealtimeRoadBuilderComponent::BeginPointDrag()
 		return false;
 	}
 
-	SelectRoadPoint(HoveredRoadActor.Get(), HoveredPointIndex);
+	const bool bAlreadySelected =
+		SelectedRoadActor.Get() == HoveredRoadActor.Get() && SelectedPointIndex == HoveredPointIndex;
+
+	if (!bAlreadySelected)
+	{
+		// First press selects and stops there. Moving a point is a second, deliberate press, so
+		// picking one can never fling it.
+		SelectRoadPoint(HoveredRoadActor.Get(), HoveredPointIndex);
+		return true;
+	}
+
 	DragAxis = ETerraDyneGizmoAxis::None;
+	DragStartPointLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
+
+	// Grab where the point already is, relative to the cursor, so it moves with the cursor instead
+	// of jumping to it.
+	FVector Ground;
+	DragGrabOffset = TraceGroundUnderCursor(Ground)
+		? (DragStartPointLocation - Ground)
+		: FVector::ZeroVector;
+
 	bIsDraggingPoint = true;
 	return true;
 }
@@ -393,6 +420,7 @@ void URealtimeRoadBuilderComponent::EndPointDrag()
 
 	bIsDraggingPoint = false;
 	DragAxis = ETerraDyneGizmoAxis::None;
+	DragGrabOffset = FVector::ZeroVector;
 	OverlayBuiltForRoad = nullptr;
 	TimeSinceJunctionResolve = 0.0f;
 

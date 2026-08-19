@@ -100,8 +100,15 @@ public:
 	TObjectPtr<ATerraDyneGizmoActor> PointGizmo;
 
 	/**
-	 * Starts dragging a control point. Call on mouse down: if a handle is under the cursor it
-	 * becomes the selection first, so grabbing a point and moving it is one gesture.
+	 * Handles a press on the edit overlay. Call on mouse down.
+	 *
+	 * Selecting and dragging are deliberately separate presses. A press on an unselected handle
+	 * only selects it; a second press on the same handle begins the drag. Doing both at once meant
+	 * the click that picked a point also flung it, because the drag immediately moved it to
+	 * wherever the cursor's ground trace landed.
+	 *
+	 * Returns true when the press was consumed, so the caller does not also treat it as a click on
+	 * open ground.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
 	bool BeginPointDrag();
@@ -262,4 +269,13 @@ private:
 
 	/** Time since the last junction re-solve during the current drag. */
 	float TimeSinceJunctionResolve = 0.0f;
+
+	/**
+	 * Offset from the cursor's ground point to the grabbed point, captured when the drag begins.
+	 *
+	 * Without it the point snaps to the cursor on the first frame of the drag. The handle floats
+	 * above the road and the cursor ray meets terrain somewhere else entirely at a shallow camera
+	 * angle, so that snap threw points a long way across the map.
+	 */
+	FVector DragGrabOffset = FVector::ZeroVector;
 };
