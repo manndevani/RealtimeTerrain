@@ -915,6 +915,10 @@ void ARealtimeRoadSplineActor::RefreshAffectedJunctions()
 			Junction->RebuildJunction();
 		}
 	}
+
+	// Then let the detector reconcile the whole network, so a road dragged across another creates
+	// the crossing rather than only refreshing intersections it already belonged to.
+	RoadNetwork::RebuildIntersections(World);
 }
 
 void ARealtimeRoadSplineActor::ClearTerrainPad()

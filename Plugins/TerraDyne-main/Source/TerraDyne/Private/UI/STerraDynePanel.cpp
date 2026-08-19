@@ -458,15 +458,6 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::SelectRoad)
 									.HAlign(HAlign_Center)
 								]
-								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
-								[
-									SNew(SButton)
-									.Text(LOCTEXT("ModeJunction", "Junction"))
-									.ToolTipText(LOCTEXT("TipJunction", "Click terrain to place a multi-way junction."))
-									.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::PlaceJunction); })
-									.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::PlaceJunction)
-									.HAlign(HAlign_Center)
-								]
 							]
 							+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
 							[
@@ -1130,10 +1121,6 @@ FText STerraDynePanel::GetRoadStatusText() const
 		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::DrawRoughRoad)
 		{
 			return LOCTEXT("RoadStatusRough", "Active: Click terrain to draw Rough Trail.");
-		}
-		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::PlaceJunction)
-		{
-			return LOCTEXT("RoadStatusJunction", "Active: Click terrain to place Junction.");
 		}
 		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::SelectRoad)
 		{

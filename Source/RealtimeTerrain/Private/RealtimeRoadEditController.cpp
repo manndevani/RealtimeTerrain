@@ -23,16 +23,6 @@ void ARealtimeRoadEditController::HandleRoadClick()
 		return;
 	}
 
-	if (ToolUI->CurrentTool == ETerraDyneToolMode::PlaceJunction)
-	{
-		FHitResult Hit;
-		if (TraceUnderCursor(Hit))
-		{
-			RoadBuilder->SpawnJunctionAtLocation(Hit.Location, ERoadJunctionType::Cross_4Way);
-		}
-		return;
-	}
-
 	// Select mode never draws. A press either grabs the handle under the cursor to drag it, or
 	// picks whatever road was clicked so its handles come up.
 	if (ToolUI->CurrentTool == ETerraDyneToolMode::SelectRoad)

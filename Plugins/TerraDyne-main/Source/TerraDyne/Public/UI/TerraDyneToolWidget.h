@@ -26,8 +26,11 @@ enum class ETerraDyneToolMode : uint8
 	DrawPavedRoad,
 	/** Draw interactive realtime rough dirt trail */
 	DrawRoughRoad,
-	/** Place interactive realtime multi-way junction */
-	PlaceJunction,
+	/**
+	 * Retired. Junctions are detected where roads cross rather than placed by hand, so nothing
+	 * selects this mode any more. Kept so saved assets referencing the value still resolve.
+	 */
+	PlaceJunction UMETA(Hidden),
 	/** Clicks select and drag existing road control points instead of drawing new road. */
 	SelectRoad
 };
@@ -42,7 +45,6 @@ inline bool IsRoadToolMode(ETerraDyneToolMode Mode)
 {
 	return Mode == ETerraDyneToolMode::DrawPavedRoad
 		|| Mode == ETerraDyneToolMode::DrawRoughRoad
-		|| Mode == ETerraDyneToolMode::PlaceJunction
 		|| Mode == ETerraDyneToolMode::SelectRoad;
 }
 

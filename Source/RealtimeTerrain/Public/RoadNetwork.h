@@ -46,4 +46,33 @@ namespace RoadNetwork
 
 	/** Distance along a road's spline nearest to a world location. */
 	bool FindDistanceAlongRoad(const ARealtimeRoadSplineActor* Road, const FVector& WorldLocation, double& OutDistance);
+
+	/** A place where road centrelines cross, and the roads involved. */
+	struct FCrossing
+	{
+		FVector2D Location = FVector2D::ZeroVector;
+		TArray<ARealtimeRoadSplineActor*> Roads;
+
+		/** Widest road meeting here, used to size the node. */
+		double MaxRoadWidth = 0.0;
+	};
+
+	/**
+	 * Finds everywhere road centrelines cross in plan.
+	 *
+	 * Crossings closer together than MergeRadius collapse into one node, so a pair of roads that
+	 * touch twice in quick succession, or three roads meeting at almost but not exactly a point,
+	 * produce a single intersection rather than a cluster of overlapping ones.
+	 */
+	void DetectCrossings(UWorld* World, double MergeRadius, TArray<FCrossing>& OutCrossings);
+
+	/**
+	 * Brings the world's junctions in line with where roads actually cross: one at each detected
+	 * crossing, existing ones moved and re-solved, and any previously generated junction whose
+	 * crossing has gone destroyed.
+	 *
+	 * Only junctions the detector generated are touched; anything placed by hand is left alone.
+	 * Returns how many generated junctions are live afterwards.
+	 */
+	int32 RebuildIntersections(UWorld* World);
 }
