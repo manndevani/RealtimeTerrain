@@ -120,10 +120,14 @@ public:
 	 * Rebuilds Legs and the surface from the roads currently inside the bounds, and writes the
 	 * solver's trim distances back onto those roads as junction cuts.
 	 *
+	 * Deliberately not named to match bSolveFromNearbyRoads: reflection strips the leading b from
+	 * a bool property, so a function of that name would collide with the flag in Blueprint and in
+	 * Python, and the property would win.
+	 *
 	 * Returns false when fewer than two arms were found.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Junction|Solve")
-	bool SolveFromNearbyRoads();
+	bool SolveIntersection();
 
 	/** Legs radiating from the centre. Presets fill this in; Custom_N_Way leaves it to the caller. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_Legs, Category = "Junction|Legs")

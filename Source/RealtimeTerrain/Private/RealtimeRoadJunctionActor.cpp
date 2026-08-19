@@ -519,7 +519,7 @@ void ARealtimeRoadJunctionActor::ApplyMaterials()
 	JunctionMeshComponent->ConfigureMaterialSet(MaterialSet);
 }
 
-bool ARealtimeRoadJunctionActor::SolveFromNearbyRoads()
+bool ARealtimeRoadJunctionActor::SolveIntersection()
 {
 	SolvedBoundary.Reset();
 	SolvedRoadsideChains.Reset();
@@ -724,7 +724,7 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 	// remain the fallback for a junction placed with no roads near it yet.
 	bool bHaveGeometry = false;
 
-	if (bSolveFromNearbyRoads && SolveFromNearbyRoads() && SolvedBoundary.Num() >= 3)
+	if (bSolveFromNearbyRoads && SolveIntersection() && SolvedBoundary.Num() >= 3)
 	{
 		const double PlaneZ = ConformedPlaneWorldZ;
 
