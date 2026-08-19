@@ -33,8 +33,6 @@ public:
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	virtual void Destroyed() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 #if WITH_EDITOR
@@ -145,29 +143,6 @@ public:
 
 	//--- TERRAIN ---
 
-	/**
-	 * Level the ground under the intersection to its plane.
-	 *
-	 * A junction is a single flat slab by design, so on any slope the ground it spans rises above
-	 * it at one end and falls away at the other. Roads solve this by rebasing the terrain beneath
-	 * them; without the same treatment the intersection is the one place the landscape still
-	 * surfaces through the road, and it is the largest flat piece in the network.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Terrain")
-	bool bRebaseTerrain = true;
-
-	/** Ground levelled beyond the junction outline, in cm. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Terrain", meta = (ClampMin = "0.0"))
-	float PadMargin = 150.0f;
-
-	/** Width of the blend from the levelled area back to natural ground, in cm. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Terrain", meta = (ClampMin = "1.0"))
-	float PadFalloff = 350.0f;
-
-	/** How far below the surface the ground is levelled, on top of the slab thickness. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Terrain", meta = (ClampMin = "0.0"))
-	float PadDepthBelowSurface = 60.0f;
-
 	/** Sit the junction plane on the terrain rather than at the actor's authored Z. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Terrain")
 	bool bConformToTerrain = true;
@@ -252,12 +227,6 @@ protected:
 		double& OutMaxBandWidth) const;
 
 	bool SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const;
-
-	/** Pushes the junction's footprint to the terrain manager as a pad, and refreshes chunks. */
-	void UpdateTerrainPad();
-
-	/** Drops the junction's pad, restoring the natural landform underneath. */
-	void ClearTerrainPad();
 
 private:
 	mutable TWeakObjectPtr<ATerraDyneManager> CachedTerraDyneManager;
