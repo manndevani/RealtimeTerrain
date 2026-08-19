@@ -433,27 +433,45 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 	// only necessary without a known ordering. The arms here are already sorted counter-clockwise,
 	// so the boundary can simply be walked: across one arm's cap, round the corner arc, across the
 	// next arm's cap. The result is correctly wound by construction and cannot bowtie.
+	// Cap ends computed up front, so each corner chain can reference the arm on either side of it.
+	TArray<FVector2D> CapRight;
+	TArray<FVector2D> CapLeft;
+	CapRight.SetNum(NumArms);
+	CapLeft.SetNum(NumArms);
+
 	for (int32 i = 0; i < NumArms; ++i)
 	{
-		const int32 Next = (i + 1) % NumArms;
-
 		const FVector2D End = PointAtDistance(Arms[i].Centreline, Arms[i].TrimDistance);
 		const FVector2D Direction = DirectionAtDistance(Arms[i].Centreline, Arms[i].TrimDistance);
 		const FVector2D Normal = LeftNormal(Direction);
 
+		CapRight[i] = End - Normal * Arms[i].HalfWidth;
+		CapLeft[i] = End + Normal * Arms[i].HalfWidth;
+	}
+
+	Solution.RoadsideChains.SetNum(NumArms);
+
+	for (int32 i = 0; i < NumArms; ++i)
+	{
+		const int32 Next = (i + 1) % NumArms;
+
 		// Right side first, then left: crossing the cap that way is counter-clockwise about
 		// the node.
-		Solution.Boundary.Add(End - Normal * Arms[i].HalfWidth);
-		Solution.Boundary.Add(End + Normal * Arms[i].HalfWidth);
+		Solution.Boundary.Add(CapRight[i]);
+		Solution.Boundary.Add(CapLeft[i]);
 
-		// The arc runs from this arm's left edge to the next arm's right edge, which is exactly
+		// The corner runs from this arm's left edge to the next arm's right edge, which is exactly
 		// where the walk needs to go next. Corners with no collision simply join the two caps.
+		TArray<FVector2D>& Chain = Solution.RoadsideChains[i];
+		Chain.Add(CapLeft[i]);
+
 		if (HasCollision[i])
 		{
 			Solution.Boundary.Append(CornerArcs[i]);
+			Chain.Append(CornerArcs[i]);
 		}
 
-		(void)Next;
+		Chain.Add(CapRight[Next]);
 	}
 
 	if (Solution.Boundary.Num() < 3)

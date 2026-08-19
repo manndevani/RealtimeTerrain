@@ -5,6 +5,7 @@
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "IndexTypes.h"
+#include "CompGeom/PolygonTriangulation.h"
 
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
@@ -448,19 +449,50 @@ void AppendPrism(
 		return FVector2f(static_cast<float>(P.X * UVScale), static_cast<float>(P.Y * UVScale));
 	};
 
-	const FVector2f CentroidUV = PlanarUV(Centroid);
-
-	for (int32 i = 0; i < Num; ++i)
+	// Ear-clip the cap rather than fanning it from the centroid.
+	//
+	// A centroid fan is only valid when every edge is visible from the centre. An intersection
+	// surface is not: the corner returns arc inward, so on a junction with deep notches a fan emits
+	// triangles that spill outside the boundary entirely. Ear clipping handles any simple polygon.
+	TArray<FVector2D> Flat;
+	Flat.Reserve(Num);
+	for (const FVector& Point : BoundaryCCW)
 	{
-		const int32 j = (i + 1) % Num;
+		Flat.Emplace(Point.X, Point.Y);
+	}
+
+	TArray<FIndex3i> CapTriangles;
+	PolygonTriangulation::TriangulateSimplePolygon(Flat, CapTriangles, false);
+
+	if (CapTriangles.Num() == 0)
+	{
+		// Degenerate outline: fall back to the fan so the surface is not simply missing.
+		for (int32 i = 0; i < Num; ++i)
+		{
+			CapTriangles.Add(FIndex3i(Num, i, (i + 1) % Num));
+		}
+		TopVerts.Add(TopCentroidVert);
+		BottomVerts.Add(BottomCentroidVert);
+	}
+
+	for (const FIndex3i& Tri : CapTriangles)
+	{
+		if (!TopVerts.IsValidIndex(Tri.A) || !TopVerts.IsValidIndex(Tri.B) || !TopVerts.IsValidIndex(Tri.C))
+		{
+			continue;
+		}
+
+		const FVector2f UVA = PlanarUV(BoundaryCCW.IsValidIndex(Tri.A) ? BoundaryCCW[Tri.A] : Centroid);
+		const FVector2f UVB = PlanarUV(BoundaryCCW.IsValidIndex(Tri.B) ? BoundaryCCW[Tri.B] : Centroid);
+		const FVector2f UVC = PlanarUV(BoundaryCCW.IsValidIndex(Tri.C) ? BoundaryCCW[Tri.C] : Centroid);
 
 		// Counter-clockwise boundary: this order faces +Z.
-		AppendTri(Mesh, TopCentroidVert, TopVerts[i], TopVerts[j], TopMaterialID,
-			CentroidUV, PlanarUV(BoundaryCCW[i]), PlanarUV(BoundaryCCW[j]));
+		AppendTri(Mesh, TopVerts[Tri.A], TopVerts[Tri.B], TopVerts[Tri.C], TopMaterialID,
+			UVA, UVB, UVC);
 
 		// Underside takes the reverse order to face -Z.
-		AppendTri(Mesh, BottomCentroidVert, BottomVerts[j], BottomVerts[i], SideMaterialID,
-			CentroidUV, PlanarUV(BoundaryCCW[j]), PlanarUV(BoundaryCCW[i]));
+		AppendTri(Mesh, BottomVerts[Tri.C], BottomVerts[Tri.B], BottomVerts[Tri.A], SideMaterialID,
+			UVC, UVB, UVA);
 	}
 
 	// Skirt joining the two faces.

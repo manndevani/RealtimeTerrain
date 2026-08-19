@@ -3,6 +3,10 @@
 #include "RealtimeRoadJunctionActor.h"
 
 #include "RoadMeshBuilder.h"
+#include "RoadNetworkSolver.h"
+#include "RealtimeRoadSplineActor.h"
+#include "Components/SplineComponent.h"
+#include "EngineUtils.h"
 
 #include "Algo/Reverse.h"
 #include "Components/DynamicMeshComponent.h"
@@ -515,6 +519,186 @@ void ARealtimeRoadJunctionActor::ApplyMaterials()
 	JunctionMeshComponent->ConfigureMaterialSet(MaterialSet);
 }
 
+bool ARealtimeRoadJunctionActor::SolveFromNearbyRoads()
+{
+	SolvedBoundary.Reset();
+	SolvedRoadsideChains.Reset();
+
+	UWorld* World = GetWorld();
+	if (!World) return false;
+
+	const FVector Centre = GetActorLocation();
+	const FVector2D CentreXY(Centre.X, Centre.Y);
+	const double Radius = FMath::Max(100.0f, BoundsRadius);
+
+	// How far past the node each arm is sampled. The solver needs edge beyond the corner to find
+	// collisions and fit the return arc into, so this reaches well outside the bounds itself.
+	const double SampleReach = Radius * 2.5;
+	const double SampleStep = FMath::Max(100.0, Radius * 0.1);
+
+	struct FArmSource
+	{
+		ARealtimeRoadSplineActor* Road = nullptr;
+		double NodeDistance = 0.0;
+		bool bForward = false;
+	};
+	TArray<FArmSource> Sources;
+	TArray<RoadNetworkSolver::FArm> Arms;
+
+	for (TActorIterator<ARealtimeRoadSplineActor> It(World); It; ++It)
+	{
+		ARealtimeRoadSplineActor* Road = *It;
+		if (!Road || Road->bIsHolographicPreview || !Road->SplineComponent) continue;
+
+		USplineComponent* Spline = Road->SplineComponent;
+		if (Spline->GetNumberOfSplinePoints() < 2) continue;
+
+		const double Length = Spline->GetSplineLength();
+		const float Key = Spline->FindInputKeyClosestToWorldLocation(Centre);
+		const double NodeDistance = FMath::Clamp(
+			static_cast<double>(Spline->GetDistanceAlongSplineAtSplineInputKey(Key)), 0.0, Length);
+
+		const FVector Closest = Spline->GetLocationAtDistanceAlongSpline(
+			NodeDistance, ESplineCoordinateSpace::World);
+		if (FVector::Dist2D(Closest, Centre) > Radius) continue;
+
+		const double HalfWidth =
+			FMath::Max(50.0f, Road->CrossSectionSettings.RoadWidth) * 0.5
+			+ (Road->CrossSectionSettings.bHasCurbs ? Road->CrossSectionSettings.CurbWidth : 0.0f)
+			+ (Road->CrossSectionSettings.bHasFootpaths ? Road->CrossSectionSettings.FootpathWidth : 0.0f);
+
+		// A road passing straight through contributes two arms, one each way. A road that ends
+		// inside the bounds contributes only the side that still has length to it.
+		const double EndTolerance = HalfWidth;
+
+		auto BuildArm = [&](bool bForward)
+		{
+			const double Available = bForward ? (Length - NodeDistance) : NodeDistance;
+			if (Available <= EndTolerance) return;
+
+			RoadNetworkSolver::FArm Arm;
+			Arm.HalfWidth = HalfWidth;
+			Arm.UserData = Sources.Num();
+
+			const double Reach = FMath::Min(SampleReach, Available);
+			for (double T = 0.0; T <= Reach + UE_KINDA_SMALL_NUMBER; T += SampleStep)
+			{
+				const double D = bForward ? (NodeDistance + T) : (NodeDistance - T);
+				const FVector P = Spline->GetLocationAtDistanceAlongSpline(
+					FMath::Clamp(D, 0.0, Length), ESplineCoordinateSpace::World);
+				Arm.Centreline.Add(FVector2D(P.X, P.Y));
+			}
+
+			if (Arm.Centreline.Num() < 2) return;
+
+			Sources.Add({ Road, NodeDistance, bForward });
+			Arms.Add(MoveTemp(Arm));
+		};
+
+		BuildArm(false);
+		BuildArm(true);
+	}
+
+	if (Arms.Num() < 2)
+	{
+		return false;
+	}
+
+	RoadNetworkSolver::FNodeOptions Options;
+	Options.CornerRadius = FMath::Max(0.0f, CornerReturnRadius);
+	Options.ArcSegments = FMath::Clamp(CornerArcSegments, 1, 32);
+
+	const RoadNetworkSolver::FNodeSolution Solution =
+		RoadNetworkSolver::SolveNode(CentreXY, Arms, Options);
+
+	if (!Solution.bValid)
+	{
+		return false;
+	}
+
+	SolvedBoundary = Solution.Boundary;
+	SolvedRoadsideChains = Solution.RoadsideChains;
+
+	// Rebuild Legs from the solved arms. Roads still pin themselves to leg sockets, so the legs
+	// have to agree with what the solver decided rather than with whatever was authored before.
+	JunctionType = ERoadJunctionType::Custom_N_Way;
+	Legs.Reset(Arms.Num());
+
+	struct FRoadCut
+	{
+		ARealtimeRoadSplineActor* Road = nullptr;
+		double NodeDistance = 0.0;
+		double BackTrim = -1.0;
+		double ForwardTrim = -1.0;
+		int32 BackLeg = INDEX_NONE;
+		int32 ForwardLeg = INDEX_NONE;
+	};
+	TMap<ARealtimeRoadSplineActor*, FRoadCut> Cuts;
+
+	for (const RoadNetworkSolver::FArm& Arm : Arms)
+	{
+		if (!Sources.IsValidIndex(Arm.UserData)) continue;
+		const FArmSource& Source = Sources[Arm.UserData];
+
+		FRoadJunctionLeg Leg;
+		Leg.AngleDegrees = FRotator::ClampAxis(FMath::RadiansToDegrees(Arm.AngleRad));
+		Leg.ArmLength = static_cast<float>(FMath::Max(50.0, Arm.TrimDistance));
+		Leg.CustomRoadWidth = 0.0f;
+		const int32 LegIndex = Legs.Add(Leg);
+
+		FRoadCut& Cut = Cuts.FindOrAdd(Source.Road);
+		Cut.Road = Source.Road;
+		Cut.NodeDistance = Source.NodeDistance;
+		if (Source.bForward)
+		{
+			Cut.ForwardTrim = Arm.TrimDistance;
+			Cut.ForwardLeg = LegIndex;
+		}
+		else
+		{
+			Cut.BackTrim = Arm.TrimDistance;
+			Cut.BackLeg = LegIndex;
+		}
+	}
+
+	// Sockets have to carry the conformed plane height before any road pins itself to one.
+	ConformedPlaneWorldZ = ResolvePlaneWorldZ();
+
+	for (const TPair<ARealtimeRoadSplineActor*, FRoadCut>& Pair : Cuts)
+	{
+		const FRoadCut& Cut = Pair.Value;
+		if (!Cut.Road) continue;
+
+		if (Cut.BackTrim >= 0.0 && Cut.ForwardTrim >= 0.0)
+		{
+			FRoadJunctionCut RoadCut;
+			RoadCut.Junction = this;
+			RoadCut.EntryDistance = static_cast<float>(Cut.NodeDistance - Cut.BackTrim);
+			RoadCut.ExitDistance = static_cast<float>(Cut.NodeDistance + Cut.ForwardTrim);
+			RoadCut.EntryLegIndex = Cut.BackLeg;
+			RoadCut.ExitLegIndex = Cut.ForwardLeg;
+			Cut.Road->AddJunctionCut(RoadCut);
+		}
+		else if (Cut.ForwardTrim >= 0.0)
+		{
+			// Only the far side survives, so the junction terminates this road's start.
+			Cut.Road->RemoveJunctionCutsFor(this);
+			Cut.Road->StartJunction = this;
+			Cut.Road->StartJunctionLegIndex = Cut.ForwardLeg;
+			Cut.Road->RebuildRoad();
+		}
+		else if (Cut.BackTrim >= 0.0)
+		{
+			Cut.Road->RemoveJunctionCutsFor(this);
+			Cut.Road->EndJunction = this;
+			Cut.Road->EndJunctionLegIndex = Cut.BackLeg;
+			Cut.Road->RebuildRoad();
+		}
+	}
+
+	return true;
+}
+
 void ARealtimeRoadJunctionActor::RebuildJunction()
 {
 	if (!JunctionMeshComponent) return;
@@ -536,7 +720,40 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 	TArray<TArray<FVector>> CornerChains;
 	double MaxBandWidth = 0.0;
 
-	if (!BuildBoundary(Boundary, CornerChains, MaxBandWidth))
+	// Prefer a surface solved from the roads actually passing through the bounds. Authored legs
+	// remain the fallback for a junction placed with no roads near it yet.
+	bool bHaveGeometry = false;
+
+	if (bSolveFromNearbyRoads && SolveFromNearbyRoads() && SolvedBoundary.Num() >= 3)
+	{
+		const double PlaneZ = ConformedPlaneWorldZ;
+
+		Boundary.Reset(SolvedBoundary.Num());
+		for (const FVector2D& P : SolvedBoundary)
+		{
+			Boundary.Add(FVector(P.X, P.Y, PlaneZ));
+		}
+
+		CornerChains.Reset(SolvedRoadsideChains.Num());
+		for (const TArray<FVector2D>& Chain : SolvedRoadsideChains)
+		{
+			TArray<FVector>& Out = CornerChains.AddDefaulted_GetRef();
+			Out.Reserve(Chain.Num());
+			for (const FVector2D& P : Chain)
+			{
+				Out.Add(FVector(P.X, P.Y, PlaneZ));
+			}
+			// Swept frames take Right from world up crossed with the tangent, which points inward
+			// along a counter-clockwise path; reversing turns it outward.
+			Algo::Reverse(Out);
+		}
+
+		// The solver already clamps its returns, so the band is limited only by the curb itself.
+		MaxBandWidth = TNumericLimits<double>::Max();
+		bHaveGeometry = true;
+	}
+
+	if (!bHaveGeometry && !BuildBoundary(Boundary, CornerChains, MaxBandWidth))
 	{
 		DynamicMesh->Reset();
 		JunctionMeshComponent->NotifyMeshUpdated();

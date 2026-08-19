@@ -77,6 +77,15 @@ namespace RoadNetworkSolver
 		/** Counter-clockwise boundary of the intersection surface in world XY. */
 		TArray<FVector2D> Boundary;
 
+		/**
+		 * Per corner, the stretch of boundary running between two adjacent arms.
+		 *
+		 * This is the part of the perimeter that is roadside rather than a connection to a road,
+		 * so it is where kerbs and footpaths belong. The arm caps are deliberately excluded: those
+		 * abut the road that continues, and putting a kerb across them would wall the road off.
+		 */
+		TArray<TArray<FVector2D>> RoadsideChains;
+
 		/** False when the node had too few arms, or the boundary collapsed. */
 		bool bValid = false;
 	};

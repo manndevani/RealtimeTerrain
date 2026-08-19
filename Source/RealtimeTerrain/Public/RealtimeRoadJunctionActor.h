@@ -86,6 +86,45 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_JunctionConfig, Category = "Junction|Dimensions", meta = (ClampMin = "0.00001"))
 	float UVTilingScale = 0.002f;
 
+	//--- BOUNDING VOLUME SOLVE ---
+
+	/**
+	 * Discover the roads that pass through this junction's bounds and solve its surface from them,
+	 * rather than from authored legs.
+	 *
+	 * This is the workflow the Houdini reference uses: the user places a bounding shape over the
+	 * spot they want an intersection, and whatever roads fall inside become its arms. It avoids
+	 * needing a crossing heuristic entirely, because placement is the author's decision.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Solve")
+	bool bSolveFromNearbyRoads = true;
+
+	/** Radius of the bounding volume, in cm. A road passing within it becomes part of this node. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Solve", meta = (ClampMin = "100.0"))
+	float BoundsRadius = 1400.0f;
+
+	/**
+	 * Radius of the arc rounding each outer corner, in cm.
+	 *
+	 * The main dial for the junction's look and size: every arm trims back by roughly half its
+	 * width plus this, so a larger return sweeps wider and produces a bigger intersection.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Solve", meta = (ClampMin = "0.0"))
+	float CornerReturnRadius = 300.0f;
+
+	/** Segments per corner arc. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Junction|Solve", meta = (ClampMin = "1", ClampMax = "32"))
+	int32 CornerArcSegments = 8;
+
+	/**
+	 * Rebuilds Legs and the surface from the roads currently inside the bounds, and writes the
+	 * solver's trim distances back onto those roads as junction cuts.
+	 *
+	 * Returns false when fewer than two arms were found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Junction|Solve")
+	bool SolveFromNearbyRoads();
+
 	/** Legs radiating from the centre. Presets fill this in; Custom_N_Way leaves it to the caller. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_Legs, Category = "Junction|Legs")
 	TArray<FRoadJunctionLeg> Legs;
@@ -185,4 +224,13 @@ private:
 	 * on every rebuild, which a move triggers through OnConstruction.
 	 */
 	double ConformedPlaneWorldZ = 0.0;
+
+	/**
+	 * Surface solved from nearby roads, in world XY. Empty when the junction is running on
+	 * authored legs instead.
+	 */
+	TArray<FVector2D> SolvedBoundary;
+
+	/** Stretches of SolvedBoundary that are roadside rather than a road connection. */
+	TArray<TArray<FVector2D>> SolvedRoadsideChains;
 };
