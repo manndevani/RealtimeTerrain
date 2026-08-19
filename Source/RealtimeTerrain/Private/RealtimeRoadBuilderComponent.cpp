@@ -631,19 +631,20 @@ void URealtimeRoadBuilderComponent::HandleWorldClick(const FVector& ClickedWorld
 		return;
 	}
 
-	// A click on a road's line but away from its points inserts an anchor there. Without this you
-	// could only ever branch from wherever control points happened to fall, which on a road whose
-	// points are 8 metres apart is not the point you clicked.
+	// A click on a road's line, away from its points, anchors to the nearest point that road
+	// already has. Inserting one here instead meant that simply clicking a road to work with it
+	// silently added geometry to it.
 	if (!SelectedRoadActor.IsValid())
 	{
 		ARealtimeRoadSplineActor* LineRoad = nullptr;
 		float LineDistance = 0.0f;
 		if (FindRoadLineNear(ClickedWorldLocation, LineRoad, LineDistance))
 		{
-			const int32 Inserted = LineRoad->InsertPointAtDistance(LineDistance);
-			if (Inserted != INDEX_NONE)
+			float Unused = 0.0f;
+			const int32 Nearest = LineRoad->FindClosestSplinePoint(ClickedWorldLocation, Unused);
+			if (Nearest != INDEX_NONE)
 			{
-				SelectRoadPoint(LineRoad, Inserted);
+				SelectRoadPoint(LineRoad, Nearest);
 				return;
 			}
 		}
@@ -750,13 +751,17 @@ bool URealtimeRoadBuilderComponent::SelectRoadNear(const FVector& WorldLocation)
 		return true;
 	}
 
+	// Clicking the road's line selects the nearest point it already has. It deliberately does not
+	// insert one: a click meant to pick something should never quietly change it, and adding
+	// geometry is an edit that belongs behind a deliberate action.
 	float Along = 0.0f;
 	if (FindRoadLineNear(WorldLocation, Road, Along))
 	{
-		const int32 Inserted = Road->InsertPointAtDistance(Along);
-		if (Inserted != INDEX_NONE)
+		float Unused = 0.0f;
+		const int32 Nearest = Road->FindClosestSplinePoint(WorldLocation, Unused);
+		if (Nearest != INDEX_NONE)
 		{
-			SelectRoadPoint(Road, Inserted);
+			SelectRoadPoint(Road, Nearest);
 			return true;
 		}
 	}
