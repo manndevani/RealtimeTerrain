@@ -7,6 +7,7 @@
 
 #include "Components/SplineComponent.h"
 #include "EngineUtils.h"
+#include "RoadMeshBuilder.h"
 #include "Engine/World.h"
 
 namespace RoadNetwork
@@ -59,6 +60,52 @@ bool FindDistanceAlongRoad(const ARealtimeRoadSplineActor* Road, const FVector& 
 
 	const float InputKey = Spline->FindInputKeyClosestToWorldLocation(WorldLocation);
 	OutDistance = Spline->GetDistanceAlongSplineAtSplineInputKey(InputKey);
+	return true;
+}
+
+bool FindDistanceAlongRoad2D(const ARealtimeRoadSplineActor* Road, const FVector2D& WorldXY, double& OutDistance)
+{
+	OutDistance = 0.0;
+	if (!Road || !Road->SplineComponent) return false;
+
+	const USplineComponent* Spline = Road->SplineComponent;
+	if (Spline->GetNumberOfSplinePoints() < 2) return false;
+
+	const double Length = Spline->GetSplineLength();
+	if (Length <= UE_KINDA_SMALL_NUMBER) return false;
+
+	// Coarse sweep then a local refine: cheaper than a fine sweep and accurate enough, since the
+	// result only has to land on the right stretch of road.
+	const int32 Coarse = FMath::Clamp(FMath::CeilToInt(Length / 100.0), 8, 4096);
+	double Best = 0.0;
+	double BestDistSq = TNumericLimits<double>::Max();
+
+	for (int32 i = 0; i <= Coarse; ++i)
+	{
+		const double D = Length * i / static_cast<double>(Coarse);
+		const FVector P = Spline->GetLocationAtDistanceAlongSpline(D, ESplineCoordinateSpace::World);
+		const double DistSq = FVector2D::DistSquared(FVector2D(P.X, P.Y), WorldXY);
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = D;
+		}
+	}
+
+	const double Window = Length / static_cast<double>(Coarse);
+	for (int32 i = -8; i <= 8; ++i)
+	{
+		const double D = FMath::Clamp(Best + Window * i / 8.0, 0.0, Length);
+		const FVector P = Spline->GetLocationAtDistanceAlongSpline(D, ESplineCoordinateSpace::World);
+		const double DistSq = FVector2D::DistSquared(FVector2D(P.X, P.Y), WorldXY);
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = D;
+		}
+	}
+
+	OutDistance = Best;
 	return true;
 }
 
@@ -354,6 +401,7 @@ int32 RebuildIntersections(UWorld* World)
 	}
 
 	TArray<ARealtimeRoadJunctionActor*> Kept;
+	TWeakObjectPtr<ATerraDyneManager> GroundCache;
 
 	for (const FCrossing& Crossing : Crossings)
 	{
@@ -390,8 +438,14 @@ int32 RebuildIntersections(UWorld* World)
 		Junction->BoundsRadius = static_cast<float>(FMath::Max(400.0, Crossing.MaxRoadWidth * 1.6));
 		Junction->bSolveFromNearbyRoads = true;
 
+		// Put it on the ground. Spawning at Z zero left the node tens of metres below the roads,
+		// and everything downstream that measures from it inherited that error.
 		FVector Location = Target;
-		Location.Z = Junction->GetActorLocation().Z;
+		float GroundZ = 0.0f;
+		if (RoadMesh::SampleGroundHeight(Junction, GroundCache, Crossing.Location, GroundZ))
+		{
+			Location.Z = GroundZ;
+		}
 		Junction->SetActorLocation(Location);
 		Junction->RebuildJunction();
 

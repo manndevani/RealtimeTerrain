@@ -4,6 +4,7 @@
 
 #include "RoadMeshBuilder.h"
 #include "RoadNetworkSolver.h"
+#include "RoadNetwork.h"
 #include "RealtimeRoadSplineActor.h"
 #include "Components/SplineComponent.h"
 #include "EngineUtils.h"
@@ -568,9 +569,15 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 		if (Spline->GetNumberOfSplinePoints() < 2) continue;
 
 		const double Length = Spline->GetSplineLength();
-		const float Key = Spline->FindInputKeyClosestToWorldLocation(Centre);
-		const double NodeDistance = FMath::Clamp(
-			static_cast<double>(Spline->GetDistanceAlongSplineAtSplineInputKey(Key)), 0.0, Length);
+
+		// Plan-space, so a height difference between this node and the road cannot send the search
+		// to the wrong stretch of spline.
+		double NodeDistance = 0.0;
+		if (!RoadNetwork::FindDistanceAlongRoad2D(Road, CentreXY, NodeDistance))
+		{
+			continue;
+		}
+		NodeDistance = FMath::Clamp(NodeDistance, 0.0, Length);
 
 		const FVector Closest = Spline->GetLocationAtDistanceAlongSpline(
 			NodeDistance, ESplineCoordinateSpace::World);

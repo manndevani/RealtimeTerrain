@@ -47,6 +47,16 @@ namespace RoadNetwork
 	/** Distance along a road's spline nearest to a world location. */
 	bool FindDistanceAlongRoad(const ARealtimeRoadSplineActor* Road, const FVector& WorldLocation, double& OutDistance);
 
+	/**
+	 * Distance along a road's spline nearest to a world location, measured in plan only.
+	 *
+	 * The spline's own closest-point query is three-dimensional, so it is thrown off by any height
+	 * difference between the query point and the road. A junction sitting at a different height
+	 * from the roads it joins was picking node distances from entirely the wrong part of each
+	 * spline, which scrambled the arm headings that follow from them.
+	 */
+	bool FindDistanceAlongRoad2D(const ARealtimeRoadSplineActor* Road, const FVector2D& WorldXY, double& OutDistance);
+
 	/** A place where road centrelines cross, and the roads involved. */
 	struct FCrossing
 	{
