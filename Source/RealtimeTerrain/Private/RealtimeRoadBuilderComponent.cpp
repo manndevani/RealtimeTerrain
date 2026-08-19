@@ -16,6 +16,8 @@
 #include "GameFramework/PlayerController.h"
 #include "CollisionQueryParams.h"
 #include "Core/TerraDyneManager.h"
+#include "Building/TerraDyneGizmoActor.h"
+#include "Camera/PlayerCameraManager.h"
 
 URealtimeRoadBuilderComponent::URealtimeRoadBuilderComponent()
 {
@@ -36,16 +38,24 @@ void URealtimeRoadBuilderComponent::TickComponent(
 
 	if (bIsDraggingPoint && SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE)
 	{
-		FVector Ground;
-		if (TraceGroundUnderCursor(Ground))
+		if (DragAxis != ETerraDyneGizmoAxis::None)
 		{
-			// MovePointRealtime refreshes the render mesh now and defers the collision cook, which
-			// is what keeps a drag smooth; EndPointDrag forces the real rebuild.
-			SelectedRoadActor->MovePointRealtime(SelectedPointIndex, Ground);
+			UpdateAxisDrag();
+		}
+		else
+		{
+			FVector Ground;
+			if (TraceGroundUnderCursor(Ground))
+			{
+				// MovePointRealtime refreshes the render mesh now and defers the collision cook,
+				// which is what keeps a drag smooth; EndPointDrag forces the real rebuild.
+				SelectedRoadActor->MovePointRealtime(SelectedPointIndex, Ground);
+			}
 		}
 	}
 
 	UpdateEditOverlay();
+	UpdatePointGizmo();
 }
 
 void URealtimeRoadBuilderComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -54,6 +64,11 @@ void URealtimeRoadBuilderComponent::EndPlay(const EEndPlayReason::Type EndPlayRe
 	{
 		EditOverlay->Destroy();
 		EditOverlay = nullptr;
+	}
+	if (PointGizmo)
+	{
+		PointGizmo->Destroy();
+		PointGizmo = nullptr;
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -109,6 +124,7 @@ bool URealtimeRoadBuilderComponent::TraceGroundUnderCursor(FVector& OutLocation)
 	// swallow the ground trace that decides where a dragged point goes.
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(RoadBuilderCursorGround), false);
 	Params.AddIgnoredActor(EditOverlay);
+	Params.AddIgnoredActor(PointGizmo);
 	if (SelectedRoadActor.IsValid())
 	{
 		Params.AddIgnoredActor(SelectedRoadActor.Get());
@@ -205,17 +221,158 @@ void URealtimeRoadBuilderComponent::UpdateEditOverlay()
 	EditOverlay->SetHighlightedPoint(HoveredPointIndex);
 }
 
+void URealtimeRoadBuilderComponent::UpdatePointGizmo()
+{
+	const bool bWanted =
+		bShowPointGizmo && SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE;
+
+	if (!bWanted)
+	{
+		if (PointGizmo)
+		{
+			PointGizmo->SetActorHiddenInGame(true);
+			PointGizmo->SetActorEnableCollision(false);
+		}
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	if (!PointGizmo)
+	{
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		SpawnParams.ObjectFlags |= RF_Transient;
+		PointGizmo = World->SpawnActor<ATerraDyneGizmoActor>(
+			ATerraDyneGizmoActor::StaticClass(), FTransform::Identity, SpawnParams);
+		if (!PointGizmo) return;
+	}
+
+	PointGizmo->SetActorHiddenInGame(false);
+	PointGizmo->SetActorEnableCollision(true);
+	PointGizmo->SetActorLocation(SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex));
+
+	// Mid-drag the highlight stays on the axis being dragged, even once the cursor has left it.
+	if (bIsDraggingPoint)
+	{
+		PointGizmo->SetHighlightedAxis(DragAxis);
+	}
+	else
+	{
+		ETerraDyneGizmoAxis Hovered = ETerraDyneGizmoAxis::None;
+		TraceGizmoAxisUnderCursor(Hovered);
+		PointGizmo->SetHighlightedAxis(Hovered);
+	}
+}
+
+bool URealtimeRoadBuilderComponent::TraceGizmoAxisUnderCursor(ETerraDyneGizmoAxis& OutAxis) const
+{
+	OutAxis = ETerraDyneGizmoAxis::None;
+
+	APlayerController* Controller = GetOwningPlayerController();
+	if (!Controller || !PointGizmo || PointGizmo->IsHidden())
+	{
+		return false;
+	}
+
+	FHitResult Hit;
+	if (!Controller->GetHitResultUnderCursorByChannel(
+		UEngineTypes::ConvertToTraceType(ECC_Visibility), false, Hit))
+	{
+		return false;
+	}
+
+	OutAxis = PointGizmo->GetAxisFromComponent(Hit.GetComponent());
+	return OutAxis != ETerraDyneGizmoAxis::None;
+}
+
+bool URealtimeRoadBuilderComponent::IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const
+{
+	APlayerController* Controller = GetOwningPlayerController();
+	if (!Controller) return false;
+
+	FVector Origin;
+	FVector Direction;
+	if (!Controller->DeprojectMousePositionToWorld(Origin, Direction)) return false;
+
+	OutIntersection = FMath::RayPlaneIntersection(Origin, Direction, Plane);
+	return true;
+}
+
+void URealtimeRoadBuilderComponent::UpdateAxisDrag()
+{
+	FVector Intersection;
+	if (!IntersectCursorWithPlane(DragPlane, Intersection)) return;
+
+	const FVector Delta = Intersection - DragStartIntersection;
+	FVector NewLocation = DragStartPointLocation;
+
+	switch (DragAxis)
+	{
+	case ETerraDyneGizmoAxis::X:
+		NewLocation.X += Delta.X;
+		break;
+	case ETerraDyneGizmoAxis::Y:
+		NewLocation.Y += Delta.Y;
+		break;
+	case ETerraDyneGizmoAxis::Z:
+		NewLocation.Z += Delta.Z;
+		break;
+	case ETerraDyneGizmoAxis::CenterXY:
+		NewLocation.X += Delta.X;
+		NewLocation.Y += Delta.Y;
+		break;
+	default:
+		return;
+	}
+
+	// Axis drags deliberately skip the terrain snap a handle drag uses. Constraining motion to one
+	// axis and then dropping the result onto the ground would make the Z arrow do nothing at all.
+	SelectedRoadActor->MovePointRealtime(SelectedPointIndex, NewLocation);
+}
+
 bool URealtimeRoadBuilderComponent::BeginPointDrag()
 {
-	// Only a press that actually lands on a handle begins a drag. Starting one just because
-	// something happens to be selected would consume every subsequent click, and clicking ahead
-	// of a road to extend it would silently do nothing.
+	// An axis arrow wins over a point handle: it is the smaller, more deliberate target, and it is
+	// the only way to move a point somewhere the ground trace would never put it.
+	ETerraDyneGizmoAxis Axis = ETerraDyneGizmoAxis::None;
+	if (SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE && TraceGizmoAxisUnderCursor(Axis))
+	{
+		DragAxis = Axis;
+		DragStartPointLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
+
+		// Z drags against a vertical plane turned to face the camera, so cursor motion maps to
+		// height. The others drag against the horizontal plane through the point.
+		FVector Normal = FVector::UpVector;
+		if (Axis == ETerraDyneGizmoAxis::Z)
+		{
+			const APlayerController* Controller = GetOwningPlayerController();
+			const FVector CameraLocation = (Controller && Controller->PlayerCameraManager)
+				? Controller->PlayerCameraManager->GetCameraLocation()
+				: FVector::ZeroVector;
+
+			const FVector Facing = (CameraLocation - DragStartPointLocation).GetSafeNormal2D();
+			Normal = Facing.IsNearlyZero() ? FVector::ForwardVector : Facing;
+		}
+
+		DragPlane = FPlane(DragStartPointLocation, Normal);
+		IntersectCursorWithPlane(DragPlane, DragStartIntersection);
+
+		bIsDraggingPoint = true;
+		return true;
+	}
+
+	// Otherwise a press has to land on a handle. Starting a drag just because something happens to
+	// be selected would consume every subsequent click, and clicking ahead of a road to extend it
+	// would silently do nothing.
 	if (!HoveredRoadActor.IsValid() || HoveredPointIndex == INDEX_NONE)
 	{
 		return false;
 	}
 
 	SelectRoadPoint(HoveredRoadActor.Get(), HoveredPointIndex);
+	DragAxis = ETerraDyneGizmoAxis::None;
 	bIsDraggingPoint = true;
 	return true;
 }
@@ -225,7 +382,13 @@ void URealtimeRoadBuilderComponent::EndPointDrag()
 	if (!bIsDraggingPoint) return;
 
 	bIsDraggingPoint = false;
+	DragAxis = ETerraDyneGizmoAxis::None;
 	OverlayBuiltForRoad = nullptr;
+
+	if (PointGizmo)
+	{
+		PointGizmo->SetHighlightedAxis(ETerraDyneGizmoAxis::None);
+	}
 
 	// Settle now rather than waiting out the road's timer, so collision matches the final position
 	// the moment the player lets go.

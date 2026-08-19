@@ -931,9 +931,15 @@ void ARealtimeRoadSplineActor::UpdateTerrainPad(const TArray<TArray<RoadMesh::FF
 				FTerraDynePadStamp Stamp;
 				Stamp.Falloff = FMath::Max(1.0f, PadFalloff);
 
-				// Each quad is level, so it takes the mean of its two ends. Shorter spacing tracks
-				// a sloping road more closely.
-				Stamp.TargetWorldZ = static_cast<float>((Anchor->Origin.Z + Current.Origin.Z) * 0.5 - Depth);
+				// The lower of the two ends, never the mean.
+				//
+				// A pad quad is level while the road above it slopes, so a quad set to the mean
+				// sits half the span's drop ABOVE the road at the downhill end. With the slab only
+				// 33 cm thick that broke through on any grade steeper than about 1 percent, which
+				// is what put regular bands of terrain through the road surface. Taking the
+				// minimum guarantees the pad is at or below the road everywhere in the span.
+				const double SpanLow = FMath::Min(Anchor->Origin.Z, Current.Origin.Z);
+				Stamp.TargetWorldZ = static_cast<float>(SpanLow - Depth);
 
 				Stamp.PolygonWorldXY.Reserve(4);
 				Stamp.PolygonWorldXY.Emplace(AnchorLeft.X, AnchorLeft.Y);

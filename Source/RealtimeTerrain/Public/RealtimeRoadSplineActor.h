@@ -119,11 +119,18 @@ public:
 	 * ground tracks a sloping road against how many stamps the terrain has to rasterise.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase", meta = (ClampMin = "100.0"))
-	float PadSampleSpacing = 400.0f;
+	float PadSampleSpacing = 200.0f;
 
-	/** How far below the road surface the ground is levelled, on top of the slab thickness. */
+	/**
+	 * How far below the road surface the ground is levelled, on top of the slab thickness.
+	 *
+	 * This is the clearance that absorbs the difference between a level pad quad and the sloping
+	 * road over it, plus the terrain heightfield's own resolution between grid vertices. Too small
+	 * and the ground surfaces through the road; the previous default of 10 cm left about 2 cm of
+	 * real headroom and broke through constantly.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain Rebase", meta = (ClampMin = "0.0"))
-	float PadDepthBelowSurface = 10.0f;
+	float PadDepthBelowSurface = 60.0f;
 
 	/** Whether this is a local placement preview ghost. Previews never replicate and never collide. */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Road|Realtime")

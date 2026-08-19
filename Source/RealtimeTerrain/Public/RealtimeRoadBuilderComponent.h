@@ -5,12 +5,14 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "RoadTypes.h"
+#include "Building/TerraDyneGizmoActor.h"
 #include "RealtimeRoadBuilderComponent.generated.h"
 
 class ARealtimeRoadSplineActor;
 class ARealtimeRoadJunctionActor;
 class ATerraDyneManager;
 class ARoadEditOverlayActor;
+class ATerraDyneGizmoActor;
 class APlayerController;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRoadPlaced, ARealtimeRoadSplineActor*, PlacedRoad);
@@ -88,6 +90,14 @@ public:
 
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Road Builder|State")
 	bool bIsDraggingPoint = false;
+
+	/** Show the XYZ translate gizmo on the selected control point. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road Builder|Overlay")
+	bool bShowPointGizmo = true;
+
+	/** Translate gizmo sitting on the selected point. Shared class with the building tool. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Road Builder|Overlay")
+	TObjectPtr<ATerraDyneGizmoActor> PointGizmo;
 
 	/**
 	 * Starts dragging a control point. Call on mouse down: if a handle is under the cursor it
@@ -196,6 +206,18 @@ protected:
 
 	APlayerController* GetOwningPlayerController() const;
 
+	/** Keeps the gizmo on the selected point and highlights whichever axis is under the cursor. */
+	void UpdatePointGizmo();
+
+	/** Which gizmo axis the cursor is over, if any. */
+	bool TraceGizmoAxisUnderCursor(ETerraDyneGizmoAxis& OutAxis) const;
+
+	/** Where the cursor ray meets a plane. */
+	bool IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const;
+
+	/** Moves the selected point along the axis being dragged. */
+	void UpdateAxisDrag();
+
 	/** Finds the nearest selectable spline point across every non-preview road in the level. */
 	bool FindRoadPointNear(
 		const FVector& WorldLocation,
@@ -222,4 +244,10 @@ private:
 	 * not on every tick. Highlight and selection tints are cheap and do refresh every frame.
 	 */
 	TWeakObjectPtr<ARealtimeRoadSplineActor> OverlayBuiltForRoad;
+
+	/** None means the drag came from a point handle and follows the ground instead of an axis. */
+	ETerraDyneGizmoAxis DragAxis = ETerraDyneGizmoAxis::None;
+	FVector DragStartPointLocation = FVector::ZeroVector;
+	FVector DragStartIntersection = FVector::ZeroVector;
+	FPlane DragPlane = FPlane(FVector::ZeroVector, FVector::UpVector);
 };
