@@ -5,6 +5,7 @@
 #include "RealtimeRoadJunctionActor.h"
 #include "RoadMeshBuilder.h"
 #include "RoadNetwork.h"
+#include "EngineUtils.h"
 
 #include "Components/SplineComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -855,6 +856,64 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	if (bUpdateCollision)
 	{
 		UpdateTerrainPad(RunFrames);
+	}
+}
+
+void ARealtimeRoadSplineActor::RefreshAffectedJunctions()
+{
+	// A junction that is mid-solve is the reason this road is rebuilding at all; re-solving from
+	// here would recurse.
+	if (ARealtimeRoadJunctionActor::IsAnySolveInProgress())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World || !SplineComponent || bIsHolographicPreview) return;
+
+	const double Length = SplineComponent->GetSplineLength();
+	if (Length < 10.0) return;
+
+	TSet<ARealtimeRoadJunctionActor*> Affected;
+
+	// Junctions this road is already attached to follow it even if the route has moved away.
+	for (const FRoadJunctionCut& Cut : JunctionCuts)
+	{
+		if (Cut.Junction) Affected.Add(Cut.Junction);
+	}
+	if (StartJunction) Affected.Add(StartJunction);
+	if (EndJunction) Affected.Add(EndJunction);
+
+	// Plus any whose bounds the route now reaches, so a road dragged into one is adopted by it.
+	for (TActorIterator<ARealtimeRoadJunctionActor> It(World); It; ++It)
+	{
+		ARealtimeRoadJunctionActor* Junction = *It;
+		if (!Junction || Junction->bIsHolographicPreview || !Junction->bSolveFromNearbyRoads)
+		{
+			continue;
+		}
+		if (Affected.Contains(Junction))
+		{
+			continue;
+		}
+
+		const FVector Centre = Junction->GetActorLocation();
+		const float Key = SplineComponent->FindInputKeyClosestToWorldLocation(Centre);
+		const FVector Closest = SplineComponent->GetLocationAtDistanceAlongSpline(
+			SplineComponent->GetDistanceAlongSplineAtSplineInputKey(Key), ESplineCoordinateSpace::World);
+
+		if (FVector::Dist2D(Closest, Centre) <= Junction->BoundsRadius)
+		{
+			Affected.Add(Junction);
+		}
+	}
+
+	for (ARealtimeRoadJunctionActor* Junction : Affected)
+	{
+		if (Junction && !Junction->IsActorBeingDestroyed())
+		{
+			Junction->RebuildJunction();
+		}
 	}
 }
 

@@ -52,6 +52,16 @@ void URealtimeRoadBuilderComponent::TickComponent(
 				SelectedRoadActor->MovePointRealtime(SelectedPointIndex, Ground);
 			}
 		}
+
+		// Junctions follow the road as it moves, so the intersection reshapes under the cursor
+		// rather than snapping once the drag ends. Throttled: a re-solve rebuilds the junction
+		// surface and rewrites road cuts, which is far too heavy to run every frame.
+		TimeSinceJunctionResolve += DeltaTime;
+		if (TimeSinceJunctionResolve >= FMath::Max(0.0f, JunctionResolveInterval))
+		{
+			TimeSinceJunctionResolve = 0.0f;
+			SelectedRoadActor->RefreshAffectedJunctions();
+		}
 	}
 
 	UpdateEditOverlay();
@@ -384,6 +394,7 @@ void URealtimeRoadBuilderComponent::EndPointDrag()
 	bIsDraggingPoint = false;
 	DragAxis = ETerraDyneGizmoAxis::None;
 	OverlayBuiltForRoad = nullptr;
+	TimeSinceJunctionResolve = 0.0f;
 
 	if (PointGizmo)
 	{
@@ -395,6 +406,7 @@ void URealtimeRoadBuilderComponent::EndPointDrag()
 	if (SelectedRoadActor.IsValid())
 	{
 		SelectedRoadActor->RebuildRoad();
+		SelectedRoadActor->RefreshAffectedJunctions();
 	}
 }
 

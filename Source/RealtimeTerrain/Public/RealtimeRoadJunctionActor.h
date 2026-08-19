@@ -129,6 +129,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Junction|Solve")
 	bool SolveIntersection();
 
+	/**
+	 * True while any junction is mid-solve.
+	 *
+	 * Solving writes cuts onto the roads it trims, and those roads rebuild in response. Without
+	 * this the rebuild would ask its junctions to re-solve and the two would recurse forever.
+	 */
+	static bool IsAnySolveInProgress() { return bAnySolveInProgress; }
+
 	/** Legs radiating from the centre. Presets fill this in; Custom_N_Way leaves it to the caller. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_Legs, Category = "Junction|Legs")
 	TArray<FRoadJunctionLeg> Legs;
@@ -237,4 +245,7 @@ private:
 
 	/** Stretches of SolvedBoundary that are roadside rather than a road connection. */
 	TArray<TArray<FVector2D>> SolvedRoadsideChains;
+
+	/** Guards the road-rebuild cycle described on IsAnySolveInProgress. */
+	static bool bAnySolveInProgress;
 };

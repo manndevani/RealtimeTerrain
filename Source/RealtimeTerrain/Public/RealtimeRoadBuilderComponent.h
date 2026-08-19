@@ -106,6 +106,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
 	bool BeginPointDrag();
 
+	/**
+	 * Seconds between junction re-solves while a point is being dragged.
+	 *
+	 * Re-solving rebuilds the junction surface and rewrites road cuts, so it is throttled rather
+	 * than run per frame. Small enough to look continuous, large enough not to dominate the drag.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road Builder|Overlay", meta = (ClampMin = "0.0"))
+	float JunctionResolveInterval = 0.08f;
+
 	/** Ends the drag and forces the collision-bearing rebuild immediately. */
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
 	void EndPointDrag();
@@ -250,4 +259,7 @@ private:
 	FVector DragStartPointLocation = FVector::ZeroVector;
 	FVector DragStartIntersection = FVector::ZeroVector;
 	FPlane DragPlane = FPlane(FVector::ZeroVector, FVector::UpVector);
+
+	/** Time since the last junction re-solve during the current drag. */
+	float TimeSinceJunctionResolve = 0.0f;
 };

@@ -44,6 +44,8 @@ namespace
 	constexpr double BandRadiusSafetyFactor = 1.35;
 }
 
+bool ARealtimeRoadJunctionActor::bAnySolveInProgress = false;
+
 ARealtimeRoadJunctionActor::ARealtimeRoadJunctionActor()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -521,6 +523,14 @@ void ARealtimeRoadJunctionActor::ApplyMaterials()
 
 bool ARealtimeRoadJunctionActor::SolveIntersection()
 {
+	// Re-entrancy: the cut writes below rebuild roads, and a rebuilding road asks its junctions to
+	// re-solve. Without this guard that is an infinite mutual recursion.
+	if (bAnySolveInProgress)
+	{
+		return false;
+	}
+	TGuardValue<bool> SolveGuard(bAnySolveInProgress, true);
+
 	SolvedBoundary.Reset();
 	SolvedRoadsideChains.Reset();
 

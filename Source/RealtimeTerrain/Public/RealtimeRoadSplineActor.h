@@ -257,6 +257,16 @@ public:
 	void RebuildRoad();
 
 	/**
+	 * Re-solves every junction this road reaches, so moving the road reshapes its intersections
+	 * instead of leaving them behind.
+	 *
+	 * Covers junctions that already reference this road and any whose bounds the route now passes
+	 * through, which is what lets a road dragged into a junction be picked up by it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
+	void RefreshAffectedJunctions();
+
+	/**
 	 * Refreshes the render mesh now and schedules the collision-bearing rebuild for once edits
 	 * stop. This is the call to use from a drag loop.
 	 */
