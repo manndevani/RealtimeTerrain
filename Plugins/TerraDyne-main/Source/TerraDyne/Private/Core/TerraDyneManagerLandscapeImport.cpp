@@ -158,6 +158,7 @@ void ATerraDyneManager::ImportInternal(ALandscapeProxy* Source, const FTerraDyne
 
 	LandscapeMigrationState = FTerraDyneLandscapeMigrationState();
 	LandscapeMigrationState.bWasImportedFromLandscape = true;
+	WorldOriginKind = ETerraDyneChunkOrigin::ImportedLandscape;
 	LandscapeMigrationState.SourceLandscapeName = Source->GetName();
 	LandscapeMigrationState.SourceLandscapePath = Source->GetPathName();
 	LandscapeMigrationState.SourceLandscapeLocation = Source->GetActorLocation();

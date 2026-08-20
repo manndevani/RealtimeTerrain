@@ -1,8 +1,10 @@
 // Copyright (c) 2026 GregOrigin. All Rights Reserved.
 #include "UI/TerraDyneToolWidget.h"
 #include "UI/STerraDynePanel.h"
+#include "UI/TerraDyneFilePickerWidget.h"
 #include "Core/TerraDyneSubsystem.h"
 #include "Core/TerraDyneManager.h"
+#include "Core/TerraDyneEditController.h"
 #include "World/TerraDyneChunk.h"
 #include "Kismet/GameplayStatics.h"
 #include "TerraDyneModule.h"
@@ -119,4 +121,46 @@ void UTerraDyneToolWidget::ResetActiveLayer()
 		}
 	}
 	UE_LOG(LogTerraDyne, Warning, TEXT("UI: Active Layer Reset."));
+}
+
+void UTerraDyneToolWidget::OpenGeoTIFFImportPicker()
+{
+	if (ActiveGeoTIFFPicker)
+	{
+		// Already up -- avoid stacking a second picker on top of it.
+		return;
+	}
+
+	ActiveGeoTIFFPicker = CreateWidget<UTerraDyneFilePickerWidget>(GetOwningPlayer(), UTerraDyneFilePickerWidget::StaticClass());
+	if (!ActiveGeoTIFFPicker)
+	{
+		return;
+	}
+
+	ActiveGeoTIFFPicker->OnFileChosen.AddDynamic(this, &UTerraDyneToolWidget::HandleGeoTIFFChosen);
+	ActiveGeoTIFFPicker->OnCancelled.AddDynamic(this, &UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled);
+	ActiveGeoTIFFPicker->AddToViewport(100);
+}
+
+void UTerraDyneToolWidget::HandleGeoTIFFChosen(const FString& FilePath)
+{
+	if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(GetOwningPlayer()))
+	{
+		PC->RequestImportGeoTIFF(FilePath);
+	}
+
+	if (ActiveGeoTIFFPicker)
+	{
+		ActiveGeoTIFFPicker->RemoveFromParent();
+		ActiveGeoTIFFPicker = nullptr;
+	}
+}
+
+void UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled()
+{
+	if (ActiveGeoTIFFPicker)
+	{
+		ActiveGeoTIFFPicker->RemoveFromParent();
+		ActiveGeoTIFFPicker = nullptr;
+	}
 }

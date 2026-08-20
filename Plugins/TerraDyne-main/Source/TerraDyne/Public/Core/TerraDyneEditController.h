@@ -83,6 +83,10 @@ public:
 	void RequestSaveWorldToFile(const FString& FilePath);
 	void RequestLoadWorldFromFile(const FString& FilePath);
 
+	/** Runs Manager->ImportGeoTIFF(FilePath) on the server -- the client-facing entry point the
+	 *  runtime file-picker widget calls, since ImportGeoTIFF itself only does anything on authority. */
+	void RequestImportGeoTIFF(const FString& FilePath);
+
 	//--- Building Requests ---
 	void RequestPlaceBuilding(TSubclassOf<class ATerraDyneBuildingActor> BuildingClass, const FTransform& WorldTransform, int32 FloorCount);
 	void RequestMoveBuilding(class ATerraDyneBuildingActor* Building, const FTransform& NewTransform);
@@ -190,6 +194,13 @@ public:
 	/** Whether a road control point is currently selected, for enabling UI. */
 	virtual bool HasRoadPointSelected() const { return false; }
 
+	/**
+	 * Clears the currently selected road/point, if any. Called on switching away from a road tool
+	 * mode -- without this a stuck highlight/gizmo used to survive the switch, since selection was
+	 * otherwise only ever cleared by road-specific actions (deleting a point, loading a world).
+	 */
+	virtual void ClearRoadSelection() {}
+
 protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AActor> SelectedRoadActor;
@@ -256,6 +267,9 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_LoadWorldFromFile(const FString& FilePath);
+
+	UFUNCTION(Server, Reliable)
+	void Server_ImportGeoTIFF(const FString& FilePath);
 
 	ATerraDyneManager* GetManager() const;
 

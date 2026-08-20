@@ -26,6 +26,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/Compression.h"
 #include "Engine/StaticMeshActor.h"
+#include "IO/TerraDyneGeoTIFFHeightSource.h"
 
 
 #include "Core/TerraDyneManagerInternal.h"
@@ -46,6 +47,12 @@ ATerraDyneManager::ATerraDyneManager()
 	PopulationMaintenanceTimer = 0.25f;
 }
 
+ATerraDyneManager::~ATerraDyneManager() = default;
+
+ATerraDyneManager::ATerraDyneManager(FVTableHelper& Helper) : Super(Helper)
+{
+}
+
 void ATerraDyneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -58,6 +65,8 @@ void ATerraDyneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(ATerraDyneManager, BiomeOverlays);
 	DOREPLIFETIME(ATerraDyneManager, AISpawnZones);
 	DOREPLIFETIME(ATerraDyneManager, BuildPermissionZones);
+	DOREPLIFETIME(ATerraDyneManager, GeoTIFFImportState);
+	DOREPLIFETIME(ATerraDyneManager, WorldOriginKind);
 }
 
 void ATerraDyneManager::BeginPlay()
@@ -111,7 +120,26 @@ void ATerraDyneManager::BeginPlay()
 		}
 		else
 #endif
-		if (bSpawnDefaultChunksOnBeginPlay && ActiveChunkMap.Num() == 0)
+		if (WorldMode == ETerraDyneWorldMode::Imported && !GeoTIFFImportPath.IsEmpty() && !ActiveGeoTIFFHeightSource.IsValid())
+		{
+			// ImportGeoTIFF() already rebuilds the chunk map / reapplies materials / refreshes
+			// population itself (it has to -- it's also the entry point the runtime file-picker calls
+			// long after BeginPlay), so this doesn't need bChunkMapDirty too.
+			ImportGeoTIFF(GeoTIFFImportPath);
+		}
+		else if (WorldMode == ETerraDyneWorldMode::Imported && GeoTIFFImportState.bWasImportedFromGeoTIFF && !ActiveGeoTIFFHeightSource.IsValid())
+		{
+			// The level itself already carries GeoTIFFImportState (it's a normal saved UPROPERTY on
+			// this actor) from an earlier import, but ActiveGeoTIFFHeightSource is not saved -- re-decode
+			// from the same source so chunks that haven't been visited yet still resolve correct DEM
+			// data. Don't clear/re-georeference: RebuildChunkMap() above already captured whatever
+			// chunks the level itself saved, and the origin was already established last time.
+			FTerraDyneGeoTIFFImportOptions ReloadOptions = GeoTIFFImportOptions;
+			ReloadOptions.bClearExistingChunks = false;
+			ReloadOptions.bEstablishGeoreferenceOrigin = false;
+			ImportGeoTIFFInternal(GeoTIFFImportState.SourceFilePath, ReloadOptions);
+		}
+		else if (WorldMode == ETerraDyneWorldMode::Sandbox && bSpawnDefaultChunksOnBeginPlay && ActiveChunkMap.Num() == 0)
 		{
 			SpawnDefaultSandboxChunk();
 			bChunkMapDirty = true;
@@ -1634,6 +1662,22 @@ void ATerraDyneManager::LoadOrSpawnChunk(FIntPoint Coord)
 		// the pad buffers back to zero. Re-stamp after the load rather than before it.
 		RefreshBuildingPadsForChunk(Chunk);
 		UE_LOG(LogTemp, Verbose, TEXT("Streaming: Loaded chunk [%d,%d] from cache"), Coord.X, Coord.Y);
+	}
+	else if (WorldOriginKind == ETerraDyneChunkOrigin::ImportedGeoTIFF && ImportedChunkCoords.Contains(Coord) && ActiveGeoTIFFHeightSource.IsValid())
+	{
+		// No per-chunk edit cache yet -- this coordinate is streaming in from the DEM for the first
+		// time. SpawnConfiguredChunk already seeded it with procedural noise above; on failure here
+		// (out of the raster's footprint, sample miss, etc.) that procedural seed is simply left in
+		// place rather than erroring, since ImportedChunkCoords is only ever a superset of what the
+		// raster actually covers.
+		if (TryPopulateChunkFromGeoTIFF(Chunk, Coord))
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("Streaming: Populated chunk [%d,%d] from GeoTIFF"), Coord.X, Coord.Y);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Streaming: GeoTIFF sample failed for chunk [%d,%d], left procedural"), Coord.X, Coord.Y);
+		}
 	}
 	else
 	{

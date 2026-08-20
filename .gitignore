@@ -10,6 +10,16 @@ Saved/
 DDC/
 
 # ---------------------------------------------------------------------------
+# Cesium's own runtime tile/request cache, and editor-baked road content.
+# Both are regenerated automatically -- neither belongs in source control, and
+# the Cesium cache in particular can reach hundreds of MB from a single
+# session.
+# ---------------------------------------------------------------------------
+cesium-request-cache.sqlite*
+/Content/Maps/_GENERATED/
+Plugins/TerraDyne-main/Content/Maps/_GENERATED/
+
+# ---------------------------------------------------------------------------
 # IDE / toolchain scratch
 # ---------------------------------------------------------------------------
 .vs/
@@ -53,6 +63,16 @@ DDC/
 # merge with its history intact.
 # ---------------------------------------------------------------------------
 Plugins/Monolith/
+
+# ---------------------------------------------------------------------------
+# M_OverlayForeground: the translucent, disable-depth-test material the road
+# gizmo and edit overlay use to render through terrain/walls, otherwise
+# covered by the /Content/* rule above. Same cascade reasoning as
+# UnrealDrive_CitySample below.
+# ---------------------------------------------------------------------------
+!/Content/Materials/
+/Content/Materials/*
+!/Content/Materials/M_OverlayForeground.uasset
 
 # ---------------------------------------------------------------------------
 # UnrealDrive_CitySample: MetaRoad's CitySample-styled content pack, otherwise

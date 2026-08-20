@@ -83,6 +83,47 @@ struct FTerraDyneLandscapeLayerMapping
 	int32 TerraDyneWeightLayerIndex = INDEX_NONE;
 };
 
+/**
+ * Where a world's terrain came from. Procedural is the default; the other two both set
+ * ATerraDyneManager::ImportedChunkCoords (which every downstream biome/population/outskirts-growth
+ * decision already keys off, source-agnostically) but differ in what state accompanies them --
+ * FTerraDyneLandscapeMigrationState for ImportedLandscape, FTerraDyneGeoTIFFImportState for
+ * ImportedGeoTIFF.
+ */
+UENUM(BlueprintType)
+enum class ETerraDyneChunkOrigin : uint8
+{
+	Procedural,
+	ImportedLandscape,
+	ImportedGeoTIFF
+};
+
+/** Metadata for a world imported from a georeferenced GeoTIFF, mirroring FTerraDyneLandscapeMigrationState's role for the Landscape-import case. */
+USTRUCT(BlueprintType)
+struct FTerraDyneGeoTIFFImportState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	bool bWasImportedFromGeoTIFF = false;
+
+	/** Absolute path to the source .tif/.tiff, kept so a reload can re-decode it (see ApplyLoadedSaveGame). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	FString SourceFilePath;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	FVector2D WorldFootprintMin = FVector2D::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	FVector2D WorldFootprintMax = FVector2D::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	float ResolvedZScale = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	FString ImportedAtIso8601;
+};
+
 USTRUCT(BlueprintType)
 struct FTerraDyneLandscapeMigrationState
 {
@@ -172,6 +213,18 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
 	FTerraDyneLandscapeMigrationState LandscapeMigration;
+
+	/**
+	 * Defaults to Procedural on old saves (the field simply did not exist, and UE zero-initializes
+	 * new USTRUCT/enum fields on load) -- ApplyLoadedSaveGame infers ImportedLandscape from
+	 * LandscapeMigration.bWasImportedFromLandscape in that case, the same legacy-fallback idiom
+	 * already used there for AuthoredChunkCoords.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	ETerraDyneChunkOrigin WorldOriginKind = ETerraDyneChunkOrigin::Procedural;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	FTerraDyneGeoTIFFImportState GeoTIFFImport;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
 	FTerraDyneProceduralWorldSettings ProceduralWorldSettings;

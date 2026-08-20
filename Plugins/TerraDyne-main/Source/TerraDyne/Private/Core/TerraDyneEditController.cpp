@@ -127,8 +127,16 @@ void ATerraDyneEditController::SetupInputComponent()
 
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ATerraDyneEditController::OnLeftClickStart);
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ATerraDyneEditController::OnLeftClickStop);
-	InputComponent->BindKey(EKeys::Z, IE_Pressed, this, &ATerraDyneEditController::OnUndoPressed);
-	InputComponent->BindKey(EKeys::Y, IE_Pressed, this, &ATerraDyneEditController::OnRedoPressed);
+	// Ctrl+Z / Ctrl+Y instead of bare keys, so Z and Y stay available for other input.
+	{
+		FInputKeyBinding UndoBinding(FInputChord(EKeys::Z, false, true, false, false), IE_Pressed);
+		UndoBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnUndoPressed);
+		InputComponent->KeyBindings.Add(MoveTemp(UndoBinding));
+
+		FInputKeyBinding RedoBinding(FInputChord(EKeys::Y, false, true, false, false), IE_Pressed);
+		RedoBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnRedoPressed);
+		InputComponent->KeyBindings.Add(MoveTemp(RedoBinding));
+	}
 }
 
 UTerraDyneToolWidget* ATerraDyneEditController::GetToolWidget() const
@@ -398,22 +406,39 @@ void ATerraDyneEditController::HandleRoadClick()
 			UFunction* ExtendFunc = Road->FindFunction(FName("ExtendFromPointToLocation"));
 			if (ExtendFunc)
 			{
+				// This struct's layout must mirror ARealtimeRoadSplineActor::ExtendFromPointToLocation's
+				// UFUNCTION signature exactly (params in order, then the return value last) -- this
+				// plugin can't include the game module's RealtimeRoadSplineActor.h (wrong dependency
+				// direction), so the call has to go through reflection instead of a typed pointer.
+				// ReturnValue is deliberately AActor*, not the real return type: a pointer's size and
+				// layout don't depend on its static type, and this code never needs to call anything
+				// on it -- it only has to occupy the right slot so ProcessEvent doesn't write past
+				// the end of this struct.
 				struct FExtendParams
 				{
 					int32 FromPointIndex;
 					FVector TargetWorldLocation;
+					int32 OutSelectedPointIndex;
 					float MaxSegmentSpacing;
+					AActor* ReturnValue;
 				};
 				FExtendParams Params;
 				Params.FromPointIndex = SelectedRoadPointIndex != INDEX_NONE ? SelectedRoadPointIndex : 0;
 				Params.TargetWorldLocation = Hit.Location;
+				Params.OutSelectedPointIndex = INDEX_NONE;
 				Params.MaxSegmentSpacing = 800.0f;
+				Params.ReturnValue = nullptr;
 				Road->ProcessEvent(ExtendFunc, &Params);
 
-				// Update selected point index to the new end of the spline so consecutive clicks continue extending seamlessly!
-				if (USplineComponent* SplineComp = Cast<USplineComponent>(Road->GetComponentByClass(USplineComponent::StaticClass())))
+				// Extending from an interior point branches into a new road -- follow the selection
+				// there instead of leaving it pointed at the unchanged original.
+				if (Params.ReturnValue)
 				{
-					SelectedRoadPointIndex = FMath::Max(0, SplineComp->GetNumberOfSplinePoints() - 1);
+					SelectedRoadActor = Params.ReturnValue;
+				}
+				if (Params.OutSelectedPointIndex != INDEX_NONE)
+				{
+					SelectedRoadPointIndex = Params.OutSelectedPointIndex;
 				}
 			}
 			return;
@@ -1333,4 +1358,26 @@ void ATerraDyneEditController::Server_LoadWorldFromFile_Implementation(const FSt
 	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
 
 	RequestLoadWorldFromFile(FilePath);
+}
+
+void ATerraDyneEditController::RequestImportGeoTIFF(const FString& FilePath)
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			Manager->ImportGeoTIFF(FilePath);
+		}
+	}
+	else
+	{
+		Server_ImportGeoTIFF(FilePath);
+	}
+}
+
+void ATerraDyneEditController::Server_ImportGeoTIFF_Implementation(const FString& FilePath)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestImportGeoTIFF(FilePath);
 }

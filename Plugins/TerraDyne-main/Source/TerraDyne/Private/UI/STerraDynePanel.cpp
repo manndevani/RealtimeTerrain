@@ -113,6 +113,35 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						]
 					]
 
+					//--- IMPORT SECTION (GeoTIFF) ---
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0, 5)
+					[
+						SNew(SBorder)
+						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+						.BorderBackgroundColor(SectionBGColor)
+						.Padding(8.0f)
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
+							[
+								SNew(STextBlock).Text(LOCTEXT("ImportHeader", "IMPORT")).Font(HeaderFont)
+							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+								[
+									SNew(SButton)
+									.Text(LOCTEXT("BtnImportGeoTIFF", "Import GeoTIFF..."))
+									.OnClicked(this, &STerraDynePanel::OnImportGeoTIFFClicked)
+									.HAlign(HAlign_Center)
+								]
+							]
+						]
+					]
+
 					//--- SCULPTING SECTION ---
 					+ SVerticalBox::Slot()
 					.AutoHeight()
@@ -939,6 +968,43 @@ FText STerraDynePanel::GetExportStatusText() const
 		: FText::Format(LOCTEXT("ExportLast", "Last: {0}"), FText::FromString(LastExportPath));
 }
 
+FReply STerraDynePanel::OnImportGeoTIFFClicked()
+{
+	// Same split as SaveToFile/LoadFromFile above: the native OS dialog is simpler and more
+	// familiar than a hand-rolled browser, but DesktopPlatform is only linked in editor builds
+	// (see TerraDyne.Build.cs) -- packaged builds fall back to the runtime picker widget.
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			TEXT("Import GeoTIFF"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("GeoTIFF (*.tif;*.tiff)|*.tif;*.tiff"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0 && OwnerWidget.IsValid())
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->RequestImportGeoTIFF(OutFiles[0]);
+			}
+		}
+		return FReply::Handled();
+	}
+#endif
+
+	if (OwnerWidget.IsValid())
+	{
+		OwnerWidget->OpenGeoTIFFImportPicker();
+	}
+	return FReply::Handled();
+}
+
 FReply STerraDynePanel::StartShowcase()
 {
 	ATerraDyneOrchestrator* Orch = GetOrchestrator();
@@ -995,6 +1061,17 @@ FReply STerraDynePanel::SetToolMode(ETerraDyneToolMode NewMode)
 {
 	if (OwnerWidget.IsValid())
 	{
+		// Switching away from a road tool used to leave the previous selection's gizmo/highlight
+		// stuck on screen -- nothing but road-specific actions (delete point, load world) ever
+		// cleared it. A mode switch is exactly the point a stale selection should go away too.
+		if (IsRoadToolMode(OwnerWidget->CurrentTool) && !IsRoadToolMode(NewMode))
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->ClearRoadSelection();
+			}
+		}
+
 		OwnerWidget->CurrentTool = NewMode;
 		return FReply::Handled();
 	}

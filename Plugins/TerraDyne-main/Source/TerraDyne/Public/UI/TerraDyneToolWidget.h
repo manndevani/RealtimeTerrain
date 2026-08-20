@@ -100,6 +100,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
 	void ResetActiveLayer();
 
+	/** Opens the runtime GeoTIFF file picker so the player can choose a .tif/.tiff to import. */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
+	void OpenGeoTIFFImportPicker();
+
 private:
 	TSharedPtr<class STerraDynePanel> MainPanel;
+
+	/** The picker spawned by OpenGeoTIFFImportPicker(), if one is currently up. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UTerraDyneFilePickerWidget> ActiveGeoTIFFPicker;
+
+	UFUNCTION()
+	void HandleGeoTIFFChosen(const FString& FilePath);
+
+	UFUNCTION()
+	void HandleGeoTIFFPickerCancelled();
 };

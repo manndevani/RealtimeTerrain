@@ -32,10 +32,20 @@ ATerraDyneGizmoActor::ATerraDyneGizmoActor()
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> GizmoMatFinder(TEXT("/Engine/EngineMaterials/GizmoMaterial.GizmoMaterial"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BasicMatFinder(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 
+	// GizmoMaterial (the fallback below) is BLEND_OPAQUE -- SDPG_Foreground alone only controls
+	// draw ORDER, it does not skip depth testing for opaque geometry, so a gizmo drawn with it is
+	// still occluded by anything actually in front of it in 3D space (terrain, walls) despite every
+	// mesh here being marked SDPG_Foreground. M_OverlayForeground is translucent with disable-depth-
+	// test explicitly enabled, which is what actually makes the gizmo render through geometry --
+	// the same material RoadEditOverlayActor's handles/route line use for the identical reason.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(TEXT("/Game/Materials/M_OverlayForeground.M_OverlayForeground"));
+
 	UStaticMesh* CylinderMesh = CylinderFinder.Object;
 	UStaticMesh* ConeMesh = ConeFinder.Object;
 	SphereMesh = SphereFinder.Object;
-	GizmoBaseMaterial = GizmoMatFinder.Object ? GizmoMatFinder.Object : BasicMatFinder.Object;
+	GizmoBaseMaterial = ForegroundMatFinder.Object
+		? ForegroundMatFinder.Object
+		: (GizmoMatFinder.Object ? GizmoMatFinder.Object : BasicMatFinder.Object);
 
 	auto SetupMesh = [this](TObjectPtr<UStaticMeshComponent>& Comp, const TCHAR* Name, UStaticMesh* Mesh, const FVector& Loc, const FRotator& Rot, const FVector& Scale)
 	{
@@ -51,6 +61,7 @@ ATerraDyneGizmoActor::ATerraDyneGizmoActor()
 		Comp->SetCollisionResponseToChannel(ECC_Camera, ECR_Block);
 		Comp->SetTranslucentSortPriority(10000);
 		Comp->SetCastShadow(false);
+		Comp->DepthPriorityGroup = SDPG_Foreground;
 	};
 
 	const FRotator RotX = FRotationMatrix::MakeFromZ(FVector(1.0f, 0.0f, 0.0f)).Rotator();

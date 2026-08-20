@@ -75,6 +75,7 @@ private:
 	FReply SaveToFile();
 	FReply LoadFromFile();
 	FText GetExportStatusText() const;
+	FReply OnImportGeoTIFFClicked();
 
 	// Buildings
 	class ATerraDyneBuildingActor* GetSelectedBuilding() const;

@@ -39,6 +39,7 @@
 #include "Serialization/MemoryReader.h"
 #include "HAL/FileManager.h"
 #include "NavigationSystem.h"
+#include "IO/TerraDyneGeoTIFFHeightSource.h"
 
 UTerraDyneSaveGame* ATerraDyneManager::BuildSaveGameInstance()
 {
@@ -49,6 +50,8 @@ UTerraDyneSaveGame* ATerraDyneManager::BuildSaveGameInstance()
 	SaveInst->ManagerLocation = GetActorLocation();
 	SaveInst->SavedGlobalChunkSize = GlobalChunkSize;
 	SaveInst->LandscapeMigration = LandscapeMigrationState;
+	SaveInst->WorldOriginKind = WorldOriginKind;
+	SaveInst->GeoTIFFImport = GeoTIFFImportState;
 	SaveInst->ProceduralWorldSettings = ProceduralWorldSettings;
 	SaveInst->BiomeOverlays = BiomeOverlays;
 	SaveInst->PopulationSpawnRules = PopulationSpawnRules;
@@ -193,6 +196,15 @@ void ATerraDyneManager::ApplyLoadedSaveGame(UTerraDyneSaveGame* LoadInst, const 
 	}
 
 	LandscapeMigrationState = LoadInst->LandscapeMigration;
+	WorldOriginKind = LoadInst->WorldOriginKind;
+	GeoTIFFImportState = LoadInst->GeoTIFFImport;
+	if (WorldOriginKind == ETerraDyneChunkOrigin::Procedural && LandscapeMigrationState.bWasImportedFromLandscape)
+	{
+		// Save predates WorldOriginKind (added alongside GeoTIFF import) -- back-fill it from the
+		// older, Landscape-only flag so LoadOrSpawnChunk's origin check still behaves correctly.
+		WorldOriginKind = ETerraDyneChunkOrigin::ImportedLandscape;
+	}
+	ActiveGeoTIFFHeightSource.Reset();
 	ProceduralWorldSettings = LoadInst->ProceduralWorldSettings;
 	BiomeOverlays = LoadInst->BiomeOverlays;
 	PopulationSpawnRules = LoadInst->PopulationSpawnRules;
@@ -293,6 +305,25 @@ void ATerraDyneManager::ApplyLoadedSaveGame(UTerraDyneSaveGame* LoadInst, const 
 			{
 				NewBuilding->ApplyData(BData, true);
 			}
+		}
+	}
+
+	if (World && HasAuthority() && WorldOriginKind == ETerraDyneChunkOrigin::ImportedGeoTIFF)
+	{
+		// Chunks already in LoadInst->Chunks are restored from their own per-chunk data above and
+		// don't need this; it's purely so chunks that stream in for the first time *after* this
+		// reload (never visited before the restart) still resolve correct DEM data instead of
+		// silently falling back to plain procedural noise.
+		if (!GeoTIFFImportState.SourceFilePath.IsEmpty())
+		{
+			FTerraDyneGeoTIFFImportOptions ReloadOptions = GeoTIFFImportOptions;
+			ReloadOptions.bClearExistingChunks = false;
+			ReloadOptions.bEstablishGeoreferenceOrigin = false;
+			ImportGeoTIFFInternal(GeoTIFFImportState.SourceFilePath, ReloadOptions);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("TerraDyne: Loaded world was imported from GeoTIFF but has no source path; chunks not yet visited will fall back to procedural."));
 		}
 	}
 

@@ -17,6 +17,7 @@ class ULandscapeLayerInfoObject;
 class USceneComponent;
 class UTerraDyneWorldPreset;
 class ATerraDyneEditController;
+class FTerraDyneGeoTIFFHeightSource;
 
 /** Buffers snapshot for a single chunk before a stroke begins. */
 struct FTerraDyneChunkSnapshot
@@ -79,6 +80,48 @@ struct FTerraDyneLandscapeMigrationOptions
 	bool bTransferredFoliageFollowsTerrain = true;
 };
 
+/** Which terrain source a world uses. Sandbox is the default -- current behaviour, unchanged. */
+UENUM(BlueprintType)
+enum class ETerraDyneWorldMode : uint8
+{
+	Sandbox  UMETA(DisplayName = "Sandbox (Procedural)"),
+	Imported UMETA(DisplayName = "Imported (GeoTIFF)")
+};
+
+USTRUCT(BlueprintType)
+struct FTerraDyneGeoTIFFImportOptions
+{
+	GENERATED_BODY()
+
+	/**
+	 * Recentre the level's CesiumGeoreference origin to the imported GeoTIFF's own geographic
+	 * centre. Turn off if the level already has other Cesium content anchored to a specific origin
+	 * this import should sit relative to instead of recentring around itself.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings")
+	bool bEstablishGeoreferenceOrigin = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings")
+	bool bClearExistingChunks = true;
+
+	/**
+	 * Imported worlds are a bounded island by design: outskirts growth is force-disabled at import
+	 * time (see ImportGeoTIFFInternal) rather than left to grow procedural terrain past the DEM's
+	 * footprint, since procedural's fixed elevation band essentially never matches a real DEM's
+	 * range and the two would meet in a visible cliff. Off by default here for the same reason.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings")
+	bool bDisableOutskirtsGrowth = true;
+
+	/** 0 = auto-compute from the GeoTIFF's own elevation range plus HeadroomFraction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings", meta = (ClampMin = "0.0"))
+	float OverrideZScale = 0.0f;
+
+	/** Fraction of the resolved ZScale reserved below/above the GeoTIFF's real elevation range, so sculpting still has [0,1] headroom instead of clipping immediately. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings", meta = (ClampMin = "0.0", ClampMax = "0.4"))
+	float HeadroomFraction = 0.1f;
+};
+
 /**
  * One patch of ground an actor wants levelled to a height, with a skirt blending back to natural
  * terrain. Applied through the same non-destructive pad layer buildings use, so it never touches
@@ -109,6 +152,14 @@ class TERRADYNE_API ATerraDyneManager : public AActor
 
 public:
 	ATerraDyneManager();
+	// Declared (defined in the .cpp, where FTerraDyneGeoTIFFHeightSource is a complete type) so the
+	// compiler never tries to inline-generate a destructor for ActiveGeoTIFFHeightSource's TUniquePtr
+	// against the forward declaration alone.
+	virtual ~ATerraDyneManager() override;
+	// UHT's own auto-generated vtable-helper constructor (in TerraDyneManager.gen.cpp) hits the same
+	// incomplete-type problem -- that file has no visibility into FTerraDyneGeoTIFFHeightSource at
+	// all. Declaring this ourselves stops UHT from generating one; defined in the .cpp instead.
+	ATerraDyneManager(FVTableHelper& Helper);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
@@ -138,6 +189,30 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_LandscapeMigrationState, Category = "TerraDyne|Migration")
 	FTerraDyneLandscapeMigrationState LandscapeMigrationState;
+
+	/**
+	 * Absolute path to the GeoTIFF to import when WorldMode is Imported. Empty until something
+	 * (the runtime file-picker popup, typically) sets it -- BeginPlay does nothing for Imported mode
+	 * until this is non-empty, and ImportGeoTIFF() can also be called directly with an explicit path
+	 * after BeginPlay to import outside the bootstrap flow.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings")
+	FString GeoTIFFImportPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Import Settings")
+	FTerraDyneGeoTIFFImportOptions GeoTIFFImportOptions;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_GeoTIFFImportState, Category = "TerraDyne|Import Settings")
+	FTerraDyneGeoTIFFImportState GeoTIFFImportState;
+
+	/**
+	 * Which of ImportedChunkCoords' entries are genuine imported terrain vs. procedural: Landscape
+	 * import and GeoTIFF import both populate ImportedChunkCoords the same way (for the shared
+	 * authored-vs-procedural gating in ShouldAllowChunkCoord/population rules), but only GeoTIFF
+	 * import wants LoadOrSpawnChunk to sample ActiveGeoTIFFHeightSource for a streamed-in chunk.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_GeoTIFFImportState, Category = "TerraDyne|Import Settings")
+	ETerraDyneChunkOrigin WorldOriginKind = ETerraDyneChunkOrigin::Procedural;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Framework")
 	TObjectPtr<UTerraDyneWorldPreset> WorldPreset;
@@ -174,6 +249,15 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	bool bAutoImportAtRuntime = false;
+
+	/**
+	 * Sandbox (default) is today's behaviour, unchanged -- see bSpawnDefaultChunksOnBeginPlay below.
+	 * Imported spawns nothing at BeginPlay until GeoTIFFImportPath is set and ImportGeoTIFF() has
+	 * run (either because GeoTIFFImportPath was already set before BeginPlay, or via a later call --
+	 * see the runtime file-picker flow).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
+	ETerraDyneWorldMode WorldMode = ETerraDyneWorldMode::Sandbox;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	bool bSpawnDefaultChunksOnBeginPlay = false;
@@ -460,6 +544,17 @@ public:
 	void ImportInternal(ALandscapeProxy* Source, const FTerraDyneLandscapeMigrationOptions& Options);
 #endif
 
+	/**
+	 * Runtime (non-editor-only) entry point for Imported mode: decodes FilePath as a GeoTIFF,
+	 * establishes/recentres the level's CesiumGeoreference, marks every chunk coordinate the raster
+	 * covers as imported (same ImportedChunkCoords set the Landscape importer uses), and disables
+	 * outskirts/edge growth per GeoTIFFImportOptions so nothing procedural grows past the DEM's
+	 * footprint. Safe to call from BeginPlay (WorldMode == Imported with GeoTIFFImportPath already
+	 * set) or later, e.g. once the runtime file-picker widget resolves a player's chosen file.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Import Settings")
+	void ImportGeoTIFF(const FString& FilePath);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
@@ -470,6 +565,9 @@ protected:
 
 	UFUNCTION()
 	void OnRep_LandscapeMigrationState();
+
+	UFUNCTION()
+	void OnRep_GeoTIFFImportState();
 
 	UFUNCTION()
 	void OnRep_FrameworkConfig();
@@ -499,6 +597,19 @@ private:
 	TSet<FIntPoint> PendingUnloadQueue;
 	TSet<FIntPoint> DirtyChunkSet;
 	TSet<FIntPoint> ImportedChunkCoords;
+
+	/**
+	 * The decoded GeoTIFF raster for Imported-mode worlds, kept resident for the life of the world
+	 * (not decode-and-discard) so chunks that stream in long after the initial import -- possibly
+	 * minutes or hours later, far from the player's start position -- can still be populated from it.
+	 * Null in Sandbox mode, and null in Imported mode until ImportGeoTIFF() has successfully decoded
+	 * a file.
+	 */
+	TUniquePtr<FTerraDyneGeoTIFFHeightSource> ActiveGeoTIFFHeightSource;
+
+	void ImportGeoTIFFInternal(const FString& FilePath, const FTerraDyneGeoTIFFImportOptions& Options);
+	bool TryPopulateChunkFromGeoTIFF(ATerraDyneChunk* Chunk, FIntPoint Coord);
+
 	TMap<FGuid, int32> PopulationEntryIndexById;
 	TMap<FIntPoint, int32> ProceduralChunkStateIndexByCoord;
 	TMap<AActor*, FGuid> PopulationIdByActor;
