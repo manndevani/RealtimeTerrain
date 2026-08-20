@@ -259,6 +259,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	ETerraDyneWorldMode WorldMode = ETerraDyneWorldMode::Sandbox;
 
+	/**
+	 * When true (the default), BeginPlay spawns nothing at all -- no default sandbox chunk, no
+	 * auto-import from GeoTIFFImportPath -- regardless of WorldMode or bSpawnDefaultChunksOnBeginPlay
+	 * below. The world sits idle until something explicitly starts it: the runtime mode-choice
+	 * widget calling StartSandboxMode()/ImportGeoTIFF() through ATerraDyneEditController, or a level/
+	 * Blueprint that wants the old unconditional-fire behaviour turning this off.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
+	bool bShowWorldModeChoiceOnBeginPlay = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	bool bSpawnDefaultChunksOnBeginPlay = false;
 
@@ -554,6 +564,16 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Import Settings")
 	void ImportGeoTIFF(const FString& FilePath);
+
+	/**
+	 * Explicit runtime entry point for Sandbox mode: spawns the default chunk (mirroring what
+	 * bSpawnDefaultChunksOnBeginPlay used to fire unconditionally at BeginPlay) the moment something
+	 * actually asks for it -- the mode-choice widget's "Sandbox" button, via
+	 * ATerraDyneEditController::RequestStartSandboxMode. A no-op if the world already has chunks, so
+	 * a second, late, or duplicate call can't stomp on anything already spawned or imported.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Bootstrap")
+	void StartSandboxMode();
 
 protected:
 	virtual void BeginPlay() override;

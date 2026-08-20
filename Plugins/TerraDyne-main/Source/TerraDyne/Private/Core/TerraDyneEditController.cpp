@@ -89,6 +89,14 @@ void ATerraDyneEditController::BeginPlay()
 		if (ActiveUI)
 		{
 			ActiveUI->AddToViewport(100);
+
+			// Nothing has spawned yet if bShowWorldModeChoiceOnBeginPlay is on (see
+			// ATerraDyneManager::BeginPlay) -- this is what actually asks the player to pick Sandbox
+			// or Import GIS File, drawn over the tool panel just added above.
+			if (UTerraDyneToolWidget* ToolUI = Cast<UTerraDyneToolWidget>(ActiveUI))
+			{
+				ToolUI->ShowWorldModeChoiceIfNeeded();
+			}
 		}
 
 		SetShowMouseCursor(true);
@@ -1380,4 +1388,26 @@ void ATerraDyneEditController::Server_ImportGeoTIFF_Implementation(const FString
 	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
 
 	RequestImportGeoTIFF(FilePath);
+}
+
+void ATerraDyneEditController::RequestStartSandboxMode()
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			Manager->StartSandboxMode();
+		}
+	}
+	else
+	{
+		Server_StartSandboxMode();
+	}
+}
+
+void ATerraDyneEditController::Server_StartSandboxMode_Implementation()
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestStartSandboxMode();
 }

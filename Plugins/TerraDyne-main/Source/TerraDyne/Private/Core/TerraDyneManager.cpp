@@ -120,30 +120,38 @@ void ATerraDyneManager::BeginPlay()
 		}
 		else
 #endif
-		if (WorldMode == ETerraDyneWorldMode::Imported && !GeoTIFFImportPath.IsEmpty() && !ActiveGeoTIFFHeightSource.IsValid())
+		if (WorldMode == ETerraDyneWorldMode::Imported && GeoTIFFImportState.bWasImportedFromGeoTIFF && !ActiveGeoTIFFHeightSource.IsValid())
 		{
-			// ImportGeoTIFF() already rebuilds the chunk map / reapplies materials / refreshes
-			// population itself (it has to -- it's also the entry point the runtime file-picker calls
-			// long after BeginPlay), so this doesn't need bChunkMapDirty too.
-			ImportGeoTIFF(GeoTIFFImportPath);
-		}
-		else if (WorldMode == ETerraDyneWorldMode::Imported && GeoTIFFImportState.bWasImportedFromGeoTIFF && !ActiveGeoTIFFHeightSource.IsValid())
-		{
-			// The level itself already carries GeoTIFFImportState (it's a normal saved UPROPERTY on
-			// this actor) from an earlier import, but ActiveGeoTIFFHeightSource is not saved -- re-decode
-			// from the same source so chunks that haven't been visited yet still resolve correct DEM
-			// data. Don't clear/re-georeference: RebuildChunkMap() above already captured whatever
-			// chunks the level itself saved, and the origin was already established last time.
+			// Resuming an already-decided world -- the level itself already carries GeoTIFFImportState
+			// (a normal saved UPROPERTY on this actor) from an earlier import, but ActiveGeoTIFFHeightSource
+			// is not saved -- so re-decode from the same source, regardless of
+			// bShowWorldModeChoiceOnBeginPlay, so chunks that haven't been visited yet still resolve
+			// correct DEM data. This is never a fresh choice, so it is not gated by it. Checked before
+			// GeoTIFFImportPath below since a previously-imported level's saved state carries both.
+			// Don't clear/re-georeference: RebuildChunkMap() above already captured whatever chunks the
+			// level itself saved, and the origin was already established last time.
 			FTerraDyneGeoTIFFImportOptions ReloadOptions = GeoTIFFImportOptions;
 			ReloadOptions.bClearExistingChunks = false;
 			ReloadOptions.bEstablishGeoreferenceOrigin = false;
 			ImportGeoTIFFInternal(GeoTIFFImportState.SourceFilePath, ReloadOptions);
 		}
-		else if (WorldMode == ETerraDyneWorldMode::Sandbox && bSpawnDefaultChunksOnBeginPlay && ActiveChunkMap.Num() == 0)
+		else if (!bShowWorldModeChoiceOnBeginPlay && WorldMode == ETerraDyneWorldMode::Imported && !GeoTIFFImportPath.IsEmpty())
+		{
+			// A level/Blueprint explicitly pre-configured both WorldMode and a fixed GeoTIFFImportPath
+			// at design time, and turned the interactive choice off -- so there is nothing left for a
+			// player to decide. ImportGeoTIFF() already rebuilds the chunk map / reapplies materials /
+			// refreshes population itself (it has to -- it's also the entry point the runtime
+			// file-picker calls long after BeginPlay), so this doesn't need bChunkMapDirty too.
+			ImportGeoTIFF(GeoTIFFImportPath);
+		}
+		else if (!bShowWorldModeChoiceOnBeginPlay && WorldMode == ETerraDyneWorldMode::Sandbox && bSpawnDefaultChunksOnBeginPlay && ActiveChunkMap.Num() == 0)
 		{
 			SpawnDefaultSandboxChunk();
 			bChunkMapDirty = true;
 		}
+		// else: bShowWorldModeChoiceOnBeginPlay is true (the default) and nothing has been decided
+		// yet -- BeginPlay spawns nothing at all. The mode-choice widget calls StartSandboxMode() or
+		// ImportGeoTIFF() through ATerraDyneEditController once the player actually picks one.
 
 		if (bSetupDefaultLightingOnBeginPlay)
 		{
@@ -324,6 +332,28 @@ void ATerraDyneManager::SetupLighting()
 		Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
 		Sky->GetLightComponent()->bRealTimeCapture = true;
 	}
+}
+
+void ATerraDyneManager::StartSandboxMode()
+{
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TerraDyne: StartSandboxMode called on a non-authority instance; ignored (chunks are server-spawned only)."));
+		return;
+	}
+
+	if (ActiveChunkMap.Num() > 0 || WorldOriginKind != ETerraDyneChunkOrigin::Procedural)
+	{
+		// Already spawned (a duplicate or late call), or the world already resolved to something
+		// else entirely (an import got there first) -- either way there is nothing for a fresh
+		// sandbox start to do.
+		return;
+	}
+
+	SpawnDefaultSandboxChunk();
+	RebuildChunkMap();
+	ApplyMaterialToActiveChunks();
+	RefreshPopulationForLoadedChunks();
 }
 
 void ATerraDyneManager::SpawnDefaultSandboxChunk()

@@ -87,6 +87,10 @@ public:
 	 *  runtime file-picker widget calls, since ImportGeoTIFF itself only does anything on authority. */
 	void RequestImportGeoTIFF(const FString& FilePath);
 
+	/** Runs Manager->StartSandboxMode() on the server -- the client-facing entry point the runtime
+	 *  world-mode-choice widget's "Sandbox" button calls. */
+	void RequestStartSandboxMode();
+
 	//--- Building Requests ---
 	void RequestPlaceBuilding(TSubclassOf<class ATerraDyneBuildingActor> BuildingClass, const FTransform& WorldTransform, int32 FloorCount);
 	void RequestMoveBuilding(class ATerraDyneBuildingActor* Building, const FTransform& NewTransform);
@@ -270,6 +274,9 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_ImportGeoTIFF(const FString& FilePath);
+
+	UFUNCTION(Server, Reliable)
+	void Server_StartSandboxMode();
 
 	ATerraDyneManager* GetManager() const;
 

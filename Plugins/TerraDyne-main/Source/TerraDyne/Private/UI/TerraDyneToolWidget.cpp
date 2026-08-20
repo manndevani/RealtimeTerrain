@@ -2,6 +2,7 @@
 #include "UI/TerraDyneToolWidget.h"
 #include "UI/STerraDynePanel.h"
 #include "UI/TerraDyneFilePickerWidget.h"
+#include "UI/TerraDyneWorldModeChoiceWidget.h"
 #include "Core/TerraDyneSubsystem.h"
 #include "Core/TerraDyneManager.h"
 #include "Core/TerraDyneEditController.h"
@@ -163,4 +164,69 @@ void UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled()
 		ActiveGeoTIFFPicker->RemoveFromParent();
 		ActiveGeoTIFFPicker = nullptr;
 	}
+}
+
+ATerraDyneManager* UTerraDyneToolWidget::GetManager() const
+{
+	UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
+	return Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+}
+
+void UTerraDyneToolWidget::ShowWorldModeChoiceIfNeeded()
+{
+	if (ActiveWorldModeChoice)
+	{
+		return;
+	}
+
+	ATerraDyneManager* Manager = GetManager();
+	if (!Manager || !Manager->bShowWorldModeChoiceOnBeginPlay)
+	{
+		return;
+	}
+
+	// Only genuinely undecided -- not a reload of a level that already resolved to an import in an
+	// earlier session, which BeginPlay resumes on its own regardless of this setting.
+	if (Manager->WorldOriginKind != ETerraDyneChunkOrigin::Procedural)
+	{
+		return;
+	}
+
+	ActiveWorldModeChoice = CreateWidget<UTerraDyneWorldModeChoiceWidget>(GetOwningPlayer(), UTerraDyneWorldModeChoiceWidget::StaticClass());
+	if (!ActiveWorldModeChoice)
+	{
+		return;
+	}
+
+	ActiveWorldModeChoice->OnSandboxChosen.AddDynamic(this, &UTerraDyneToolWidget::HandleWorldModeSandboxChosen);
+	ActiveWorldModeChoice->OnImportChosen.AddDynamic(this, &UTerraDyneToolWidget::HandleWorldModeImportChosen);
+	// Above the main panel (Z 100) and the GeoTIFF picker (also Z 100) -- this is the very first
+	// thing the player should see and act on.
+	ActiveWorldModeChoice->AddToViewport(200);
+}
+
+void UTerraDyneToolWidget::HandleWorldModeSandboxChosen()
+{
+	if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(GetOwningPlayer()))
+	{
+		PC->RequestStartSandboxMode();
+	}
+
+	if (ActiveWorldModeChoice)
+	{
+		ActiveWorldModeChoice->RemoveFromParent();
+		ActiveWorldModeChoice = nullptr;
+	}
+}
+
+void UTerraDyneToolWidget::HandleWorldModeImportChosen()
+{
+	if (ActiveWorldModeChoice)
+	{
+		ActiveWorldModeChoice->RemoveFromParent();
+		ActiveWorldModeChoice = nullptr;
+	}
+
+	// Reuses the exact same picker flow the tool panel's own "Import GeoTIFF..." button uses.
+	OpenGeoTIFFImportPicker();
 }

@@ -89,7 +89,11 @@ bool FTerraDyneSetupTest::RunTest(const FString& Parameters)
     UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
     ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
     Manager->bSpawnDefaultChunksOnBeginPlay = true;
-    
+    // bShowWorldModeChoiceOnBeginPlay defaults to true and otherwise leaves BeginPlay spawning
+    // nothing at all -- this test wants the old unconditional-fire path, which is exactly what
+    // turning that off is for (see its doc comment on ATerraDyneManager).
+    Manager->bShowWorldModeChoiceOnBeginPlay = false;
+
     // Trigger the explicit sandbox bootstrap path.
     Manager->DispatchBeginPlay();
 

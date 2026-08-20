@@ -104,6 +104,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
 	void OpenGeoTIFFImportPicker();
 
+	/**
+	 * Shows the Sandbox/Import GIS File startup choice if (and only if) the manager's
+	 * bShowWorldModeChoiceOnBeginPlay is on and the world is still genuinely undecided -- not on a
+	 * reload of an already-imported level, not a second call while one is already up. Called once
+	 * by ATerraDyneEditController right after it creates this widget.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
+	void ShowWorldModeChoiceIfNeeded();
+
 private:
 	TSharedPtr<class STerraDynePanel> MainPanel;
 
@@ -116,4 +125,16 @@ private:
 
 	UFUNCTION()
 	void HandleGeoTIFFPickerCancelled();
+
+	/** The startup choice spawned by ShowWorldModeChoiceIfNeeded(), if one is currently up. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UTerraDyneWorldModeChoiceWidget> ActiveWorldModeChoice;
+
+	UFUNCTION()
+	void HandleWorldModeSandboxChosen();
+
+	UFUNCTION()
+	void HandleWorldModeImportChosen();
+
+	class ATerraDyneManager* GetManager() const;
 };
