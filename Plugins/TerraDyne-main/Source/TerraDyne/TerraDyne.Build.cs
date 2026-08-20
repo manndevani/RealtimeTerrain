@@ -40,7 +40,9 @@ public class TerraDyne : ModuleRules
             "StaticMeshDescription",
             "CelestialVault",
             "DaySequence",
-            "CesiumRuntime"
+            "CesiumRuntime",
+            "GDAL",
+            "Projects"
 		});
 
 		if (Target.bBuildEditor)

@@ -7,11 +7,11 @@
  * A decoded single-band elevation GeoTIFF: the pixel grid plus enough of its georeferencing to
  * place it in the real world.
  *
- * Deliberately scoped to the common case for DEM/elevation exports (SRTM, Copernicus GLO-30,
- * USGS 3DEP, and similar) rather than the full GeoTIFF specification: single-band Float32/Int16/
- * UInt16 samples, uncompressed or LZW/Deflate compression, and either geographic WGS84 or a
- * standard UTM zone. Anything outside that fails FTerraDyneGeoTIFFReader::LoadFromFile explicitly
- * rather than silently mis-placing terrain -- see its OutError contract.
+ * FTerraDyneGeoTIFFReader::LoadFromFile decodes through GDAL (see Source/ThirdParty/GDAL), so the
+ * file format/compression/sample-type support is whatever GDAL's GeoTIFF driver handles -- this
+ * struct itself still only carries single-band elevation, and the CRS narrows deliberately to
+ * geographic WGS84 or a standard UTM zone (see LoadFromFile's OutError contract): everything
+ * downstream (FTerraDyneGeoTIFFHeightSource's Cesium bridge) only implements those two.
  */
 struct FTerraDyneGeoTIFFRaster
 {
@@ -54,10 +54,8 @@ class TERRADYNE_API FTerraDyneGeoTIFFReader
 {
 public:
 	/**
-	 * Returns false (with OutError explaining why) if the file cannot be opened, is not a valid
-	 * TIFF, or uses a feature outside the supported scope described on FTerraDyneGeoTIFFRaster --
-	 * multi-band/paletted images, unsupported compression (anything but none/LZW/Deflate), or a
-	 * CRS that is neither geographic WGS84 nor a standard UTM zone.
+	 * Returns false (with OutError explaining why) if GDAL cannot open the file, it isn't
+	 * single-band, or its CRS is neither geographic WGS84 nor a standard UTM zone.
 	 */
 	static bool LoadFromFile(const FString& FilePath, FTerraDyneGeoTIFFRaster& OutRaster, FString& OutError);
 };

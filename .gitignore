@@ -20,6 +20,13 @@ cesium-request-cache.sqlite*
 Plugins/TerraDyne-main/Content/Maps/_GENERATED/
 
 # ---------------------------------------------------------------------------
+# vcpkg + the GDAL it builds (see Tools/Setup-GDAL.ps1). Locally built from
+# source, several GB once GDAL and its dependencies are compiled -- nothing
+# here is source we own, so nothing here is tracked.
+# ---------------------------------------------------------------------------
+/Tools/vcpkg/
+
+# ---------------------------------------------------------------------------
 # IDE / toolchain scratch
 # ---------------------------------------------------------------------------
 .vs/
