@@ -55,6 +55,12 @@ ARealtimeRoadSplineActor::ARealtimeRoadSplineActor()
 
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> RoughFinder(TEXT("/Game/Roads/Materials/M_Proto_RoughRoad.M_Proto_RoughRoad"));
 	if (RoughFinder.Succeeded()) RoughRoadMaterial = RoughFinder.Object;
+
+	// Without this, a holographic draft (SetIsHolographicPreview -> ApplyMaterials) had nothing to
+	// fall back to and silently kept its normal, opaque material -- a "preview" indistinguishable
+	// from a real, already-committed road. See ApplyMaterials's bIsHolographicPreview branch.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HolographicFinder(TEXT("/Game/Materials/M_RoadHolographic.M_RoadHolographic"));
+	if (HolographicFinder.Succeeded()) HolographicMaterial = HolographicFinder.Object;
 }
 
 void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

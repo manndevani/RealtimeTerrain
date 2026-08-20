@@ -69,6 +69,12 @@ ARealtimeRoadJunctionActor::ARealtimeRoadJunctionActor()
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FootpathFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Sidewalks/MI_Sidewalk.MI_Sidewalk"));
 	if (FootpathFinder.Succeeded()) FootpathMaterial = FootpathFinder.Object;
 
+	// Without this, a holographic draft (SetIsHolographicPreview -> ApplyMaterials) had nothing to
+	// fall back to and silently kept its normal, opaque material -- a "preview" indistinguishable
+	// from a real, already-committed junction. See ApplyMaterials's bIsHolographicPreview branch.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HolographicFinder(TEXT("/Game/Materials/M_RoadHolographic.M_RoadHolographic"));
+	if (HolographicFinder.Succeeded()) HolographicMaterial = HolographicFinder.Object;
+
 	SyncPresetLegs();
 }
 

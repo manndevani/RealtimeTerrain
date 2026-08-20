@@ -73,13 +73,16 @@ Plugins/Monolith/
 
 # ---------------------------------------------------------------------------
 # M_OverlayForeground: the translucent, disable-depth-test material the road
-# gizmo and edit overlay use to render through terrain/walls, otherwise
-# covered by the /Content/* rule above. Same cascade reasoning as
-# UnrealDrive_CitySample below.
+# gizmo and edit overlay use to render through terrain/walls.
+# M_RoadHolographic: the translucent, normally-depth-tested ghost material a
+# draft road/junction placement preview uses.
+# Both otherwise covered by the /Content/* rule above. Same cascade reasoning
+# as UnrealDrive_CitySample below.
 # ---------------------------------------------------------------------------
 !/Content/Materials/
 /Content/Materials/*
 !/Content/Materials/M_OverlayForeground.uasset
+!/Content/Materials/M_RoadHolographic.uasset
 
 # ---------------------------------------------------------------------------
 # UnrealDrive_CitySample: MetaRoad's CitySample-styled content pack, otherwise
