@@ -39,4 +39,5 @@ public:
 	virtual bool TryRoadRedo() override;
 	virtual void DeleteSelectedRoadPoint() override;
 	virtual bool HasRoadPointSelected() const override;
+	virtual void ClearRoadSelection() override;
 };

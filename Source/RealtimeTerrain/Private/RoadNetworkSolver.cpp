@@ -322,6 +322,11 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 	TArray<bool> HasCollision;
 	HasCollision.Init(false, NumArms);
 
+	// Max() (unconstrained) unless a collision is actually found below and a radius resolved for
+	// it -- an unconstrained corner (the straight-through gap of a T-junction, say) has no fillet
+	// to be tight against, so it should never be what narrows a caller's band width.
+	Solution.CornerRadii.Init(TNumericLimits<double>::Max(), NumArms);
+
 	// Tracked per arm, not per corner: an arm is constrained if either of its two neighbours
 	// collided with it.
 	TArray<bool> ArmConstrained;
@@ -369,6 +374,7 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 			const double MaxTangent = FMath::Min(AvailableA, AvailableB) * 0.9;
 
 			const double Radius = FMath::Min(Options.CornerRadius, MaxTangent * TanHalf);
+			Solution.CornerRadii[i] = Radius;
 			const double TangentDistance = Radius / TanHalf;
 
 			if (Radius > WeldTolerance && TangentDistance > WeldTolerance)

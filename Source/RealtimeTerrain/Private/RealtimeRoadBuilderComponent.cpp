@@ -9,6 +9,7 @@
 #include "RoadEditOverlayActor.h"
 
 #include "Components/SplineComponent.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
@@ -110,21 +111,32 @@ bool URealtimeRoadBuilderComponent::TraceHandleUnderCursor(
 	OutPointIndex = INDEX_NONE;
 
 	APlayerController* Controller = GetOwningPlayerController();
-	if (!Controller || !EditOverlay) return false;
+	UWorld* World = GetWorld();
+	if (!Controller || !World || !EditOverlay) return false;
 
-	FHitResult Hit;
-	if (!Controller->GetHitResultUnderCursorByChannel(
-		UEngineTypes::ConvertToTraceType(ECC_Visibility), false, Hit))
+	FVector Origin;
+	FVector Direction;
+	if (!Controller->DeprojectMousePositionToWorld(Origin, Direction)) return false;
+
+	// A single-hit trace resolves to whatever's geometrically closest along the ray -- usually
+	// terrain, since the overlay deliberately renders its handles through terrain and other roads
+	// (SDPG_Foreground, disabled depth test) so they stay visible and grabbable even when something
+	// else sits between them and the camera. A multi-hit trace lets a handle win the hit-test
+	// whenever one is anywhere along the ray, which is what the player actually sees on screen.
+	TArray<FHitResult> Hits;
+	World->LineTraceMultiByChannel(Hits, Origin, Origin + Direction * 5000000.0, ECC_Visibility);
+
+	for (const FHitResult& Hit : Hits)
 	{
-		return false;
+		const int32 Index = EditOverlay->GetPointIndexFromComponent(Hit.GetComponent());
+		if (Index != INDEX_NONE)
+		{
+			OutRoad = HoveredRoadActor.IsValid() ? HoveredRoadActor.Get() : SelectedRoadActor.Get();
+			OutPointIndex = Index;
+			return OutRoad != nullptr;
+		}
 	}
-
-	const int32 Index = EditOverlay->GetPointIndexFromComponent(Hit.GetComponent());
-	if (Index == INDEX_NONE) return false;
-
-	OutRoad = HoveredRoadActor.IsValid() ? HoveredRoadActor.Get() : SelectedRoadActor.Get();
-	OutPointIndex = Index;
-	return OutRoad != nullptr;
+	return false;
 }
 
 bool URealtimeRoadBuilderComponent::TraceGroundUnderCursor(FVector& OutLocation) const
@@ -268,7 +280,16 @@ void URealtimeRoadBuilderComponent::UpdatePointGizmo()
 
 	PointGizmo->SetActorHiddenInGame(false);
 	PointGizmo->SetActorEnableCollision(true);
-	PointGizmo->SetActorLocation(SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex));
+
+	// The visible handle sphere is lifted by EditOverlay->VerticalOffset (ShowRoad) so it reads
+	// clearly against the road surface; the gizmo has to match that lift or it sits visibly below
+	// the handle it's supposed to be centered on.
+	FVector GizmoLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
+	if (EditOverlay)
+	{
+		GizmoLocation.Z += EditOverlay->VerticalOffset;
+	}
+	PointGizmo->SetActorLocation(GizmoLocation);
 
 	// Mid-drag the highlight stays on the axis being dragged, even once the cursor has left it.
 	if (bIsDraggingPoint)
@@ -288,20 +309,35 @@ bool URealtimeRoadBuilderComponent::TraceGizmoAxisUnderCursor(ETerraDyneGizmoAxi
 	OutAxis = ETerraDyneGizmoAxis::None;
 
 	APlayerController* Controller = GetOwningPlayerController();
-	if (!Controller || !PointGizmo || PointGizmo->IsHidden())
+	UWorld* World = GetWorld();
+	if (!Controller || !World || !PointGizmo || PointGizmo->IsHidden())
 	{
 		return false;
 	}
 
-	FHitResult Hit;
-	if (!Controller->GetHitResultUnderCursorByChannel(
-		UEngineTypes::ConvertToTraceType(ECC_Visibility), false, Hit))
-	{
-		return false;
-	}
+	FVector Origin;
+	FVector Direction;
+	if (!Controller->DeprojectMousePositionToWorld(Origin, Direction)) return false;
 
-	OutAxis = PointGizmo->GetAxisFromComponent(Hit.GetComponent());
-	return OutAxis != ETerraDyneGizmoAxis::None;
+	// Same reasoning as TraceHandleUnderCursor: a single-hit trace resolves to whatever's closest
+	// along the ray, and the point-handle sphere (45cm radius, a different actor) sits at the same
+	// world position as the gizmo's CenterXY disc (20cm radius) and geometrically contains it from
+	// most viewing angles -- so a single-hit trace would resolve to the sphere and CenterXY would
+	// never be reachable at all. Walking every hit in order and skipping ones that aren't part of
+	// this gizmo lets the disc (or an axis arm behind something else) still win.
+	TArray<FHitResult> Hits;
+	World->LineTraceMultiByChannel(Hits, Origin, Origin + Direction * 5000000.0, ECC_Visibility);
+
+	for (const FHitResult& Hit : Hits)
+	{
+		const ETerraDyneGizmoAxis Axis = PointGizmo->GetAxisFromComponent(Hit.GetComponent());
+		if (Axis != ETerraDyneGizmoAxis::None)
+		{
+			OutAxis = Axis;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool URealtimeRoadBuilderComponent::IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const
@@ -383,23 +419,26 @@ bool URealtimeRoadBuilderComponent::BeginPointDrag()
 		return true;
 	}
 
-	// Otherwise a press has to land on a handle. Starting a drag just because something happens to
-	// be selected would consume every subsequent click, and clicking ahead of a road to extend it
-	// would silently do nothing.
-	if (!HoveredRoadActor.IsValid() || HoveredPointIndex == INDEX_NONE)
+	// Otherwise a press has to land on a handle. A fresh trace here, rather than trusting
+	// HoveredRoadActor/HoveredPointIndex (last set by UpdateEditOverlay on the previous tick), so a
+	// press right after a fast cursor move can't act on a hover state that's already stale by a
+	// frame -- the axis check above and this one now both look at the world as of this exact press.
+	ARealtimeRoadSplineActor* PressedRoad = nullptr;
+	int32 PressedPointIndex = INDEX_NONE;
+	if (!TraceHandleUnderCursor(PressedRoad, PressedPointIndex))
 	{
 		return false;
 	}
 
-	const bool bAlreadySelected =
-		SelectedRoadActor.Get() == HoveredRoadActor.Get() && SelectedPointIndex == HoveredPointIndex;
-
-	if (!bAlreadySelected)
+	// A first press on any handle both selects it and starts moving it in one motion -- the
+	// interaction every 3D editor gizmo uses. Requiring a second, separate press to actually drag
+	// used to be the "safety" here, on the theory that picking a point could otherwise fling it; the
+	// grab-offset math below already makes a direct press-drag safe on its own (the point tracks the
+	// cursor from wherever it already is, not wherever the cursor first clicked, so a stationary
+	// click moves nothing), so the extra press was just friction.
+	if (SelectedRoadActor.Get() != PressedRoad || SelectedPointIndex != PressedPointIndex)
 	{
-		// First press selects and stops there. Moving a point is a second, deliberate press, so
-		// picking one can never fling it.
-		SelectRoadPoint(HoveredRoadActor.Get(), HoveredPointIndex);
-		return true;
+		SelectRoadPoint(PressedRoad, PressedPointIndex);
 	}
 
 	DragAxis = ETerraDyneGizmoAxis::None;
@@ -410,11 +449,15 @@ bool URealtimeRoadBuilderComponent::BeginPointDrag()
 	RecordUndo(SelectedRoadActor.Get());
 
 	// Grab where the point already is, relative to the cursor, so it moves with the cursor instead
-	// of jumping to it.
+	// of jumping to it. If the very first trace of the drag fails (cursor briefly over a gap/skybox
+	// on press), leave DragGrabOffset as whatever it already held rather than forcing it to zero --
+	// zero means "grab exactly at the ground hit", which would make the point visibly snap to sit
+	// under the cursor the moment a trace next succeeds, instead of tracking from where it was.
 	FVector Ground;
-	DragGrabOffset = TraceGroundUnderCursor(Ground)
-		? (DragStartPointLocation - Ground)
-		: FVector::ZeroVector;
+	if (TraceGroundUnderCursor(Ground))
+	{
+		DragGrabOffset = DragStartPointLocation - Ground;
+	}
 
 	bIsDraggingPoint = true;
 	return true;
@@ -596,6 +639,13 @@ void URealtimeRoadBuilderComponent::SelectRoadPoint(ARealtimeRoadSplineActor* Ro
 
 void URealtimeRoadBuilderComponent::ClearSelection()
 {
+	// A drag can still be in progress when selection is cleared out from under it (switching tool
+	// mode mid-drag, a road being deleted while held, etc). Settle and reset the drag flags first,
+	// the same way a normal mouse-up would -- otherwise bIsDraggingPoint stays stuck true, and the
+	// very next point the player selects starts "dragging" on its own the instant TickComponent
+	// next runs, with no press involved. EndPointDrag no-ops harmlessly if nothing was dragging.
+	EndPointDrag();
+
 	SelectedRoadActor = nullptr;
 	SelectedPointIndex = INDEX_NONE;
 	OnRoadPointSelected.Broadcast(nullptr, INDEX_NONE);
@@ -767,6 +817,19 @@ void URealtimeRoadBuilderComponent::HandleWorldClick(const FVector& ClickedWorld
 	int32 HitPointIndex = INDEX_NONE;
 	if (FindRoadPointNear(ClickedWorldLocation, HitRoad, HitPointIndex))
 	{
+		// PointSelectionRadius reaches noticeably farther than a click needs to precisely hit a
+		// point handle, so a click meant to extend the road can land inside that radius around the
+		// point you're extending FROM and silently re-select it instead -- the road just doesn't
+		// grow, with nothing on screen explaining why. Flag exactly that case (re-clicking the
+		// point that's already selected) rather than every reselect, since picking a *different*
+		// existing point this way is normal, intended behaviour.
+		if (GEngine && HitRoad == SelectedRoadActor.Get() && HitPointIndex == SelectedPointIndex)
+		{
+			GEngine->AddOnScreenDebugMessage(
+				(uint64)GetUniqueID(), 1.5f, FColor::Yellow,
+				TEXT("Too close to the selected point to extend -- click farther away."));
+		}
+
 		SelectRoadPoint(HitRoad, HitPointIndex);
 		return;
 	}
@@ -798,37 +861,43 @@ void URealtimeRoadBuilderComponent::HandleWorldClick(const FVector& ClickedWorld
 		int32 SnappedLeg = INDEX_NONE;
 		const FVector Destination = ResolvePlacementLocation(ClickedWorldLocation, SnappedJunction, SnappedLeg);
 
-		const bool bExtendingFromStart = (SelectedPointIndex == 0);
-
 		RecordUndo(Road);
-		Road->ExtendFromPointToLocation(SelectedPointIndex, Destination, AutoPointSpacing);
 
-		if (SnappedJunction)
+		// ExtendFromPointToLocation is the only place that actually knows which end grew (or
+		// whether an interior point branched into a whole new road) -- ask it, rather than
+		// re-deriving "which end" here from stale state, which is what used to desync the
+		// highlighted point from the one the user just placed.
+		int32 NewSelectedIndex = INDEX_NONE;
+		ARealtimeRoadSplineActor* ActiveRoad = Road->ExtendFromPointToLocation(SelectedPointIndex, Destination, NewSelectedIndex, AutoPointSpacing);
+
+		if (ActiveRoad && NewSelectedIndex != INDEX_NONE)
 		{
-			// Record the attachment so the road's end stays pinned to the leg socket on every
-			// later rebuild, not just at the moment of the click.
-			if (bExtendingFromStart)
+			if (SnappedJunction)
 			{
-				Road->StartJunction = SnappedJunction;
-				Road->StartJunctionLegIndex = SnappedLeg;
+				// Record the attachment so the road's end stays pinned to the leg socket on every
+				// later rebuild, not just at the moment of the click. Applies to whichever road
+				// actually grew -- the branch road when extending from an interior point, not the
+				// unchanged original.
+				const bool bGrewFromStart = (NewSelectedIndex == 0);
+				if (bGrewFromStart)
+				{
+					ActiveRoad->StartJunction = SnappedJunction;
+					ActiveRoad->StartJunctionLegIndex = SnappedLeg;
+				}
+				else
+				{
+					ActiveRoad->EndJunction = SnappedJunction;
+					ActiveRoad->EndJunctionLegIndex = SnappedLeg;
+				}
+				ActiveRoad->RebuildRoad();
 			}
-			else
-			{
-				Road->EndJunction = SnappedJunction;
-				Road->EndJunctionLegIndex = SnappedLeg;
-			}
-			Road->RebuildRoad();
+
+			// Follow the point that just grew, so consecutive clicks keep extending in the same
+			// direction and the overlay highlights the point the user is actually looking at.
+			SelectRoadPoint(ActiveRoad, NewSelectedIndex);
 		}
 
-		// Follow the end that just grew, so consecutive clicks keep extending in the same direction.
-		if (Road->SplineComponent)
-		{
-			SelectedPointIndex = bExtendingFromStart
-				? 0
-				: Road->SplineComponent->GetNumberOfSplinePoints() - 1;
-		}
-
-		OnRoadPlaced.Broadcast(Road);
+		OnRoadPlaced.Broadcast(ActiveRoad ? ActiveRoad : Road);
 		return;
 	}
 

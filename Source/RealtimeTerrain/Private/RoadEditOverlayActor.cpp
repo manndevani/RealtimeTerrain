@@ -73,6 +73,15 @@ ARoadEditOverlayActor::ARoadEditOverlayActor()
 	SphereMesh = SphereFinder.Object;
 	OverlayBaseMaterial = GizmoMatFinder.Object ? GizmoMatFinder.Object : BasicMatFinder.Object;
 
+	// Foreground material: Translucent + Unlit + Disable Depth Test, so selected handles and
+	// the route line render through roads, terrain and walls. Falls back to the normal material
+	// when the asset is missing so nothing breaks before it is created.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(
+		TEXT("/Game/Materials/M_OverlayForeground.M_OverlayForeground"));
+	OverlayForegroundMaterial = ForegroundMatFinder.Object
+		? ForegroundMatFinder.Object
+		: OverlayBaseMaterial;
+
 	RouteSegments = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("RouteSegments"));
 	RouteSegments->SetupAttachment(SceneRoot);
 	RouteSegments->SetStaticMesh(CylinderFinder.Object);
@@ -92,10 +101,14 @@ void ARoadEditOverlayActor::EnsureDynamicMaterials()
 		return;
 	}
 
-	MatRoute = UMaterialInstanceDynamic::Create(OverlayBaseMaterial, this);
-	MatHandle = UMaterialInstanceDynamic::Create(OverlayBaseMaterial, this);
-	MatHandleHover = UMaterialInstanceDynamic::Create(OverlayBaseMaterial, this);
-	MatHandleSelected = UMaterialInstanceDynamic::Create(OverlayBaseMaterial, this);
+	// The foreground material has Disable Depth Test, so anything using it renders through
+	// roads, terrain and walls. Normal handles use the standard material and get occluded.
+	UMaterialInterface* FgMat = OverlayForegroundMaterial ? OverlayForegroundMaterial : OverlayBaseMaterial;
+
+	MatRoute         = UMaterialInstanceDynamic::Create(FgMat, this);
+	MatHandle        = UMaterialInstanceDynamic::Create(OverlayBaseMaterial, this);
+	MatHandleHover   = UMaterialInstanceDynamic::Create(FgMat, this);
+	MatHandleSelected = UMaterialInstanceDynamic::Create(FgMat, this);
 
 	ApplyOverlayColor(MatRoute, RouteColor);
 	ApplyOverlayColor(MatHandle, HandleColor);
@@ -234,18 +247,31 @@ void ARoadEditOverlayActor::RefreshHandleMaterials()
 
 		// Hover wins over selection so the point you are about to grab always reads as the target.
 		UMaterialInstanceDynamic* Material = MatHandle;
+		bool bOnTop = false;
 		if (i == HighlightedPoint)
 		{
 			Material = MatHandleHover;
+			bOnTop = true;
 		}
 		else if (i == SelectedPoint)
 		{
 			Material = MatHandleSelected;
+			bOnTop = true;
 		}
 
 		if (Material)
 		{
 			Handle->SetMaterial(0, Material);
+		}
+
+		// Selected and hovered handles render in the foreground depth group, the same pass
+		// Unreal's own editor gizmos use, so they draw on top of roads, terrain, walls —
+		// everything. Unselected handles use the normal world group and get occluded normally.
+		const ESceneDepthPriorityGroup DesiredDPG = bOnTop ? SDPG_Foreground : SDPG_World;
+		if (Handle->DepthPriorityGroup != DesiredDPG)
+		{
+			Handle->DepthPriorityGroup = DesiredDPG;
+			Handle->MarkRenderStateDirty();
 		}
 	}
 }

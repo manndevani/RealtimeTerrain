@@ -230,9 +230,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	void ClearPointsRealtime();
 
-	/** Extends the road from a point to a target, inserting intermediate points along the way. */
+	/**
+	 * Extends the road from a point to a target, inserting intermediate points along the way. An
+	 * interior FromPointIndex can't simply be extended -- the road already continues past it -- so
+	 * that case branches into a new road instead (see BranchRoadFromPoint).
+	 *
+	 * Returns the actor whose point should now be treated as selected: this actor for an in-place
+	 * append/prepend, or the newly spawned branch road when extending from an interior point.
+	 * OutSelectedPointIndex is that actor's newly-active point index. Callers should re-anchor
+	 * their own selection (SelectedRoadActor/SelectedPointIndex) from these two outputs rather than
+	 * re-deriving "which end grew" themselves -- this function is the only place that actually knows.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
-	void ExtendFromPointToLocation(int32 FromPointIndex, const FVector& TargetWorldLocation, float MaxSegmentSpacing = 800.0f);
+	ARealtimeRoadSplineActor* ExtendFromPointToLocation(int32 FromPointIndex, const FVector& TargetWorldLocation, int32& OutSelectedPointIndex, float MaxSegmentSpacing = 800.0f);
 
 	/** Spawns a junction at an interior point and a new road leading away from it. */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")

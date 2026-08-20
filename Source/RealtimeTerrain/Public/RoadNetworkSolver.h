@@ -107,6 +107,18 @@ namespace RoadNetworkSolver
 
 		/** False when the node had too few arms, or the boundary collapsed. */
 		bool bValid = false;
+
+		/**
+		 * Per corner, parallel to RoadsideChains: the actual fillet radius SolveNode resolved there
+		 * (already clamped against the edge length available, per FNodeOptions::CornerRadius's own
+		 * doc comment), or TNumericLimits<double>::Max() where the corner is unconstrained -- no
+		 * adjacent-arm collision at all, e.g. the straight-through gap of a T-junction.
+		 *
+		 * Exists so a caller building a roadside kerb/footpath band can size it against the corner
+		 * that actually has the least room, the same way BuildBoundary's fallback path already does
+		 * for its own corners, rather than assuming the solver's output can carry any band width.
+		 */
+		TArray<double> CornerRadii;
 	};
 
 	/**

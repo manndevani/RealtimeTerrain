@@ -79,7 +79,45 @@ namespace RoadMesh
 		/** Cap the two ends of the sweep. Only meaningful for a closed section. */
 		bool bCapStart = true;
 		bool bCapEnd = true;
+
+		/**
+		 * Section vertices with |Lateral| beyond this are the scalable "outer band" -- curb and
+		 * footpath, swept independently per station at a fixed Lateral -- rather than the core road
+		 * surface, which never scales. 0 (default) disables band scaling entirely: every vertex
+		 * sweeps at its authored Lateral unchanged, exactly as before this option existed.
+		 *
+		 * Fixes the same self-intersection a too-wide roadside band gets at a junction corner (see
+		 * ARealtimeRoadJunctionActor::BuildBoundary), but along the body of a curve instead of at a
+		 * corner: a band swept at a fixed Lateral independently at each station is a textbook
+		 * per-vertex-normal offset, which bowties on the inside of any turn tighter than the band is
+		 * wide. BandScalePerFrame is what narrows the band exactly where the turn demands it.
+		 */
+		double BandInnerHalfWidth = 0.0;
+
+		/**
+		 * Per frame (parallel to the Frames array passed to SweepSection), 0..1 scale applied to the
+		 * portion of every outer-band vertex's Lateral beyond BandInnerHalfWidth. Empty (default, or
+		 * BandInnerHalfWidth left at 0) means unscaled -- every station sweeps the full band width.
+		 */
+		TArray<float> BandScalePerFrame;
 	};
+
+	/** How much wider than the band a turn's local radius has to be before the band stays well formed. */
+	constexpr double BandRadiusSafetyFactor = 1.35;
+
+	/**
+	 * Per frame, how much a roadside band up to RequestedBandWidth wide must shrink to avoid folding
+	 * through the local turn -- 1 where the turn is gentle enough to carry the full width, down to 0
+	 * at a turn tight enough to leave no room for any band at all. Mirrors the same
+	 * MaxBandWidth/RequestedBand ratio ARealtimeRoadJunctionActor::RebuildRoad computes for a
+	 * junction corner, but per station along a curve, from the local radius of curvature RMF-style
+	 * frames already carry (consecutive stations' Tangent divided by the distance between them).
+	 */
+	void ComputeBandScaleFromCurvature(
+		const TArray<FFrame>& Frames,
+		double RequestedBandWidth,
+		double SafetyFactor,
+		TArray<float>& OutBandScale);
 
 	/** Enables the attribute overlays this module writes: UVs, material IDs and triangle groups. */
 	void PrepareMesh(UE::Geometry::FDynamicMesh3& Mesh);

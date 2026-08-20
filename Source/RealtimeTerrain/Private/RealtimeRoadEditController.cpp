@@ -81,6 +81,14 @@ bool ARealtimeRoadEditController::HasRoadPointSelected() const
 	return RoadBuilder && RoadBuilder->HasPointSelected();
 }
 
+void ARealtimeRoadEditController::ClearRoadSelection()
+{
+	if (RoadBuilder)
+	{
+		RoadBuilder->ClearSelection();
+	}
+}
+
 void ARealtimeRoadEditController::HandleRoadRelease()
 {
 	if (RoadBuilder)

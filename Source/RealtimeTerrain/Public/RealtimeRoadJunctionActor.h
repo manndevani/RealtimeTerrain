@@ -224,7 +224,14 @@ protected:
 
 	/**
 	 * Builds the counter-clockwise slab boundary in world space, and the sub-chain of that
-	 * boundary between each pair of legs that a roadside band should follow.
+	 * boundary between each pair of legs that a roadside band should follow, from this junction's
+	 * own authored Legs array rather than from roads actually found nearby.
+	 *
+	 * Not a leftover: RebuildRoad() prefers SolveIntersection()'s result, but falls back to this
+	 * whenever that has nothing to work with -- bSolveFromNearbyRoads turned off, or a junction
+	 * placed before any road has grown close enough to connect to it yet. Both are real, reachable
+	 * states, not error cases, so this stays fully maintained alongside the solved path rather than
+	 * being trimmed to a stub.
 	 *
 	 * OutMaxBandWidth reports the widest roadside band the tightest corner can carry. A band wider
 	 * than its corner's fillet radius would fold through the arc's centre, so the caller scales the
@@ -258,6 +265,9 @@ private:
 
 	/** Stretches of SolvedBoundary that are roadside rather than a road connection. */
 	TArray<TArray<FVector>> SolvedRoadsideChains;
+
+	/** Parallel to SolvedRoadsideChains: the fillet radius resolved at each corner. See RoadNetworkSolver::FNodeSolution::CornerRadii. */
+	TArray<double> SolvedCornerRadii;
 
 	/** Surface height at each leg's socket, so a connecting road pins to its own arm, not a plane. */
 	TArray<float> SolvedLegHeights;

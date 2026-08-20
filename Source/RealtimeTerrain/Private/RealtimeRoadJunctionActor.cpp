@@ -40,9 +40,6 @@ namespace
 
 	/** Beyond this gap there is no corner to round: the two legs are opposite or leave a reflex wedge. */
 	constexpr double StraightGapThresholdDegrees = 178.0;
-
-	/** How much wider than the roadside band a fillet has to be before the band stays well formed. */
-	constexpr double BandRadiusSafetyFactor = 1.35;
 }
 
 bool ARealtimeRoadJunctionActor::bAnySolveInProgress = false;
@@ -456,7 +453,7 @@ bool ARealtimeRoadJunctionActor::BuildBoundary(
 
 							// The roadside band offsets toward this arc's centre, so it cannot be
 							// wider than the radius allows.
-							OutMaxBandWidth = FMath::Min(OutMaxBandWidth, Radius / BandRadiusSafetyFactor);
+							OutMaxBandWidth = FMath::Min(OutMaxBandWidth, Radius / RoadMesh::BandRadiusSafetyFactor);
 							bResolvedCorner = true;
 						}
 						else
@@ -540,6 +537,7 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 
 	SolvedBoundary.Reset();
 	SolvedRoadsideChains.Reset();
+	SolvedCornerRadii.Reset();
 
 	UWorld* World = GetWorld();
 	if (!World) return false;
@@ -706,6 +704,7 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 		}
 	}
 
+	SolvedCornerRadii = Solution.CornerRadii;
 	SolvedLegHeights = ArmHeights;
 
 	// Rebuild Legs from the solved arms. Roads still pin themselves to leg sockets, so the legs
@@ -828,8 +827,16 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 			Algo::Reverse(Out);
 		}
 
-		// The solver already clamps its returns, so the band is limited only by the curb itself.
+		// The solver clamps each corner's own fillet radius against the geometry available there,
+		// but that is not the same as clamping the roadside band -- a tight/acute corner can still
+		// resolve a small radius, and a curb+footpath band wider than that radius folds over itself
+		// exactly like BuildBoundary's fallback path already guards against below. Match that: take
+		// the tightest corner the solver actually reported, the same BandRadiusSafetyFactor margin.
 		MaxBandWidth = TNumericLimits<double>::Max();
+		for (const double CornerRadius : SolvedCornerRadii)
+		{
+			MaxBandWidth = FMath::Min(MaxBandWidth, CornerRadius / RoadMesh::BandRadiusSafetyFactor);
+		}
 		bHaveGeometry = true;
 	}
 

@@ -90,6 +90,14 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> OverlayBaseMaterial;
 
+	/**
+	 * Translucent material with Disable Depth Test, so selected handles and the route line render
+	 * on top of roads, terrain and walls. Lives in /Game/Materials/M_OverlayForeground.
+	 * Falls back to OverlayBaseMaterial when missing so nothing breaks before the asset exists.
+	 */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> OverlayForegroundMaterial;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MatRoute;
 

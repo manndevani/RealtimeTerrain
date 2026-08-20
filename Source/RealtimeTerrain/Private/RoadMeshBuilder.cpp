@@ -235,15 +235,55 @@ bool BuildFramesFromPolyline(const TArray<FVector>& Points, TArray<FFrame>& OutF
 			Frame.Tangent = FVector::ForwardVector;
 		}
 
-		// Right comes from world up, not from any spline up vector, so the section stays upright
-		// no matter how the source spline is twisted.
-		FVector Right = FVector::CrossProduct(FVector::UpVector, Frame.Tangent);
-		if (Right.SizeSquared() < UE_KINDA_SMALL_NUMBER)
+		if (i == 0)
 		{
-			// Near-vertical tangent: any horizontal axis is as good as another.
-			Right = FVector::CrossProduct(FVector::ForwardVector, Frame.Tangent);
+			// Right comes from world up, not from any spline up vector, so the section stays
+			// upright no matter how the source spline is twisted. This only seeds the very first
+			// frame -- every later station propagates from it (see below) rather than re-deriving
+			// from world up independently, so there is no discontinuity left to hit if the road
+			// climbs through vertical partway along its length.
+			FVector Right = FVector::CrossProduct(FVector::UpVector, Frame.Tangent);
+			if (Right.SizeSquared() < UE_KINDA_SMALL_NUMBER)
+			{
+				// The first tangent alone is near-vertical: any horizontal axis is as good as
+				// another to seed the propagation with.
+				Right = FVector::CrossProduct(FVector::ForwardVector, Frame.Tangent);
+			}
+			Frame.Right = Right.GetSafeNormal();
 		}
-		Frame.Right = Right.GetSafeNormal();
+		else
+		{
+			// Rotation-minimizing frame, carried forward from the previous station via the double
+			// reflection method (Wang, Jüttler, Zheng & Liu, 2008). Re-deriving Right from world up
+			// at every station -- the previous approach -- has a hard singularity at a vertical
+			// tangent: crossing it forces a one-station cut to a differently-oriented fallback axis,
+			// which is exactly the 180-degree section twist seen on steep grades and switchbacks.
+			// Propagating instead has no singularity at any tangent direction, including straight
+			// up, because it only ever asks "how do I carry the previous frame forward," never
+			// "what does a fixed reference vector say from scratch." Deliberate banking is layered
+			// on top afterwards by ApplyRoll and is unaffected by how this base frame is derived.
+			const FFrame& Prev = OutFrames[i - 1];
+
+			const FVector V1 = Frame.Origin - Prev.Origin;
+			const double C1 = FVector::DotProduct(V1, V1);
+			FVector ReflectedRight = Prev.Right;
+			FVector ReflectedTangent = Prev.Tangent;
+			if (C1 > UE_KINDA_SMALL_NUMBER)
+			{
+				ReflectedRight = Prev.Right - (2.0 / C1) * FVector::DotProduct(V1, Prev.Right) * V1;
+				ReflectedTangent = Prev.Tangent - (2.0 / C1) * FVector::DotProduct(V1, Prev.Tangent) * V1;
+			}
+
+			const FVector V2 = Frame.Tangent - ReflectedTangent;
+			const double C2 = FVector::DotProduct(V2, V2);
+			FVector Right = ReflectedRight;
+			if (C2 > UE_KINDA_SMALL_NUMBER)
+			{
+				Right = ReflectedRight - (2.0 / C2) * FVector::DotProduct(V2, ReflectedRight) * V2;
+			}
+			Frame.Right = Right.GetSafeNormal();
+		}
+
 		Frame.Up = FVector::CrossProduct(Frame.Tangent, Frame.Right).GetSafeNormal();
 	}
 
@@ -264,6 +304,52 @@ void ApplyRoll(TArray<FFrame>& Frames, const TArray<double>& RollRadians)
 		const FQuat Rotation(Frames[i].Tangent, Angle);
 		Frames[i].Right = Rotation.RotateVector(Frames[i].Right);
 		Frames[i].Up = Rotation.RotateVector(Frames[i].Up);
+	}
+}
+
+void ComputeBandScaleFromCurvature(
+	const TArray<FFrame>& Frames,
+	double RequestedBandWidth,
+	double SafetyFactor,
+	TArray<float>& OutBandScale)
+{
+	const int32 Num = Frames.Num();
+	OutBandScale.Init(1.0f, Num);
+
+	if (RequestedBandWidth <= UE_KINDA_SMALL_NUMBER || Num < 3)
+	{
+		// Nothing to shrink against, or too few stations to have an interior curvature sample at
+		// all -- every frame keeps the default full-width scale.
+		return;
+	}
+
+	const double SafeSafetyFactor = FMath::Max(1.0, SafetyFactor);
+
+	// Curvature at an interior station, from how much the tangent turns between its neighbours over
+	// the distance between them -- the same central-difference spirit BuildFramesFromPolyline
+	// already uses for the tangent itself, just one derivative further. Untouched at the two
+	// endpoints: a swept road's terminal stations are typically a straight cap or a junction
+	// transition, not the tight part of a curve, so leaving them at full scale costs nothing and
+	// avoids a one-sided (and so noisier) curvature estimate right at the ends.
+	for (int32 i = 1; i < Num - 1; ++i)
+	{
+		const double SegmentLength = Frames[i + 1].DistanceAlong - Frames[i - 1].DistanceAlong;
+		if (SegmentLength <= UE_KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+
+		const double CosTurn = FMath::Clamp(FVector::DotProduct(Frames[i - 1].Tangent, Frames[i + 1].Tangent), -1.0, 1.0);
+		const double TurnAngle = FMath::Acos(CosTurn);
+		if (TurnAngle <= UE_KINDA_SMALL_NUMBER)
+		{
+			// Locally straight: no curvature, no limit on how wide a band this station can carry.
+			continue;
+		}
+
+		const double LocalRadius = SegmentLength / TurnAngle;
+		const double MaxSafeBand = LocalRadius / SafeSafetyFactor;
+		OutBandScale[i] = static_cast<float>(FMath::Clamp(MaxSafeBand / RequestedBandWidth, 0.0, 1.0));
 	}
 }
 
@@ -300,10 +386,26 @@ void SweepSection(
 	for (int32 f = 0; f < NumFrames; ++f)
 	{
 		const FFrame& Frame = Frames[f];
+		const float BandScale = Options.BandScalePerFrame.IsValidIndex(f) ? Options.BandScalePerFrame[f] : 1.0f;
+
 		for (int32 s = 0; s < NumSection; ++s)
 		{
-			const FVector WorldPos =
-				Frame.Origin + Frame.Right * Section[s].Lateral + Frame.Up * Section[s].Vertical;
+			double Lateral = Section[s].Lateral;
+
+			// Only the outer band -- curb, footpath -- ever scales. The core road surface, inside
+			// BandInnerHalfWidth, stays at its authored width at every station regardless: a curve
+			// tight enough to need a narrower band is not tight enough to need a narrower road.
+			if (Options.BandInnerHalfWidth > 0.0)
+			{
+				const double AbsLateral = FMath::Abs(Lateral);
+				if (AbsLateral > Options.BandInnerHalfWidth)
+				{
+					const double BandDepth = AbsLateral - Options.BandInnerHalfWidth;
+					Lateral = FMath::Sign(Lateral) * (Options.BandInnerHalfWidth + BandDepth * BandScale);
+				}
+			}
+
+			const FVector WorldPos = Frame.Origin + Frame.Right * Lateral + Frame.Up * Section[s].Vertical;
 			Verts[f * NumSection + s] = Mesh.AppendVertex(WorldToLocal.TransformPosition(WorldPos));
 		}
 	}

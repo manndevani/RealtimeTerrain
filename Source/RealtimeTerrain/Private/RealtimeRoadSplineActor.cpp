@@ -362,25 +362,32 @@ FVector ARealtimeRoadSplineActor::GetSplinePointWorldLocation(int32 PointIndex) 
 	return SplineComponent->GetLocationAtSplinePoint(PointIndex, ESplineCoordinateSpace::World);
 }
 
-void ARealtimeRoadSplineActor::ExtendFromPointToLocation(int32 FromPointIndex, const FVector& TargetWorldLocation, float MaxSegmentSpacing)
+ARealtimeRoadSplineActor* ARealtimeRoadSplineActor::ExtendFromPointToLocation(int32 FromPointIndex, const FVector& TargetWorldLocation, int32& OutSelectedPointIndex, float MaxSegmentSpacing)
 {
-	if (!SplineComponent || !CanEditPoints()) return;
+	OutSelectedPointIndex = INDEX_NONE;
+	if (!SplineComponent || !CanEditPoints()) return nullptr;
 
 	const int32 NumPoints = SplineComponent->GetNumberOfSplinePoints();
 	if (NumPoints == 0)
 	{
 		AddPointRealtime(TargetWorldLocation);
-		return;
+		OutSelectedPointIndex = 0;
+		return this;
 	}
 
 	const int32 SafeIndex = FMath::Clamp(FromPointIndex, 0, NumPoints - 1);
 
 	// An interior point cannot simply be extended: the road already continues past it, so the
-	// only coherent interpretation is a new branch.
+	// only coherent interpretation is a new branch. The branch's own tip is what should end up
+	// selected, not anything on this (unchanged, aside from gaining a junction) road.
 	if (SafeIndex != 0 && SafeIndex != NumPoints - 1)
 	{
-		BranchRoadFromPoint(SafeIndex, TargetWorldLocation, MaxSegmentSpacing);
-		return;
+		ARealtimeRoadSplineActor* BranchRoad = BranchRoadFromPoint(SafeIndex, TargetWorldLocation, MaxSegmentSpacing);
+		if (BranchRoad && BranchRoad->SplineComponent)
+		{
+			OutSelectedPointIndex = BranchRoad->SplineComponent->GetNumberOfSplinePoints() - 1;
+		}
+		return BranchRoad;
 	}
 
 	const FVector StartPos = SplineComponent->GetLocationAtSplinePoint(SafeIndex, ESplineCoordinateSpace::World);
@@ -413,8 +420,10 @@ void ARealtimeRoadSplineActor::ExtendFromPointToLocation(int32 FromPointIndex, c
 		Existing.Add(SplineComponent->GetLocationAtSplinePoint(i, ESplineCoordinateSpace::World));
 	}
 
+	const bool bAppending = (SafeIndex == NumPoints - 1);
+
 	TArray<FVector> Combined;
-	if (SafeIndex == NumPoints - 1)
+	if (bAppending)
 	{
 		Combined = MoveTemp(Existing);
 		Combined.Append(NewPoints);
@@ -431,6 +440,12 @@ void ARealtimeRoadSplineActor::ExtendFromPointToLocation(int32 FromPointIndex, c
 	}
 
 	SetPointsRealtime(Combined);
+
+	// The grown end is exactly what SafeIndex named as the extension point -- append grows past
+	// the old last index, prepend grows past the old first (which is still index 0 afterward,
+	// since the new run was inserted before it).
+	OutSelectedPointIndex = bAppending ? (Combined.Num() - 1) : 0;
+	return this;
 }
 
 ARealtimeRoadSplineActor* ARealtimeRoadSplineActor::BranchRoadFromPoint(int32 PointIndex, const FVector& BranchTargetLocation, float MaxSegmentSpacing)
@@ -483,7 +498,8 @@ ARealtimeRoadSplineActor* ARealtimeRoadSplineActor::BranchRoadFromPoint(int32 Po
 	}
 
 	BranchRoad->SetPointsRealtime({ StartPos });
-	BranchRoad->ExtendFromPointToLocation(0, BranchTargetLocation, MaxSegmentSpacing);
+	int32 UnusedIndex = INDEX_NONE;
+	BranchRoad->ExtendFromPointToLocation(0, BranchTargetLocation, UnusedIndex, MaxSegmentSpacing);
 
 	return BranchRoad;
 }
@@ -810,6 +826,19 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	Options.bCapStart = true;
 	Options.bCapEnd = true;
 
+	// A curb+footpath band swept at a fixed Lateral independently at every station is a naive
+	// per-vertex-normal offset -- it bowties through itself on the inside of any turn tighter than
+	// the band is wide. BandInnerHalfWidth marks where the always-full-width road surface ends and
+	// the scalable band begins; the per-frame scale itself is computed below, once Frames exist for
+	// each run, from how sharply the road is actually turning at each station.
+	Options.BandInnerHalfWidth = FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
+	double RequestedBandWidth = 0.0;
+	if (RoadType == ERoadType::PavedRoad)
+	{
+		if (CrossSectionSettings.bHasCurbs) RequestedBandWidth += FMath::Max(0.0f, CrossSectionSettings.CurbWidth);
+		if (CrossSectionSettings.bHasFootpaths) RequestedBandWidth += FMath::Max(0.0f, CrossSectionSettings.FootpathWidth);
+	}
+
 	const FTransform WorldToLocal = RoadMeshComponent->GetComponentTransform().Inverse();
 
 	// Deferring the collision cook is what makes dragging a point interactive; the settle pass
@@ -835,6 +864,9 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 			TArray<double> Roll;
 			ComputeCrossSlopeRoll(Frames, Roll);
 			RoadMesh::ApplyRoll(Frames, Roll);
+
+			RoadMesh::ComputeBandScaleFromCurvature(
+				Frames, RequestedBandWidth, RoadMesh::BandRadiusSafetyFactor, Options.BandScalePerFrame);
 
 			RoadMesh::SweepSection(Mesh, Section, Frames, WorldToLocal, Options);
 			RunFrames.Add(MoveTemp(Frames));
