@@ -1480,6 +1480,52 @@ void ATerraDyneEditController::Server_LoadRasterLayersIntoScene_Implementation()
 	RequestLoadRasterLayersIntoScene();
 }
 
+void ATerraDyneEditController::RequestLoadSpecificRasterLayer(ETerraDyneRasterLayer Layer)
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			FString OutError;
+			Manager->LoadSpecificRasterLayer(Layer, OutError);
+		}
+	}
+	else
+	{
+		Server_LoadSpecificRasterLayer(Layer);
+	}
+}
+
+void ATerraDyneEditController::Server_LoadSpecificRasterLayer_Implementation(ETerraDyneRasterLayer Layer)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestLoadSpecificRasterLayer(Layer);
+}
+
+void ATerraDyneEditController::RequestUnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer)
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			FString OutError;
+			Manager->UnloadSpecificRasterLayer(Layer, OutError);
+		}
+	}
+	else
+	{
+		Server_UnloadSpecificRasterLayer(Layer);
+	}
+}
+
+void ATerraDyneEditController::Server_UnloadSpecificRasterLayer_Implementation(ETerraDyneRasterLayer Layer)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestUnloadSpecificRasterLayer(Layer);
+}
+
 void ATerraDyneEditController::RequestStartSandboxMode()
 {
 	if (HasAuthority())

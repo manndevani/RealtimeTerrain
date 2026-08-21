@@ -143,11 +143,16 @@ private:
 
 	FReply OnImportRasterLayerClicked(ETerraDyneRasterLayer Layer);
 	FReply OnUnloadRasterLayerClicked(ETerraDyneRasterLayer Layer);
+	FReply OnToggleLayerLoadClicked(ETerraDyneRasterLayer Layer);
 	FReply OnUnloadAllRasterLayersClicked();
 	FReply OnLoadRasterLayersIntoSceneClicked();
+	FReply OnTopViewClicked();
 
 	bool IsImportLayerEnabled(ETerraDyneRasterLayer Layer) const;
 	bool IsUnloadLayerEnabled(ETerraDyneRasterLayer Layer) const;
+	bool IsToggleLayerLoadEnabled(ETerraDyneRasterLayer Layer) const;
+	FText GetToggleLayerLoadText(ETerraDyneRasterLayer Layer) const;
+	FSlateColor GetToggleLayerLoadColor(ETerraDyneRasterLayer Layer) const;
 	bool IsLoadIntoSceneEnabled() const;
 	bool IsUnloadAllEnabled() const;
 
@@ -155,6 +160,10 @@ private:
 	FSlateColor GetLayerStatusColor(ETerraDyneRasterLayer Layer) const;
 	FText GetOverallRasterStatusText() const;
 	FSlateColor GetOverallRasterStatusColor() const;
+
+	TOptional<float> GetGeoTIFFProgressFraction() const;
+	FText GetGeoTIFFProgressText() const;
+	EVisibility GetGeoTIFFProgressVisibility() const;
 
 	void PickAndImportFileForLayer(ETerraDyneRasterLayer Layer);
 

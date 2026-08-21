@@ -312,8 +312,11 @@ public:
 	 * Sized once at construction and never resized, so a layer's slot is always addressable whether
 	 * or not anything has been imported into it.
 	 */
-	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	UPROPERTY(ReplicatedUsing = OnRep_RasterLayerSlots, BlueprintReadOnly, Category = "TerraDyne|Raster")
 	TArray<FTerraDyneRasterLayerSlot> RasterLayerSlots;
+
+	UFUNCTION()
+	void OnRep_RasterLayerSlots();
 
 	/**
 	 * Validates a raster and records it in its layer slot. Reads only the header, so it returns
@@ -359,9 +362,40 @@ public:
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
 	bool IsRasterLayerImported(ETerraDyneRasterLayer Layer) const;
 
+	/** True when a specific layer is currently loaded and active in the scene */
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
+	bool IsRasterLayerLoadedInScene(ETerraDyneRasterLayer Layer) const;
+
+	/** Loads a specific imported raster layer into the scene */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool LoadSpecificRasterLayer(ETerraDyneRasterLayer Layer, FString& OutError);
+
+	/** Unloads a specific raster layer from the scene without clearing its imported file */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool UnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer, FString& OutError);
+
 	/** The elevation slot, which gates everything else. */
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
 	bool HasElevationLayer() const { return IsRasterLayerImported(ETerraDyneRasterLayer::Elevation); }
+
+	/** Returns 0.0 to 1.0 progress fraction of imported DEM chunks loaded into scene */
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
+	float GetGeoTIFFLoadProgress(int32& OutLoaded, int32& OutTotal) const;
+
+	/** Access coordinates covered by the imported GeoTIFF */
+	const TSet<FIntPoint>& GetImportedChunkCoords() const { return ImportedChunkCoords; }
+
+	/** Access currently loaded chunks */
+	const TMap<FIntPoint, ATerraDyneChunk*>& GetActiveChunkMap() const { return ActiveChunkMap; }
+
+	/** True if ActiveGeoTIFFHeightSource is decoded and ready for sampling */
+	bool HasElevationHeightSource() const;
+
+	/** Spawns or loads a chunk at the given grid coordinate */
+	void LoadOrSpawnChunk(FIntPoint Coord);
+
+	/** Unloads a chunk at the given grid coordinate */
+	void UnloadChunk(FIntPoint Coord);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	bool bSpawnDefaultChunksOnBeginPlay = false;
@@ -738,8 +772,6 @@ private:
 	FIntPoint WorldToChunkCoord(const FVector& WorldPos) const;
 	void UpdateStreaming(const TArray<FVector>& PlayerPositions);
 	void ProcessStreamingQueues(const TArray<FVector>& PlayerPositions);
-	void LoadOrSpawnChunk(FIntPoint Coord);
-	void UnloadChunk(FIntPoint Coord);
 	void MarkChunkDirty(FIntPoint Coord);
 	ATerraDyneChunk* SpawnConfiguredChunk(FIntPoint Coord, int32 OverrideResolution = INDEX_NONE);
 	FString GetChunkCachePath(FIntPoint Coord) const;

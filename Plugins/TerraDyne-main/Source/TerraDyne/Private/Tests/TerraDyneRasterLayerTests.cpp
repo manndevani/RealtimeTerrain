@@ -5,9 +5,11 @@
 #include "IO/TerraDyneRasterLayers.h"
 #include "IO/TerraDyneArchiveHelper.h"
 #include "Core/TerraDyneManager.h"
+#include "World/TerraDyneChunk.h"
 #include "Misc/Paths.h"
 
 #if WITH_EDITOR
+#include "Tests/AutomationEditorCommon.h"
 
 // Validates the multi-layer compatibility rules against a REAL matched raster set produced by
 // gdaldem from one source DEM. The interesting case is not that matching files match -- it is that
@@ -184,8 +186,15 @@ bool FTerraDyneRasterWorkflowTest::RunTest(const FString& Parameters)
 
 	// 2. Manager import rules, gating, compatibility, and unloading
 	{
-		ATerraDyneManager* Mgr = NewObject<ATerraDyneManager>();
+		UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+		TestNotNull(TEXT("World must be valid"), World);
+		if (!World) return false;
+
+		ATerraDyneManager* Mgr = World->SpawnActor<ATerraDyneManager>();
 		TestNotNull(TEXT("Manager instance should be valid"), Mgr);
+		if (!Mgr) return false;
+
+		Mgr->bShowWorldModeChoiceOnBeginPlay = false;
 
 		// Rule 1: Cannot import overlay before Elevation
 		const FString HillshadePath = FPaths::Combine(SetDir, TEXT("viz.hh_hillshade.tif"));
@@ -251,6 +260,51 @@ bool FTerraDyneRasterWorkflowTest::RunTest(const FString& Parameters)
 				TestFalse(FString::Printf(TEXT("Slot %s should be unloaded after DEM unload"), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString()),
 					Mgr->IsRasterLayerImported(Layer));
 			}
+
+			// 3. Re-import Elevation and perform full scene load + chunk geometry validation
+			FString ReImportErr;
+			const bool bReImported = Mgr->ImportRasterLayer(ETerraDyneRasterLayer::Elevation, DemPath, ReImportErr);
+			TestTrue(TEXT("Re-importing Elevation DEM should succeed"), bReImported);
+
+			FString LoadErr;
+			const double LoadStart = FPlatformTime::Seconds();
+			const bool bLoaded = Mgr->LoadRasterLayersIntoScene(LoadErr);
+			const double LoadElapsed = FPlatformTime::Seconds() - LoadStart;
+
+			TestTrue(FString::Printf(TEXT("LoadRasterLayersIntoScene should succeed (err: %s)"), *LoadErr), bLoaded);
+			AddInfo(FString::Printf(TEXT("DEM decode & georeference took %.2f s. Marked chunks: %d"),
+				LoadElapsed, Mgr->GetImportedChunkCoords().Num()));
+
+			TestTrue(TEXT("Manager should have marked imported chunk coordinates"), Mgr->GetImportedChunkCoords().Num() > 0);
+			TestTrue(TEXT("ActiveGeoTIFFHeightSource must be valid"), Mgr->HasElevationHeightSource());
+
+			// Load up to 64 marked chunk coordinates and verify geometry
+			int32 SuccessfullyLoadedChunks = 0;
+			float MinObservedHeight = 1.0f;
+			float MaxObservedHeight = 0.0f;
+			int32 TestedCount = 0;
+
+			for (const FIntPoint& Coord : Mgr->GetImportedChunkCoords())
+			{
+				if (++TestedCount > 64) break;
+				Mgr->LoadOrSpawnChunk(Coord);
+				ATerraDyneChunk* Chunk = Mgr->GetChunkAtCoord(Coord);
+				if (Chunk)
+				{
+					++SuccessfullyLoadedChunks;
+					for (float H : Chunk->GetHeightBuffer())
+					{
+						MinObservedHeight = FMath::Min(MinObservedHeight, H);
+						MaxObservedHeight = FMath::Max(MaxObservedHeight, H);
+					}
+				}
+			}
+
+			AddInfo(FString::Printf(TEXT("Tested %d chunks across %d marked coords. Observed height band: [%.4f, %.4f]"),
+				SuccessfullyLoadedChunks, Mgr->GetImportedChunkCoords().Num(), MinObservedHeight, MaxObservedHeight));
+
+			TestTrue(TEXT("Marked chunks should be loadable"), SuccessfullyLoadedChunks > 0);
+			TestTrue(TEXT("Height data should exhibit non-flat variation"), MaxObservedHeight > MinObservedHeight);
 		}
 	}
 

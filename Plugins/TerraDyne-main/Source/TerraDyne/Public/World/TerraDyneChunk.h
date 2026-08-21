@@ -109,6 +109,13 @@ public:
 public:
 	void Initialize(int32 InResolution, float InSize);
 	void InitializeChunk(FIntPoint Coord, float Size, int32 InRes, UTexture2D* SourceHeight);
+
+	/** Dedicated Sandbox procedural population */
+	void PopulateProcedural();
+
+	/** Dedicated High-Performance DEM raster population (bypasses procedural noise & auto-material) */
+	void PopulateFromDEM(TArray<float>&& InHeightBuffer, float InZScale, double InWorldZOffset, bool bGenerateCollision = false);
+
 	void SetMaterial(UMaterialInterface* InMaterial);
 
 	// BrushMode replaces bIsHole; FlattenHeight is mode-specific
@@ -159,6 +166,7 @@ public:
 
 	void RebuildPhysicsMesh();
 	float GetHeightAtLocation(FVector LocalPos) const;
+	const TArray<float>& GetHeightBuffer() const { return HeightBuffer; }
 
 	/** Terrain height ignoring any building pad — what the ground would be with no building on it. */
 	float GetNaturalHeightAtLocation(FVector LocalPos) const;

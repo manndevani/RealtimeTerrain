@@ -25,7 +25,8 @@ public class TerraDyne : ModuleRules
 
 		// Plugin dependencies (Must be enabled in .uproject)
 		PublicDependencyModuleNames.AddRange(new string[] {
-			"GeometryFramework"
+			"GeometryFramework",
+			"CesiumRuntime"
 		});
 
 		// Private dependencies

@@ -8,6 +8,7 @@
 #include "World/TerraDyneChunk.h"
 #include "World/TerraDyneOrchestrator.h"
 #include "Building/TerraDyneBuildingActor.h"
+#include "TerraDyneModule.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
@@ -72,6 +73,12 @@ void ATerraDyneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(ATerraDyneManager, GeoTIFFImportState);
 	DOREPLIFETIME(ATerraDyneManager, bAwaitingWorldModeChoice);
 	DOREPLIFETIME(ATerraDyneManager, WorldOriginKind);
+	DOREPLIFETIME(ATerraDyneManager, RasterLayerSlots);
+}
+
+void ATerraDyneManager::OnRep_RasterLayerSlots()
+{
+	UE_LOG(LogTerraDyne, Verbose, TEXT("TerraDyne: Replicated raster layer slots updated on client."));
 }
 
 void ATerraDyneManager::BeginPlay()
@@ -849,7 +856,10 @@ void ATerraDyneManager::RegisterChunk(ATerraDyneChunk* Chunk)
 	}
 
 	ActiveChunkMap.Add(Chunk->GridCoordinate, Chunk);
-	Chunk->SetMaterial(MasterMaterial);
+	if (WorldOriginKind != ETerraDyneChunkOrigin::ImportedGeoTIFF)
+	{
+		Chunk->SetMaterial(MasterMaterial);
+	}
 	Chunk->SetTransferredFoliageFollowsTerrain(LandscapeMigrationState.bTransferredFoliageFollowsTerrain);
 	EnsureChunkFrameworkState(Chunk->GridCoordinate, Chunk);
 	// A chunk streaming back in under an existing building has to get its pad re-stamped, or the
@@ -991,6 +1001,11 @@ void ATerraDyneManager::RebuildChunkMap()
 
 void ATerraDyneManager::ApplyMaterialToActiveChunks()
 {
+	if (WorldOriginKind == ETerraDyneChunkOrigin::ImportedGeoTIFF)
+	{
+		return;
+	}
+
 	for (const auto& Pair : ActiveChunkMap)
 	{
 		if (Pair.Value)
@@ -1731,7 +1746,10 @@ ATerraDyneChunk* ATerraDyneManager::SpawnConfiguredChunk(FIntPoint Coord, int32 
 
 	if (!ActiveChunkMap.Contains(Coord))
 	{
-		Chunk->SetMaterial(MasterMaterial);
+		if (WorldOriginKind != ETerraDyneChunkOrigin::ImportedGeoTIFF)
+		{
+			Chunk->SetMaterial(MasterMaterial);
+		}
 		ActiveChunkMap.Add(Coord, Chunk);
 	}
 
@@ -1865,28 +1883,31 @@ void ATerraDyneManager::UpdateStreaming(const TArray<FVector>& PlayerPositions)
 			}
 		}
 
-		// Queue chunks outside ALL players' unload radius
-		TArray<FIntPoint> ToUnload;
-		for (const auto& Pair : ActiveChunkMap)
+		// Queue chunks outside ALL players' unload radius (Only in procedural mode -- DEM datasets remain resident for macro top view)
+		if (!ActiveGeoTIFFHeightSource.IsValid())
 		{
-			bool bInAnyPlayerRange = false;
-			for (const FIntPoint& PlayerChunk : PlayerChunks)
+			TArray<FIntPoint> ToUnload;
+			for (const auto& Pair : ActiveChunkMap)
 			{
-				int32 Dist = FMath::Abs(Pair.Key.X - PlayerChunk.X) + FMath::Abs(Pair.Key.Y - PlayerChunk.Y);
-				if (Dist <= UnloadRadius)
+				bool bInAnyPlayerRange = false;
+				for (const FIntPoint& PlayerChunk : PlayerChunks)
 				{
-					bInAnyPlayerRange = true;
-					break;
+					int32 Dist = FMath::Abs(Pair.Key.X - PlayerChunk.X) + FMath::Abs(Pair.Key.Y - PlayerChunk.Y);
+					if (Dist <= UnloadRadius)
+					{
+						bInAnyPlayerRange = true;
+						break;
+					}
+				}
+				if (!bInAnyPlayerRange && !PendingUnloadQueue.Contains(Pair.Key))
+				{
+					ToUnload.Add(Pair.Key);
 				}
 			}
-			if (!bInAnyPlayerRange && !PendingUnloadQueue.Contains(Pair.Key))
+			for (const FIntPoint& Coord : ToUnload)
 			{
-				ToUnload.Add(Pair.Key);
+				PendingUnloadQueue.Add(Coord);
 			}
-		}
-		for (const FIntPoint& Coord : ToUnload)
-		{
-			PendingUnloadQueue.Add(Coord);
 		}
 	}
 
@@ -1896,7 +1917,9 @@ void ATerraDyneManager::UpdateStreaming(const TArray<FVector>& PlayerPositions)
 void ATerraDyneManager::ProcessStreamingQueues(const TArray<FVector>& PlayerPositions)
 {
 	const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>();
-	const int32 MaxOps = Settings ? Settings->MaxChunkOpsPerTick : 2;
+	const int32 MaxOps = (ActiveGeoTIFFHeightSource.IsValid() && PendingLoadQueue.Num() > 0)
+		? 16 // High-throughput for DEM macro-scale dataset loading
+		: (Settings ? Settings->MaxChunkOpsPerTick : 2);
 	int32 Ops = 0;
 
 	// Pre-compute player chunk coords for sorting

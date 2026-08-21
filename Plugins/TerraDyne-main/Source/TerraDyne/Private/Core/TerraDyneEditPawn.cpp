@@ -1,10 +1,19 @@
 // Copyright (c) 2026 GregOrigin. All Rights Reserved.
 #include "Core/TerraDyneEditPawn.h"
+#include "Core/TerraDyneManager.h"
+#include "Core/TerraDyneSubsystem.h"
+#include "World/TerraDyneChunk.h"
+#include "TerraDyneModule.h"
+#include "CesiumGlobeAnchorComponent.h"
+#include "CesiumGeoreference.h"
+#include "CesiumFlyToComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Engine/NetSerialization.h"
+#include "Engine/World.h"
 
 ATerraDyneEditPawn::ATerraDyneEditPawn()
+	: AGlobeAwareDefaultPawn()
 {
 	// The whole point of this class: suppress ADefaultPawn's built-in bindings. They include
 	// mouse-look on raw movement, which cannot be gated from a controller because it is installed
@@ -48,6 +57,13 @@ void ATerraDyneEditPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 	PlayerInputComponent->BindAxis("TerraDyneMoveForward", this, &ATerraDyneEditPawn::MoveForward);
 	PlayerInputComponent->BindAxis("TerraDyneMoveRight", this, &ATerraDyneEditPawn::MoveRight);
 	PlayerInputComponent->BindAxis("TerraDyneMoveUp", this, &ATerraDyneEditPawn::MoveUp_World);
+
+	// Mouse Wheel Zoom: scroll to zoom in/out smoothly across ground-to-orbit altitudes
+	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ATerraDyneEditPawn::OnMouseWheelZoom);
+
+	// Frame entire map hotkeys (F or Home)
+	PlayerInputComponent->BindKey(EKeys::F, IE_Pressed, this, &ATerraDyneEditPawn::FocusOnMap);
+	PlayerInputComponent->BindKey(EKeys::Home, IE_Pressed, this, &ATerraDyneEditPawn::FocusOnMap);
 }
 
 void ATerraDyneEditPawn::OnOrbitStart()
@@ -76,9 +92,81 @@ void ATerraDyneEditPawn::OnLookPitch(float Value)
 	}
 }
 
+void ATerraDyneEditPawn::OnMouseWheelZoom(float Value)
+{
+	if (FMath::IsNearlyZero(Value))
+	{
+		return;
+	}
+
+	// Scale zoom rate dynamically based on current altitude so scrolling works smoothly at any scale
+	const float Altitude = FMath::Max(1000.0f, FMath::Abs(GetActorLocation().Z));
+	const float ZoomDelta = Altitude * 0.35f * Value;
+	const FVector Direction = GetActorForwardVector();
+
+	AddActorWorldOffset(Direction * ZoomDelta, /*bSweep=*/false);
+}
+
+void ATerraDyneEditPawn::FocusOnMap()
+{
+	UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
+	ATerraDyneManager* Manager = Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+	if (!Manager)
+	{
+		return;
+	}
+
+	FVector TargetCenter = FVector::ZeroVector;
+	float TargetRadius = 50000.0f;
+
+	if (Manager->GeoTIFFImportState.bWasImportedFromGeoTIFF)
+	{
+		const FVector2D MinXY = Manager->GeoTIFFImportState.WorldFootprintMin;
+		const FVector2D MaxXY = Manager->GeoTIFFImportState.WorldFootprintMax;
+		const FVector2D Center2D = (MinXY + MaxXY) * 0.5;
+		const double ExtentX = FMath::Abs(MaxXY.X - MinXY.X);
+		const double ExtentY = FMath::Abs(MaxXY.Y - MinXY.Y);
+		TargetRadius = (float)FMath::Max(ExtentX, ExtentY) * 0.65f;
+		TargetCenter = FVector((double)Center2D.X, (double)Center2D.Y, (double)Manager->GetActorLocation().Z);
+	}
+	else
+	{
+		FBox TotalBounds(ForceInit);
+		for (const auto& Pair : Manager->GetActiveChunkMap())
+		{
+			if (Pair.Value)
+			{
+				TotalBounds += Pair.Value->GetComponentsBoundingBox(true);
+			}
+		}
+		if (TotalBounds.IsValid)
+		{
+			TargetCenter = TotalBounds.GetCenter();
+			TargetRadius = TotalBounds.GetExtent().GetMax() * 1.5f;
+		}
+	}
+
+	TargetRadius = FMath::Max(TargetRadius, 30000.0f);
+	const float CamAltitude = TargetCenter.Z + TargetRadius * 1.1f;
+	SetActorLocation(FVector(TargetCenter.X, TargetCenter.Y - (TargetRadius * 0.15f), CamAltitude));
+	SetActorRotation(FRotator(-80.0f, 90.0f, 0.0f));
+
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: Focused camera on map center [%.0f, %.0f, %.0f], altitude %.0f"),
+		TargetCenter.X, TargetCenter.Y, TargetCenter.Z, CamAltitude);
+}
+
 void ATerraDyneEditPawn::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Dynamically adjust flight speed so the user can navigate across hundreds of km as easily as 100m
+	if (UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(GetMovementComponent()))
+	{
+		const float Altitude = FMath::Max(100.0f, FMath::Abs(GetActorLocation().Z));
+		Movement->MaxSpeed = FMath::Clamp(Altitude * 2.5f, 12000.0f, 50000000.0f);
+		Movement->Acceleration = Movement->MaxSpeed * 3.0f;
+		Movement->Deceleration = Movement->MaxSpeed * 3.0f;
+	}
 
 	// Only a client needs to report upward; the listen-server host already moves the authoritative
 	// copy directly. Throttled because this exists to keep chunk streaming pointed at the right
@@ -101,4 +189,23 @@ void ATerraDyneEditPawn::Server_ReportViewLocation_Implementation(FVector_NetQua
 	// Teleport rather than sweep: this is a camera position, and sweeping it through terrain
 	// collision on the server would snag it short of where the player actually is.
 	SetActorLocation(NewLocation, /*bSweep=*/false, nullptr, ETeleportType::TeleportPhysics);
+}
+
+FVector ATerraDyneEditPawn::GetCurrentLongitudeLatitudeHeight() const
+{
+	if (GlobeAnchor)
+	{
+		return GlobeAnchor->GetLongitudeLatitudeHeight();
+	}
+	return FVector::ZeroVector;
+}
+
+void ATerraDyneEditPawn::FlyToCoordinates(double Longitude, double Latitude, double Height, double Yaw, double Pitch)
+{
+	FlyToLocationLongitudeLatitudeHeight(
+		FVector(Longitude, Latitude, Height),
+		Yaw,
+		Pitch,
+		/*CanInterruptByMoving=*/true
+	);
 }

@@ -91,6 +91,8 @@ public:
 	/** Multi-layer raster import / unload / scene loading */
 	void RequestImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath);
 	void RequestUnloadRasterLayer(ETerraDyneRasterLayer Layer);
+	void RequestLoadSpecificRasterLayer(ETerraDyneRasterLayer Layer);
+	void RequestUnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer);
 	void RequestUnloadAllRasterLayers();
 	void RequestLoadRasterLayersIntoScene();
 
@@ -293,6 +295,12 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_LoadRasterLayersIntoScene();
+
+	UFUNCTION(Server, Reliable)
+	void Server_LoadSpecificRasterLayer(ETerraDyneRasterLayer Layer);
+
+	UFUNCTION(Server, Reliable)
+	void Server_UnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer);
 
 	UFUNCTION(Server, Reliable)
 	void Server_StartSandboxMode();

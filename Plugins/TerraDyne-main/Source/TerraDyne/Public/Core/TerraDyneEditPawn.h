@@ -2,26 +2,26 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/DefaultPawn.h"
+#include "GlobeAwareDefaultPawn.h"
 #include "TerraDyneEditPawn.generated.h"
 
 /**
- * Flying camera pawn for terrain editing.
+ * Flying camera pawn for terrain editing with full Cesium Globe awareness.
  *
- * Exists because ADefaultPawn installs engine-defined DefaultPawn_Turn / DefaultPawn_LookUp axis
- * mappings from C++ (they never appear in DefaultInput.ini) and rotates the view on raw mouse
- * movement with no button held. That makes a left-drag sculpt swing the camera out from under the
- * stroke. This pawn disables those defaults and re-binds movement and look explicitly, so:
+ * Inherits from Cesium's AGlobeAwareDefaultPawn to provide:
+ *   - Native UCesiumGlobeAnchorComponent integration for precise WGS84 and ECEF georeferencing
+ *   - Correct East-South-Up (ESU) horizon leveling and Ellipsoid normal-aligned vertical movement
+ *   - Seamless FlyTo navigation across planet-scale and regional GIS DEM coordinates
  *
- *   left  drag -> terrain edit only, camera pinned
- *   right drag -> orbit only
- *
- * Rotation lives here rather than in the player controller because ATerraDyneOrchestrator binds its
- * own sculpt input onto whatever controller is spawned. Owning the look input at the pawn keeps the
- * behaviour independent of which class ends up driving the edits.
+ * While retaining TerraDyne's editing controls:
+ *   - Left-drag: terrain sculpting / road editing only (camera pinned)
+ *   - Right-drag: orbit / look
+ *   - Mouse wheel: smooth altitude-scaled zoom
+ *   - F / Home key: frame entire GeoTIFF or sandbox map
+ *   - Dynamic altitude speed scaling for effortless navigation from 100m to 500km
  */
 UCLASS()
-class TERRADYNE_API ATerraDyneEditPawn : public ADefaultPawn
+class TERRADYNE_API ATerraDyneEditPawn : public AGlobeAwareDefaultPawn
 {
 	GENERATED_BODY()
 
@@ -39,6 +39,18 @@ public:
 	/** True while the right mouse button is held. Look input is ignored unless this is set. */
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Input")
 	bool IsOrbiting() const { return bIsOrbiting; }
+
+	/** Frame the entire active terrain (GeoTIFF footprint or sandbox chunks) in a top-down view */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Camera")
+	void FocusOnMap();
+
+	/** Get current WGS84 coordinates (Longitude, Latitude, Height in meters) from the Globe Anchor */
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|GIS")
+	FVector GetCurrentLongitudeLatitudeHeight() const;
+
+	/** Fly smoothly to real-world WGS84 coordinates */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|GIS")
+	void FlyToCoordinates(double Longitude, double Latitude, double Height, double Yaw = 0.0, double Pitch = -45.0);
 
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
@@ -64,4 +76,5 @@ private:
 	void OnOrbitStop();
 	void OnLookYaw(float Value);
 	void OnLookPitch(float Value);
+	void OnMouseWheelZoom(float Value);
 };

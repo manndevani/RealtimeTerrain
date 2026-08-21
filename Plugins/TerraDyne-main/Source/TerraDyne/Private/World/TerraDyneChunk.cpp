@@ -24,6 +24,8 @@
 #include "DrawDebugHelpers.h"
 #include "Materials/MaterialInterface.h"
 #include "Net/UnrealNetwork.h"
+#include "Core/TerraDyneProceduralGenerator.h"
+#include "IO/TerraDyneDEMMeshBuilder.h"
 
 // Unit gradient for an integer lattice corner, from a deterministic hash of its coordinates.
 // Depends only on absolute lattice position, so neighbouring chunks derive identical gradients for
@@ -595,11 +597,6 @@ void ATerraDyneChunk::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 void ATerraDyneChunk::BeginPlay()
 {
 	Super::BeginPlay();
-	
-	if (!bInitialized)
-	{
-		Initialize(Resolution, WorldSize);
-	}
 
 	ATerraDyneManager* Manager = nullptr;
 	if (UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr)
@@ -609,6 +606,13 @@ void ATerraDyneChunk::BeginPlay()
 	if (!Manager && GetWorld())
 	{
 		Manager = Cast<ATerraDyneManager>(UGameplayStatics::GetActorOfClass(GetWorld(), ATerraDyneManager::StaticClass()));
+	}
+
+	const bool bIsDEMMode = Manager && (Manager->WorldOriginKind == ETerraDyneChunkOrigin::ImportedGeoTIFF);
+
+	if (!bInitialized && !bIsDEMMode && !bIsAuthoredChunk)
+	{
+		Initialize(Resolution, WorldSize);
 	}
 
 	if (Manager)
@@ -672,17 +676,20 @@ void ATerraDyneChunk::Initialize(int32 InResolution, float InSize)
 	
 	Resolution = InResolution;
 	WorldSize = InSize;
-	
-	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Initializing Res=%d Size=%.0f"), 
+
+	PopulateProcedural();
+}
+
+void ATerraDyneChunk::PopulateProcedural()
+{
+	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Initializing Procedural Res=%d Size=%.0f"),
 		GridCoordinate.X, GridCoordinate.Y, Resolution, WorldSize);
-	
+
 	int32 NumVerts = Resolution * Resolution;
 	BaseBuffer.SetNumZeroed(NumVerts);
 	SculptBuffer.SetNumZeroed(NumVerts);
 	DetailBuffer.SetNumZeroed(NumVerts);
 	HeightBuffer.SetNumZeroed(NumVerts);
-	// Pad layer is sized alongside the others so RecomputeHeightFromLayers never has to special-case
-	// a half-built chunk. It stays all-zero until the manager stamps a building into it.
 	PadWeightBuffer.SetNumZeroed(NumVerts);
 	PadTargetBuffer.SetNumZeroed(NumVerts);
 
@@ -691,67 +698,60 @@ void ATerraDyneChunk::Initialize(int32 InResolution, float InSize)
 		CPUHeightTexture = CreateChunkDataTexture(Resolution, PF_FloatRGBA, /*bSRGB=*/false, TEXT("CPUHeightTexture"));
 	}
 
-	// Procedural terrain (goes to Base layer)
-	// Use GridCoordinate * WorldSize for noise origin — GetActorLocation() may not be
-	// finalized during deferred BeginPlay, causing all chunks to sample noise from (0,0,0).
-	// IMPORTANT: no per-chunk random offset here. ProceduralSeed is unique per chunk
-	// (MakeChunkSeed(Coord)), so an FRandRange offset keyed off it made every chunk sample its
-	// base noise from a different, unrelated region of noise space — neighboring chunks had no
-	// relationship to each other at all, which is what made every chunk boundary a discontinuous
-	// seam. WorldX/WorldY must be pure absolute world position so adjacent chunks always agree
-	// on the height at their shared edge.
-	// Kept in double precision (FVector is LWC/double in UE5) since GridCoordinate * WorldSize
-	// grows unbounded with distance from the origin — far enough out, truncating that to a
-	// float before use loses more than a full unit of precision, which is what made newly
-	// streamed-in chunks come out disconnected from their neighbors again once you travel far
-	// from (0,0). The multiply-by-frequency step below is also done in double, and only the
-	// final (small-magnitude, precision-safe) noise-space coordinate is cast to float for
-	// FractalNoise — never the raw world position itself.
-	FVector ChunkOrigin(GridCoordinate.X * WorldSize, GridCoordinate.Y * WorldSize, 0.0);
-	for (int32 Y = 0; Y < Resolution; Y++)
-	{
-		for (int32 X = 0; X < Resolution; X++)
-		{
-			double WorldX = ChunkOrigin.X + ((double(X) / (Resolution - 1)) - 0.5) * WorldSize;
-			double WorldY = ChunkOrigin.Y + ((double(Y) / (Resolution - 1)) - 0.5) * WorldSize;
+	FTerraDyneProceduralGenerator::GenerateSandboxHeights(
+		GridCoordinate,
+		Resolution,
+		WorldSize,
+		ProceduralSeed,
+		BaseBuffer,
+		DetailBuffer
+	);
 
-			// FBM Noise for Base Layer (Mountains/Hills)
-			// Scale inputs down for macro features. Persistence is below the 0.5 default so the
-			// highest octave (a ~250 uu lattice cell against ~79 uu texels at the defaults) stays a
-			// surface detail instead of contributing near-cliff relief on its own.
-			float Height = FractalNoise((float)(WorldX * 0.0005), (float)(WorldY * 0.0005), 4, 0.45f);
-
-			// Compress into the procedural relief band rather than the whole of ZScale — see
-			// TerraDyneLayers for why spanning the full range made every vertex read as a cliff.
-			Height = TerraDyneLayers::ProceduralFloor + Height * TerraDyneLayers::ProceduralRelief;
-
-			BaseBuffer[Y * Resolution + X] = FMath::Clamp(Height, 0.0f, 1.0f);
-
-			// Add detail layer noise (high frequency "erosion" simulation).
-			// The input scale keeps the finest octave's lattice cell several texels wide: sampled at
-			// WorldSize/Resolution, anything near a one-texel wavelength can't be represented and
-			// aliases into per-vertex spikes rather than reading as detail.
-			float DetailHeight = FractalNoise((float)(WorldX * 0.0015), (float)(WorldY * 0.0015), 2) * 0.02f; // Low amplitude
-			DetailBuffer[Y * Resolution + X] = DetailHeight;
-		}
-	}
-	
 	RecomputeHeightFromLayers();
-
 	UploadCPUHeightTexture();
-
-	// SetupGPU() intentionally not called here: it creates 2 render targets, uploads the
-	// heightmap, then does a synchronous FlushRenderingCommands() + GPU readback to validate a
-	// GPU sculpting path (ApplyBrushGPU) that is never actually invoked anywhere in the codebase
-	// — pure stall for zero benefit on every single chunk spawn/stream-in. bUseGPU simply stays
-	// false (its constructor default), which is correct since nothing uses the GPU path.
 	RebuildMesh();
 	UpdateCollision();
 
 	bInitialized = true;
-	
-	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Ready (GPU: %s)"), 
-		GridCoordinate.X, GridCoordinate.Y, bUseGPU ? TEXT("YES") : TEXT("NO"));
+
+	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Ready (Procedural)"), GridCoordinate.X, GridCoordinate.Y);
+}
+
+void ATerraDyneChunk::PopulateFromDEM(TArray<float>&& InHeightBuffer, float InZScale, double InWorldZOffset, bool bGenerateCollision)
+{
+	const int32 NumVerts = Resolution * Resolution;
+	if (InHeightBuffer.Num() != NumVerts)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Chunk [%d,%d]: PopulateFromDEM sample mismatch (%d vs %d)"),
+			GridCoordinate.X, GridCoordinate.Y, InHeightBuffer.Num(), NumVerts);
+		return;
+	}
+
+	const FVector CurrentLocation = GetActorLocation();
+	SetActorLocation(FVector(CurrentLocation.X, CurrentLocation.Y, InWorldZOffset));
+	ZScale = InZScale;
+
+	BaseBuffer = MoveTemp(InHeightBuffer);
+	SculptBuffer.SetNumZeroed(NumVerts);
+	DetailBuffer.SetNumZeroed(NumVerts);
+	HeightBuffer.SetNumZeroed(NumVerts);
+	PadWeightBuffer.SetNumZeroed(NumVerts);
+	PadTargetBuffer.SetNumZeroed(NumVerts);
+
+	RecomputeHeightFromLayers();
+
+	// High-speed DEM mesh building (bypasses procedural noise & texture uploads)
+	FTerraDyneDEMMeshBuilder::UpdateComponentMesh(
+		DynamicMeshComp,
+		HeightBuffer,
+		Resolution,
+		WorldSize,
+		ZScale,
+		bGenerateCollision
+	);
+
+	bInitialized = true;
+	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Ready (DEM Fast Mesh)"), GridCoordinate.X, GridCoordinate.Y);
 }
 
 bool ATerraDyneChunk::SetupGPU()

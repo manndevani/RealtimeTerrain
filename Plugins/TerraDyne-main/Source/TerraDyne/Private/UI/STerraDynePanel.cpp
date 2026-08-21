@@ -3,6 +3,7 @@
 #include "UI/TerraDyneToolWidget.h"
 #include "Core/TerraDyneManager.h"
 #include "Core/TerraDyneEditController.h"
+#include "Core/TerraDyneEditPawn.h"
 #include "World/TerraDyneOrchestrator.h"
 #include "IO/TerraDyneArchiveHelper.h"
 #include "IO/TerraDyneRasterLayers.h"
@@ -27,6 +28,7 @@
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Colors/SColorBlock.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "STerraDyneHudStyle.h"
 #include "Brushes/SlateColorBrush.h"
 #include "Styling/CoreStyle.h"
@@ -114,8 +116,17 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.ButtonStyle(&HudButtonStyle)
+					.Text_Lambda([this, Layer]() { return GetToggleLayerLoadText(Layer); })
+					.ToolTipText(LOCTEXT("BtnToggleLoadTip", "Load or Unload this specific layer into/from the active scene"))
+					.IsEnabled_Lambda([this, Layer]() { return IsToggleLayerLoadEnabled(Layer); })
+					.OnClicked(this, &STerraDynePanel::OnToggleLayerLoadClicked, Layer)
+				]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
 					.Text(FText::FromString(TEXT("✕")))
-					.ToolTipText(LOCTEXT("BtnUnloadTip", "Clear / unload this layer"))
+					.ToolTipText(LOCTEXT("BtnUnloadTip", "Clear / remove this layer file"))
 					.IsEnabled_Lambda([this, Layer]() { return IsUnloadLayerEnabled(Layer); })
 					.OnClicked(this, &STerraDynePanel::OnUnloadRasterLayerClicked, Layer)
 				]
@@ -198,23 +209,48 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			.ColorAndOpacity(HudDim)
 			.AutoWrapText(true)
 		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+		[
+			SNew(SVerticalBox)
+			.Visibility(this, &STerraDynePanel::GetGeoTIFFProgressVisibility)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+			[
+				SNew(STextBlock)
+				.Text(this, &STerraDynePanel::GetGeoTIFFProgressText)
+				.Font(LabelFont)
+				.ColorAndOpacity(HudAccent)
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+			[
+				SNew(SProgressBar)
+				.Percent(this, &STerraDynePanel::GetGeoTIFFProgressFraction)
+			]
+		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().FillWidth(1.2f).Padding(1)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
 			[
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("BtnLoadScene", "Load into Scene"))
+				.Text(LOCTEXT("BtnLoadScene", "Load Scene"))
 				.HAlign(HAlign_Center)
 				.IsEnabled_Lambda([this]() { return IsLoadIntoSceneEnabled(); })
 				.OnClicked(this, &STerraDynePanel::OnLoadRasterLayersIntoSceneClicked)
+			]
+			+ SHorizontalBox::Slot().FillWidth(0.9f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnTopView", "Top View (F)"))
+				.HAlign(HAlign_Center)
+				.OnClicked(this, &STerraDynePanel::OnTopViewClicked)
 			]
 			+ SHorizontalBox::Slot().FillWidth(0.8f).Padding(1)
 			[
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("BtnUnloadAll", "Unload All"))
+				.Text(LOCTEXT("BtnUnloadAll", "Unload"))
 				.HAlign(HAlign_Center)
 				.IsEnabled_Lambda([this]() { return IsUnloadAllEnabled(); })
 				.OnClicked(this, &STerraDynePanel::OnUnloadAllRasterLayersClicked)
@@ -1243,7 +1279,7 @@ FReply STerraDynePanel::OnUnloadRasterLayerClicked(ETerraDyneRasterLayer Layer)
 	if (ATerraDyneManager* Mgr = GetManager())
 	{
 		Mgr->UnloadRasterLayer(Layer);
-		LastRasterStatusMessage = FString::Printf(TEXT("Unloaded %s."), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+		LastRasterStatusMessage = FString::Printf(TEXT("Removed %s."), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
 		bLastRasterStatusIsError = false;
 	}
 	else if (OwnerWidget.IsValid())
@@ -1254,6 +1290,98 @@ FReply STerraDynePanel::OnUnloadRasterLayerClicked(ETerraDyneRasterLayer Layer)
 		}
 	}
 	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnToggleLayerLoadClicked(ETerraDyneRasterLayer Layer)
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		FString OutError;
+		if (Mgr->IsRasterLayerLoadedInScene(Layer))
+		{
+			if (Mgr->UnloadSpecificRasterLayer(Layer, OutError))
+			{
+				LastRasterStatusMessage = FString::Printf(TEXT("Unloaded %s from scene."), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+				bLastRasterStatusIsError = false;
+			}
+			else
+			{
+				LastRasterStatusMessage = OutError;
+				bLastRasterStatusIsError = true;
+			}
+		}
+		else
+		{
+			if (Mgr->LoadSpecificRasterLayer(Layer, OutError))
+			{
+				LastRasterStatusMessage = FString::Printf(TEXT("Loaded %s into scene."), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+				bLastRasterStatusIsError = false;
+				if (TerraDyneRasterLayers::IsElevation(Layer))
+				{
+					OnTopViewClicked();
+				}
+			}
+			else
+			{
+				LastRasterStatusMessage = OutError;
+				bLastRasterStatusIsError = true;
+			}
+		}
+	}
+	else if (OwnerWidget.IsValid())
+	{
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->RequestLoadSpecificRasterLayer(Layer);
+		}
+	}
+	return FReply::Handled();
+}
+
+bool STerraDynePanel::IsToggleLayerLoadEnabled(ETerraDyneRasterLayer Layer) const
+{
+	ATerraDyneManager* Mgr = GetManager();
+	if (!Mgr)
+	{
+		return false;
+	}
+
+	if (!Mgr->IsRasterLayerImported(Layer))
+	{
+		return false;
+	}
+
+	if (!TerraDyneRasterLayers::IsElevation(Layer))
+	{
+		// Overlays require Elevation to be loaded in scene
+		return Mgr->IsRasterLayerLoadedInScene(ETerraDyneRasterLayer::Elevation);
+	}
+
+	return true;
+}
+
+FText STerraDynePanel::GetToggleLayerLoadText(ETerraDyneRasterLayer Layer) const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		if (Mgr->IsRasterLayerLoadedInScene(Layer))
+		{
+			return LOCTEXT("BtnUnloadSpecific", "Unload");
+		}
+	}
+	return LOCTEXT("BtnLoadSpecific", "Load");
+}
+
+FSlateColor STerraDynePanel::GetToggleLayerLoadColor(ETerraDyneRasterLayer Layer) const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		if (Mgr->IsRasterLayerLoadedInScene(Layer))
+		{
+			return FLinearColor(0.9f, 0.45f, 0.1f);
+		}
+	}
+	return FLinearColor(0.2f, 0.8f, 0.3f);
 }
 
 FReply STerraDynePanel::OnUnloadAllRasterLayersClicked()
@@ -1283,6 +1411,7 @@ FReply STerraDynePanel::OnLoadRasterLayersIntoSceneClicked()
 		{
 			LastRasterStatusMessage = TEXT("Terrain loaded successfully into scene.");
 			bLastRasterStatusIsError = false;
+			OnTopViewClicked();
 		}
 		else
 		{
@@ -1295,6 +1424,24 @@ FReply STerraDynePanel::OnLoadRasterLayersIntoSceneClicked()
 		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
 		{
 			PC->RequestLoadRasterLayersIntoScene();
+		}
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnTopViewClicked()
+{
+	APlayerController* PC = OwnerWidget.IsValid() ? OwnerWidget->GetOwningPlayer() : nullptr;
+	if (!PC && GetManager() && GetManager()->GetWorld())
+	{
+		PC = GetManager()->GetWorld()->GetFirstPlayerController();
+	}
+
+	if (PC)
+	{
+		if (ATerraDyneEditPawn* Pawn = Cast<ATerraDyneEditPawn>(PC->GetPawn()))
+		{
+			Pawn->FocusOnMap();
 		}
 	}
 	return FReply::Handled();
@@ -1451,6 +1598,51 @@ FSlateColor STerraDynePanel::GetOverallRasterStatusColor() const
 		return FLinearColor(0.3f, 0.9f, 0.4f); // Green
 	}
 	return FLinearColor(0.7f, 0.7f, 0.7f); // Subtle grey
+}
+
+TOptional<float> STerraDynePanel::GetGeoTIFFProgressFraction() const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		int32 Loaded = 0;
+		int32 Total = 0;
+		return Mgr->GetGeoTIFFLoadProgress(Loaded, Total);
+	}
+	return 0.0f;
+}
+
+FText STerraDynePanel::GetGeoTIFFProgressText() const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		int32 Loaded = 0;
+		int32 Total = 0;
+		const float Fraction = Mgr->GetGeoTIFFLoadProgress(Loaded, Total);
+		if (Total > 0)
+		{
+			if (Loaded >= Total)
+			{
+				return FText::Format(LOCTEXT("DEMCompleteFmt", "All {0} DEM chunks loaded (100%)"), FText::AsNumber(Total));
+			}
+			return FText::Format(LOCTEXT("DEMProgressFmt", "Loading DEM chunks: {0} / {1} ({2}%)"),
+				FText::AsNumber(Loaded),
+				FText::AsNumber(Total),
+				FText::AsNumber(FMath::RoundToInt(Fraction * 100.0f)));
+		}
+	}
+	return FText::GetEmpty();
+}
+
+EVisibility STerraDynePanel::GetGeoTIFFProgressVisibility() const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		if (Mgr->GetImportedChunkCoords().Num() > 0)
+		{
+			return EVisibility::Visible;
+		}
+	}
+	return EVisibility::Collapsed;
 }
 
 void STerraDynePanel::PickAndImportFileForLayer(ETerraDyneRasterLayer Layer)

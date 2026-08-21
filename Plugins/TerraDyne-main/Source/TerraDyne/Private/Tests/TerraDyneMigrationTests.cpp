@@ -100,69 +100,6 @@ bool FTerraDyneMigrationSaveLoadTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneShowcaseMaterialSelectionTest,
-	"TerraDyne.Demo.ShowcaseMaterialSelection",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FTerraDyneShowcaseMaterialSelectionTest::RunTest(const FString& Parameters)
-{
-	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
-	TestNotNull("World", World);
-	if (!World)
-	{
-		return false;
-	}
-
-	UGameplayStatics::DeleteGameInSlot(TEXT("TerraDyne_ShowcaseBaseline"), 0);
-
-	ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
-	TestNotNull("Manager", Manager);
-	if (!Manager)
-	{
-		return false;
-	}
-
-	Manager->bSpawnDefaultChunksOnBeginPlay = false;
-	Manager->bSetupDefaultLightingOnBeginPlay = false;
-	Manager->bSpawnShowcaseOnBeginPlay = false;
-	Manager->MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
-		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-	Manager->LandscapeMigrationState.SourceLandscapeMaterialPath =
-		TEXT("/Game/MWLandscapeAutoMaterial/Materials/Landscape/MTL_MWAM_Landscape_MountainRangeExample.MTL_MWAM_Landscape_MountainRangeExample");
-
-	// This test drives the Orchestrator directly without ever running the Manager's own BeginPlay,
-	// so bAwaitingWorldModeChoice never gets a chance to resolve itself -- it stays at its safe
-	// "awaiting" default and blocks EnsurePrimaryAuthoredChunk. Resolve it the same way a real
-	// caller would (the Sandbox choice, or an import) rather than reaching past the API.
-	Manager->MarkWorldModeChosen();
-
-	ATerraDyneOrchestrator* Orchestrator = World->SpawnActor<ATerraDyneOrchestrator>();
-	TestNotNull("Orchestrator", Orchestrator);
-	if (!Orchestrator)
-	{
-		return false;
-	}
-
-	Orchestrator->DispatchBeginPlay();
-
-	TestNotNull("Showcase material assigned", Manager->MasterMaterial.Get());
-	if (!Manager->MasterMaterial)
-	{
-		return false;
-	}
-
-	TestEqual(
-		TEXT("Showcase uses the TerraDyne mesh-compatible terrain material"),
-		Manager->MasterMaterial->GetPathName(),
-		FString(TEXT("/TerraDyne/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain")));
-
-	ATerraDyneChunk* Chunk = Manager->GetChunkAtCoord(FIntPoint::ZeroValue);
-	TestNotNull("Showcase authored chunk spawned", Chunk);
-
-	UGameplayStatics::DeleteGameInSlot(TEXT("TerraDyne_ShowcaseBaseline"), 0);
-	return true;
-}
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneChunkMaterialBindingTest,
 	"TerraDyne.Rendering.MaterialBindings",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

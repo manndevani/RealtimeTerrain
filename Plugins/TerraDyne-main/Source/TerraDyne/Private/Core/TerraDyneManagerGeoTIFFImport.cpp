@@ -80,6 +80,23 @@ void ATerraDyneManager::ImportGeoTIFFInternal(const FString& FilePath, const FTe
 	}
 
 	const FBox2D Footprint = NewSource->GetWorldFootprintXY();
+	const double FootprintWidth = Footprint.Max.X - Footprint.Min.X;
+	const double FootprintHeight = Footprint.Max.Y - Footprint.Min.Y;
+	const double MaxDim = FMath::Max(FootprintWidth, FootprintHeight);
+
+	// Adapt chunk size for large datasets to maintain high performance and whole-dataset top view
+	if (MaxDim > 200000.0) // > 2 km
+	{
+		// Target ~32 chunks along the longest dimension
+		const double TargetChunkSize = MaxDim / 32.0;
+		// Round up to nearest 100 meters (10,000 cm)
+		GlobalChunkSize = (float)(FMath::CeilToDouble(TargetChunkSize / 10000.0) * 10000.0);
+	}
+	else
+	{
+		GlobalChunkSize = 10000.0f; // Default 100m for local/small datasets
+	}
+
 	const FIntPoint MinCoord = WorldToChunkCoord(FVector(Footprint.Min.X, Footprint.Min.Y, 0.0));
 	const FIntPoint MaxCoord = WorldToChunkCoord(FVector(Footprint.Max.X, Footprint.Max.Y, 0.0));
 	for (int32 Y = MinCoord.Y; Y <= MaxCoord.Y; ++Y)
@@ -113,13 +130,22 @@ void ATerraDyneManager::ImportGeoTIFFInternal(const FString& FilePath, const FTe
 	// far from wherever the player started, and LoadOrSpawnChunk needs a live source to sample.
 	ActiveGeoTIFFHeightSource = MoveTemp(NewSource);
 
+	// Queue all chunks across the entire GeoTIFF footprint so the full dataset is loaded and visible
+	for (const FIntPoint& Coord : ImportedChunkCoords)
+	{
+		if (!ActiveChunkMap.Contains(Coord) && !PendingLoadQueue.Contains(Coord))
+		{
+			PendingLoadQueue.Add(Coord);
+		}
+	}
+
 	// The world has now been decided, so release the streaming gate BeginPlay latched while waiting
 	// for the player to choose (see bAwaitingWorldModeChoice). Until this runs, streaming spawns
 	// nothing at all -- which is exactly what keeps an undecided world empty, and equally what would
 	// keep an imported one empty if this were forgotten.
 	MarkWorldModeChosen();
 
-	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: Imported GeoTIFF '%s' -- %d chunk coordinate(s) marked, ZScale=%.0f"),
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: Imported GeoTIFF '%s' -- %d chunk coordinate(s) marked and queued for macro loading, ZScale=%.0f"),
 		*FilePath, ImportedChunkCoords.Num(), GeoTIFFImportState.ResolvedZScale);
 }
 
@@ -196,20 +222,10 @@ bool ATerraDyneManager::TryPopulateChunkFromGeoTIFF(ATerraDyneChunk* Chunk, FInt
 		}
 	}
 
-	// True real-world altitude. A chunk builds vertices at local Z = height * ZScale, always from
-	// zero up, so without this every DEM would render with its lowest point at the chunk actor's Z
-	// regardless of whether it is a coastal plain or a Himalayan valley. See
-	// FTerraDyneGeoTIFFHeightSource::GetChunkWorldZOffset.
 	const double ChunkWorldZ = ActiveGeoTIFFHeightSource->GetChunkWorldZOffset();
-	Chunk->SetActorLocation(FVector(ChunkLocation.X, ChunkLocation.Y, ChunkWorldZ));
+	const float ResolvedZScale = ActiveGeoTIFFHeightSource->GetZScale();
 
-	Chunk->ZScale = ActiveGeoTIFFHeightSource->GetZScale();
-	Chunk->BaseBuffer = MoveTemp(Sampled);
-	Chunk->SculptBuffer.Init(0.0f, NumSamples);
-	Chunk->DetailBuffer.Init(0.0f, NumSamples);
-	Chunk->RecomputeHeightFromLayers();
-	Chunk->RebuildPhysicsMesh();
-	Chunk->UploadCPUHeightTexture();
+	Chunk->PopulateFromDEM(MoveTemp(Sampled), ResolvedZScale, ChunkWorldZ, /*bGenerateCollision=*/false);
 
 	return true;
 }
@@ -217,6 +233,11 @@ bool ATerraDyneManager::TryPopulateChunkFromGeoTIFF(ATerraDyneChunk* Chunk, FInt
 void ATerraDyneManager::OnRep_GeoTIFFImportState()
 {
 	OnRep_FrameworkConfig();
+}
+
+bool ATerraDyneManager::HasElevationHeightSource() const
+{
+	return ActiveGeoTIFFHeightSource.IsValid();
 }
 
 //======================================================================================
@@ -233,6 +254,112 @@ bool ATerraDyneManager::IsRasterLayerImported(ETerraDyneRasterLayer Layer) const
 {
 	const int32 Index = (int32)Layer;
 	return RasterLayerSlots.IsValidIndex(Index) && RasterLayerSlots[Index].bImported;
+}
+
+bool ATerraDyneManager::IsRasterLayerLoadedInScene(ETerraDyneRasterLayer Layer) const
+{
+	const int32 Index = (int32)Layer;
+	return RasterLayerSlots.IsValidIndex(Index) && RasterLayerSlots[Index].bLoadedIntoScene;
+}
+
+float ATerraDyneManager::GetGeoTIFFLoadProgress(int32& OutLoaded, int32& OutTotal) const
+{
+	OutTotal = ImportedChunkCoords.Num();
+	if (OutTotal <= 0)
+	{
+		OutLoaded = 0;
+		return 1.0f;
+	}
+
+	OutLoaded = 0;
+	for (const FIntPoint& Coord : ImportedChunkCoords)
+	{
+		if (ActiveChunkMap.Contains(Coord))
+		{
+			OutLoaded++;
+		}
+	}
+	return (float)OutLoaded / (float)OutTotal;
+}
+
+bool ATerraDyneManager::LoadSpecificRasterLayer(ETerraDyneRasterLayer Layer, FString& OutError)
+{
+	OutError.Reset();
+	const int32 Index = (int32)Layer;
+	if (!RasterLayerSlots.IsValidIndex(Index) || !RasterLayerSlots[Index].bImported)
+	{
+		OutError = FString::Printf(TEXT("Layer %s has not been imported yet."), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+		return false;
+	}
+
+	if (TerraDyneRasterLayers::IsElevation(Layer))
+	{
+		return LoadRasterLayersIntoScene(OutError);
+	}
+
+	if (!HasElevationLayer() || !IsRasterLayerLoadedInScene(ETerraDyneRasterLayer::Elevation))
+	{
+		OutError = TEXT("Cannot load overlay layer before Elevation (DEM) is loaded into the scene.");
+		return false;
+	}
+
+	RasterLayerSlots[Index].bLoadedIntoScene = true;
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: loaded raster layer %s into scene"),
+		*TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+	return true;
+}
+
+bool ATerraDyneManager::UnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer, FString& OutError)
+{
+	OutError.Reset();
+	const int32 Index = (int32)Layer;
+	if (!RasterLayerSlots.IsValidIndex(Index))
+	{
+		return false;
+	}
+
+	if (TerraDyneRasterLayers::IsElevation(Layer))
+	{
+		// Unload terrain geometry but keep the imported slot valid
+		ActiveGeoTIFFHeightSource.Reset();
+		ImportedChunkCoords.Reset();
+		GeoTIFFImportState = FTerraDyneGeoTIFFImportState();
+		WorldOriginKind = ETerraDyneChunkOrigin::Procedural;
+
+		TArray<FIntPoint> ExistingCoords;
+		ActiveChunkMap.GetKeys(ExistingCoords);
+		for (const FIntPoint& Coord : ExistingCoords)
+		{
+			if (ATerraDyneChunk* Chunk = ActiveChunkMap.FindRef(Coord))
+			{
+				Chunk->Destroy();
+			}
+		}
+		ActiveChunkMap.Reset();
+		if (GetWorld())
+		{
+			RebuildChunkMap();
+		}
+		bAwaitingWorldModeChoice = true;
+		LastStreamingHash = 0;
+
+		RasterLayerSlots[Index].bLoadedIntoScene = false;
+		for (int32 i = 0; i < RasterLayerSlots.Num(); ++i)
+		{
+			if (i != Index)
+			{
+				RasterLayerSlots[i].bLoadedIntoScene = false;
+			}
+		}
+
+		UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: unloaded Elevation (DEM) geometry from scene."));
+		return true;
+	}
+
+	RasterLayerSlots[Index].bLoadedIntoScene = false;
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: unloaded raster layer %s from scene"),
+		*TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+	return true;
 }
 
 bool ATerraDyneManager::ImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath, FString& OutError)
