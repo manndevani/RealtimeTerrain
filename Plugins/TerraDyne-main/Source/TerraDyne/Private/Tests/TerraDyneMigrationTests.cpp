@@ -130,6 +130,12 @@ bool FTerraDyneShowcaseMaterialSelectionTest::RunTest(const FString& Parameters)
 	Manager->LandscapeMigrationState.SourceLandscapeMaterialPath =
 		TEXT("/Game/MWLandscapeAutoMaterial/Materials/Landscape/MTL_MWAM_Landscape_MountainRangeExample.MTL_MWAM_Landscape_MountainRangeExample");
 
+	// This test drives the Orchestrator directly without ever running the Manager's own BeginPlay,
+	// so bAwaitingWorldModeChoice never gets a chance to resolve itself -- it stays at its safe
+	// "awaiting" default and blocks EnsurePrimaryAuthoredChunk. Resolve it the same way a real
+	// caller would (the Sandbox choice, or an import) rather than reaching past the API.
+	Manager->MarkWorldModeChosen();
+
 	ATerraDyneOrchestrator* Orchestrator = World->SpawnActor<ATerraDyneOrchestrator>();
 	TestNotNull("Orchestrator", Orchestrator);
 	if (!Orchestrator)

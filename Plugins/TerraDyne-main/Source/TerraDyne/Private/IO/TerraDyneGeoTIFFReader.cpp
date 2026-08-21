@@ -71,6 +71,169 @@ namespace
 	}
 }
 
+bool FTerraDyneRasterInfo::IsCompatibleWith(const FTerraDyneRasterInfo& Other, FString& OutReason) const
+{
+	OutReason.Reset();
+
+	if (Width != Other.Width || Height != Other.Height)
+	{
+		OutReason = FString::Printf(TEXT("pixel dimensions differ (%dx%d vs %dx%d)"),
+			Width, Height, Other.Width, Other.Height);
+		return false;
+	}
+
+	// Scale/rotation must match to a millionth of a pixel -- these are written from the same source
+	// transform for a genuinely matched set, so any real difference means a different grid.
+	const double ScaleTolerance = FMath::Max(PixelSizeCrs(), Other.PixelSizeCrs()) * 1.0e-6;
+	auto NearlySame = [ScaleTolerance](double A, double B)
+	{
+		return FMath::Abs(A - B) <= ScaleTolerance;
+	};
+
+	if (!NearlySame(A1, Other.A1) || !NearlySame(B2, Other.B2)
+		|| !NearlySame(A2, Other.A2) || !NearlySame(B1, Other.B1))
+	{
+		OutReason = FString::Printf(TEXT("pixel scale/rotation differs (%.10g,%.10g vs %.10g,%.10g)"),
+			A1, B2, Other.A1, Other.B2);
+		return false;
+	}
+
+	if (bIsGeographicWGS84 != Other.bIsGeographicWGS84 || bIsUTM != Other.bIsUTM
+		|| (bIsUTM && (UTMZone != Other.UTMZone || bUTMNorth != Other.bUTMNorth)))
+	{
+		OutReason = TEXT("coordinate reference systems differ");
+		return false;
+	}
+
+	// Origin: allow up to half a pixel plus a whisker of float slop. See the header for why half a
+	// pixel specifically -- it is the RasterPixelIsPoint/RasterPixelIsArea difference, not a mismatch.
+	const double OriginTolerance = FMath::Max(PixelSizeCrs(), Other.PixelSizeCrs()) * 0.5 + ScaleTolerance;
+	if (FMath::Abs(A0 - Other.A0) > OriginTolerance || FMath::Abs(B0 - Other.B0) > OriginTolerance)
+	{
+		const double OffsetPixels = FMath::Max(
+			FMath::Abs(A0 - Other.A0), FMath::Abs(B0 - Other.B0)) / FMath::Max(PixelSizeCrs(), UE_DOUBLE_SMALL_NUMBER);
+		OutReason = FString::Printf(
+			TEXT("origins are %.2f pixels apart, which is more than the half-pixel grid-convention allowance -- this looks like a different area"),
+			OffsetPixels);
+		return false;
+	}
+
+	return true;
+}
+
+bool FTerraDyneGeoTIFFReader::ProbeMetadata(const FString& FilePath, FTerraDyneRasterInfo& OutInfo, FString& OutError)
+{
+	OutInfo = FTerraDyneRasterInfo();
+	OutError.Reset();
+
+	EnsureGdalRegistered();
+
+	GDALDatasetH Dataset = GDALOpen(TCHAR_TO_UTF8(*FilePath), GA_ReadOnly);
+	if (!Dataset)
+	{
+		OutError = FString::Printf(TEXT("GDAL could not open '%s'."), *FilePath);
+		return false;
+	}
+	ON_SCOPE_EXIT{ GDALClose(Dataset); };
+
+	OutInfo.Width = GDALGetRasterXSize(Dataset);
+	OutInfo.Height = GDALGetRasterYSize(Dataset);
+	OutInfo.BandCount = GDALGetRasterCount(Dataset);
+
+	if (OutInfo.Width <= 0 || OutInfo.Height <= 0)
+	{
+		OutError = TEXT("GDAL reports a zero or negative image size.");
+		return false;
+	}
+	if (OutInfo.BandCount <= 0)
+	{
+		OutError = TEXT("This file has no raster bands.");
+		return false;
+	}
+
+	double GeoTransform[6];
+	if (GDALGetGeoTransform(Dataset, GeoTransform) != CE_None)
+	{
+		OutError = TEXT("This file has no affine transform (GeoTransform) -- it cannot be georeferenced.");
+		return false;
+	}
+	OutInfo.A0 = GeoTransform[0];
+	OutInfo.A1 = GeoTransform[1];
+	OutInfo.A2 = GeoTransform[2];
+	OutInfo.B0 = GeoTransform[3];
+	OutInfo.B1 = GeoTransform[4];
+	OutInfo.B2 = GeoTransform[5];
+
+	if (FMath::IsNearlyZero(OutInfo.A1 * OutInfo.B2 - OutInfo.A2 * OutInfo.B1))
+	{
+		OutError = TEXT("This file's affine transform is singular (degenerate pixel scale).");
+		return false;
+	}
+
+	// AREA_OR_POINT is what shifts a DEM's reported origin by half a pixel relative to products
+	// derived from it; recorded so the mismatch can be explained rather than just tolerated.
+	if (const char* AreaOrPoint = GDALGetMetadataItem(Dataset, "AREA_OR_POINT", nullptr))
+	{
+		OutInfo.bPixelIsPoint = (FCStringAnsi::Stricmp(AreaOrPoint, "Point") == 0);
+	}
+
+	const char* Wkt = GDALGetProjectionRef(Dataset);
+	if (!Wkt || Wkt[0] == '\0')
+	{
+		OutError = TEXT("This file has no coordinate system -- it cannot be georeferenced.");
+		return false;
+	}
+
+	OGRSpatialReferenceH SRS = OSRNewSpatialReference(nullptr);
+	ON_SCOPE_EXIT{ OSRDestroySpatialReference(SRS); };
+
+	char* WktCursor = const_cast<char*>(Wkt);
+	if (OSRImportFromWkt(SRS, &WktCursor) != OGRERR_NONE)
+	{
+		OutError = TEXT("GDAL could not parse this file's coordinate system.");
+		return false;
+	}
+
+	if (OSRIsGeographic(SRS))
+	{
+		const int32 EpsgCode = GetAuthorityCodeOrZero(SRS);
+		if (EpsgCode != 4326 && EpsgCode != 0)
+		{
+			OutError = FString::Printf(TEXT("Unsupported geographic datum (EPSG:%d) -- only WGS84 (EPSG:4326) is supported."), EpsgCode);
+			return false;
+		}
+		OutInfo.bIsGeographicWGS84 = true;
+	}
+	else if (OSRIsProjected(SRS))
+	{
+		const int32 EpsgCode = GetAuthorityCodeOrZero(SRS);
+		if (EpsgCode >= 32601 && EpsgCode <= 32660)
+		{
+			OutInfo.bIsUTM = true;
+			OutInfo.UTMZone = EpsgCode - 32600;
+			OutInfo.bUTMNorth = true;
+		}
+		else if (EpsgCode >= 32701 && EpsgCode <= 32760)
+		{
+			OutInfo.bIsUTM = true;
+			OutInfo.UTMZone = EpsgCode - 32700;
+			OutInfo.bUTMNorth = false;
+		}
+		else
+		{
+			OutError = FString::Printf(TEXT("Unsupported projected coordinate system (EPSG:%d) -- only standard WGS84 UTM zones are supported."), EpsgCode);
+			return false;
+		}
+	}
+	else
+	{
+		OutError = TEXT("Unsupported coordinate system type -- expected Geographic or Projected.");
+		return false;
+	}
+
+	return true;
+}
+
 bool FTerraDyneGeoTIFFReader::LoadFromFile(const FString& FilePath, FTerraDyneGeoTIFFRaster& OutRaster, FString& OutError)
 {
 	OutRaster = FTerraDyneGeoTIFFRaster();
@@ -127,16 +290,43 @@ bool FTerraDyneGeoTIFFReader::LoadFromFile(const FString& FilePath, FTerraDyneGe
 		return false;
 	}
 
-	// NoData is intentionally left as-is rather than masked out: it becomes a literal (often very
-	// large-magnitude negative) elevation value like any other sample, matching how a real
-	// production DEM's NoData cells (e.g. -9999) already came through before this GDAL migration.
+	// NoData is read from the band and EXCLUDED from the elevation range.
+	//
+	// The sample values themselves are deliberately left untouched -- consumers still see the raw
+	// sentinel and decide per-sample what to do with it (hole, clamp, interpolate) -- but letting a
+	// -9999 fill into Min/Max would wreck every downstream [0,1] normalisation built on this range:
+	// real terrain would occupy a fraction of a percent at the top of the band and render as a flat
+	// smear. A DEM with a NoData border is the common case, not an exotic one.
+	int32 NoDataSuccess = 0;
+	const double BandNoData = GDALGetRasterNoDataValue(Band, &NoDataSuccess);
+	OutRaster.bHasNoData = (NoDataSuccess != 0);
+	OutRaster.NoDataValue = OutRaster.bHasNoData ? BandNoData : 0.0;
+
 	double MinZ = TNumericLimits<double>::Max();
 	double MaxZ = TNumericLimits<double>::Lowest();
+	bool bAnyValid = false;
+	int64 NoDataCount = 0;
 	for (const float Z : OutRaster.ElevationMeters)
 	{
+		if (!OutRaster.IsValidSample(Z))
+		{
+			++NoDataCount;
+			continue;
+		}
+		bAnyValid = true;
 		MinZ = FMath::Min(MinZ, (double)Z);
 		MaxZ = FMath::Max(MaxZ, (double)Z);
 	}
+
+	OutRaster.bHasAnyValidSample = bAnyValid;
+	if (!bAnyValid)
+	{
+		// Every cell is NoData. Better to fail loudly here than to hand back a raster whose range is
+		// [DBL_MAX, -DBL_MAX] and let it produce nonsense terrain far downstream.
+		OutError = TEXT("Every sample in this raster is NoData -- there is no elevation data to import.");
+		return false;
+	}
+
 	OutRaster.ElevationMinMeters = MinZ;
 	OutRaster.ElevationMaxMeters = MaxZ;
 
@@ -226,8 +416,9 @@ bool FTerraDyneGeoTIFFReader::LoadFromFile(const FString& FilePath, FTerraDyneGe
 		return false;
 	}
 
-	UE_LOG(LogTerraDyne, Log, TEXT("GeoTIFF loaded via GDAL: %dx%d, elevation [%.1f, %.1f]m, %s"),
-		Width, Height, MinZ, MaxZ,
+	UE_LOG(LogTerraDyne, Log, TEXT("GeoTIFF loaded via GDAL: %dx%d, elevation [%.1f, %.1f]m over valid samples (%lld NoData cell(s)%s), %s"),
+		Width, Height, MinZ, MaxZ, NoDataCount,
+		OutRaster.bHasNoData ? *FString::Printf(TEXT(", sentinel %.1f"), OutRaster.NoDataValue) : TEXT(", none declared"),
 		OutRaster.bIsGeographicWGS84 ? TEXT("WGS84 geographic")
 			: (OutRaster.bIsUTM ? *FString::Printf(TEXT("UTM zone %d%s"), OutRaster.UTMZone, OutRaster.bUTMNorth ? TEXT("N") : TEXT("S")) : TEXT("unknown CRS")));
 

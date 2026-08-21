@@ -6,6 +6,7 @@
 #include "Components/TextBlock.h"
 #include "Components/Slider.h"
 #include "Components/Button.h"
+#include "IO/TerraDyneRasterLayers.h"
 #include "TerraDyneToolWidget.generated.h"
 
 UENUM(BlueprintType)
@@ -104,6 +105,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
 	void OpenGeoTIFFImportPicker();
 
+	/** Opens the runtime file picker for a specific raster layer. */
+	void OpenRasterLayerImportPicker(ETerraDyneRasterLayer Layer);
+
 	/**
 	 * Shows the Sandbox/Import GIS File startup choice if (and only if) the manager's
 	 * bShowWorldModeChoiceOnBeginPlay is on and the world is still genuinely undecided -- not on a
@@ -113,8 +117,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
 	void ShowWorldModeChoiceIfNeeded();
 
+	/**
+	 * Un-hides the tool panel once a world mode has actually resolved.
+	 *
+	 * ShowWorldModeChoiceIfNeeded() collapses this widget so the startup choice is the only thing on
+	 * screen; every path that ends the choice has to call this or the player is left with a world and
+	 * no tools.
+	 */
+	void RevealToolPanelAfterChoice();
+
 private:
 	TSharedPtr<class STerraDynePanel> MainPanel;
+
+	ETerraDyneRasterLayer PendingImportLayer = ETerraDyneRasterLayer::Elevation;
 
 	/** The picker spawned by OpenGeoTIFFImportPicker(), if one is currently up. */
 	UPROPERTY(Transient)

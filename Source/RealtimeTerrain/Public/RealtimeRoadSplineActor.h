@@ -272,9 +272,17 @@ public:
 	 *
 	 * Covers junctions that already reference this road and any whose bounds the route now passes
 	 * through, which is what lets a road dragged into a junction be picked up by it.
+	 *
+	 * bFullNetworkReconcile controls how the rest of the level's crossings get reconciled afterward.
+	 * True (the default, used by every commit-time caller) runs the full, authoritative
+	 * RoadNetwork::RebuildIntersections over every road in the world -- correct, but too costly to
+	 * repeat many times a second. False (used only by the interactive per-tick drag path) scopes
+	 * that pass to crossings involving this road via RebuildIntersectionsNear: the junction actually
+	 * being dragged toward/through still reshapes live with no visible difference, but crossings
+	 * between two other, untouched roads are skipped rather than needlessly re-solved every tick.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
-	void RefreshAffectedJunctions();
+	void RefreshAffectedJunctions(bool bFullNetworkReconcile = true);
 
 	/**
 	 * Refreshes the render mesh now and schedules the collision-bearing rebuild for once edits

@@ -165,9 +165,34 @@ bool FTerraDyneGeoTIFFHeightSource::Initialize(
 	double CentreLon = 0.0, CentreLat = 0.0;
 	RasterCrsToLonLat(CentreCrs.X, CentreCrs.Y, CentreLon, CentreLat);
 
+	// Elevation band first -- the georeference origin below needs the centre altitude, and both need
+	// the valid-sample range the reader computed with NoData already excluded.
+	//
+	// Reserve HeadroomFraction of ZScale below and above the raster's real range, mirroring
+	// TerraDyneLayers::ProceduralFloor/ProceduralRelief's own reserved-headroom idea, so sculpting
+	// still has [0,1] room to raise/lower imported terrain rather than clipping instantly.
+	const double RangeMeters = FMath::Max(1.0, Raster.ElevationMaxMeters - Raster.ElevationMinMeters);
+	const float ClampedHeadroom = FMath::Clamp(HeadroomFraction, 0.0f, 0.4f);
+	ZScale = OverrideZScaleOrZero > 0.0f
+		? OverrideZScaleOrZero
+		: (float)(RangeMeters * 100.0 / (1.0 - 2.0 * ClampedHeadroom)); // metres -> cm, then widen for headroom
+	ElevationFloorMeters = Raster.ElevationMinMeters - RangeMeters * ClampedHeadroom;
+	ElevationRangeMeters = (ZScale / 100.0); // cm ZScale back to metres, matching the widened band
+
+	// Altitude that Unreal Z = 0 will mean. Taken from the DEM's own centre sample rather than the
+	// midpoint of its range, so the origin sits on real ground the player can stand on: on a DEM
+	// spanning a valley floor and a ridge line, the range midpoint is thin air halfway up the slope.
+	// Falls back to the range midpoint only when the centre pixel is itself NoData.
+	OriginElevationMeters = SampleElevationMetersAtPixelOrFallback(
+		(Raster.Width - 1) * 0.5, (Raster.Height - 1) * 0.5,
+		(Raster.ElevationMinMeters + Raster.ElevationMaxMeters) * 0.5);
+
 	if (bEstablishGeoreferenceOrigin)
 	{
-		Ref->SetOriginLongitudeLatitudeHeight(FVector(CentreLon, CentreLat, 0.0));
+		// Height is the DEM's real centre altitude, not 0. This is what makes the import land at its
+		// true elevation instead of being flattened onto the sea-level tangent plane -- Cesium then
+		// maps Unreal Z = 0 to that altitude, and GetChunkWorldZOffset() positions the band around it.
+		Ref->SetOriginLongitudeLatitudeHeight(FVector(CentreLon, CentreLat, OriginElevationMeters));
 	}
 
 	// Footprint: transform all four corner pixels (not just two, since a rotated/sheared affine or
@@ -189,21 +214,33 @@ bool FTerraDyneGeoTIFFHeightSource::Initialize(
 		WorldFootprintXY += FVector2D(WorldPos.X, WorldPos.Y);
 	}
 
-	// Elevation band: reserve HeadroomFraction of ZScale below and above the raster's real range,
-	// mirroring TerraDyneLayers::ProceduralFloor/ProceduralRelief's own reserved-headroom idea, so
-	// sculpting still has [0,1] room to raise/lower imported terrain rather than clipping instantly.
-	const double RangeMeters = FMath::Max(1.0, Raster.ElevationMaxMeters - Raster.ElevationMinMeters);
-	const float Clampedheadroom = FMath::Clamp(HeadroomFraction, 0.0f, 0.4f);
-	ZScale = OverrideZScaleOrZero > 0.0f
-		? OverrideZScaleOrZero
-		: (float)(RangeMeters * 100.0 / (1.0 - 2.0 * Clampedheadroom)); // metres -> cm, then widen for headroom
-	ElevationFloorMeters = Raster.ElevationMinMeters - RangeMeters * Clampedheadroom;
-	ElevationRangeMeters = (ZScale / 100.0) ; // cm ZScale back to metres, matching the widened band
-
-	UE_LOG(LogTerraDyne, Log, TEXT("GeoTIFF height source initialized: footprint [%.0f,%.0f] to [%.0f,%.0f] cm, ZScale=%.0f"),
-		WorldFootprintXY.Min.X, WorldFootprintXY.Min.Y, WorldFootprintXY.Max.X, WorldFootprintXY.Max.Y, ZScale);
+	UE_LOG(LogTerraDyne, Log,
+		TEXT("GeoTIFF height source initialized: footprint [%.0f,%.0f] to [%.0f,%.0f] cm, ZScale=%.0f, ")
+		TEXT("elevation [%.1f,%.1f]m, origin altitude %.1fm (Unreal Z=0), chunk Z offset %.0f cm"),
+		WorldFootprintXY.Min.X, WorldFootprintXY.Min.Y, WorldFootprintXY.Max.X, WorldFootprintXY.Max.Y, ZScale,
+		Raster.ElevationMinMeters, Raster.ElevationMaxMeters, OriginElevationMeters, GetChunkWorldZOffset());
 
 	return true;
+}
+
+double FTerraDyneGeoTIFFHeightSource::SampleElevationMetersAtPixelOrFallback(
+	double Col, double Row, double Fallback) const
+{
+	if (Raster.Width <= 0 || Raster.Height <= 0 || Raster.ElevationMeters.Num() == 0)
+	{
+		return Fallback;
+	}
+
+	const int32 C = FMath::Clamp((int32)FMath::RoundToDouble(Col), 0, Raster.Width - 1);
+	const int32 R = FMath::Clamp((int32)FMath::RoundToDouble(Row), 0, Raster.Height - 1);
+	const int32 Index = R * Raster.Width + C;
+	if (!Raster.ElevationMeters.IsValidIndex(Index))
+	{
+		return Fallback;
+	}
+
+	const float Sample = Raster.ElevationMeters[Index];
+	return Raster.IsValidSample(Sample) ? (double)Sample : Fallback;
 }
 
 bool FTerraDyneGeoTIFFHeightSource::TrySampleWorldXY(double WorldX, double WorldY, float& OutNormalized01) const
@@ -238,8 +275,24 @@ bool FTerraDyneGeoTIFFHeightSource::TrySampleWorldXY(double WorldX, double World
 		return Raster.ElevationMeters[(int64)Row * Raster.Width + Col];
 	};
 
-	const double Top = FMath::Lerp((double)SampleAt(Col0, Row0), (double)SampleAt(Col1, Row0), FracX);
-	const double Bottom = FMath::Lerp((double)SampleAt(Col0, Row1), (double)SampleAt(Col1, Row1), FracX);
+	const float S00 = SampleAt(Col0, Row0);
+	const float S10 = SampleAt(Col1, Row0);
+	const float S01 = SampleAt(Col0, Row1);
+	const float S11 = SampleAt(Col1, Row1);
+
+	// Refuse the sample outright if ANY contributing cell is NoData, rather than interpolating it.
+	// Blending a -9999 sentinel with real neighbours does not produce a plausible in-between height,
+	// it produces a hole punched kilometres deep, and it spreads one bad cell across every texel that
+	// touches it. Reporting failure lets the caller decide (fill from valid neighbours, or leave the
+	// chunk procedural) instead of baking a spike into the mesh.
+	if (!Raster.IsValidSample(S00) || !Raster.IsValidSample(S10)
+		|| !Raster.IsValidSample(S01) || !Raster.IsValidSample(S11))
+	{
+		return false;
+	}
+
+	const double Top = FMath::Lerp((double)S00, (double)S10, FracX);
+	const double Bottom = FMath::Lerp((double)S01, (double)S11, FracX);
 	const double ElevationMeters = FMath::Lerp(Top, Bottom, FracY);
 
 	OutNormalized01 = (float)FMath::Clamp((ElevationMeters - ElevationFloorMeters) / ElevationRangeMeters, 0.0, 1.0);

@@ -42,6 +42,10 @@ ATerraDyneManager::ATerraDyneManager()
 	ChunkClass = ATerraDyneChunk::StaticClass();
 	bAutoImportAtRuntime = false;
 	bSpawnDefaultChunksOnBeginPlay = false;
+
+	// One slot per layer, always addressable so the UI can show every layer's state whether or not
+	// anything has been imported into it.
+	RasterLayerSlots.SetNum((int32)ETerraDyneRasterLayer::MAX);
 	bSetupDefaultLightingOnBeginPlay = false;
 	bSpawnShowcaseOnBeginPlay = false;
 	PopulationMaintenanceTimer = 0.25f;
@@ -66,6 +70,7 @@ void ATerraDyneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(ATerraDyneManager, AISpawnZones);
 	DOREPLIFETIME(ATerraDyneManager, BuildPermissionZones);
 	DOREPLIFETIME(ATerraDyneManager, GeoTIFFImportState);
+	DOREPLIFETIME(ATerraDyneManager, bAwaitingWorldModeChoice);
 	DOREPLIFETIME(ATerraDyneManager, WorldOriginKind);
 }
 
@@ -134,6 +139,7 @@ void ATerraDyneManager::BeginPlay()
 			ReloadOptions.bClearExistingChunks = false;
 			ReloadOptions.bEstablishGeoreferenceOrigin = false;
 			ImportGeoTIFFInternal(GeoTIFFImportState.SourceFilePath, ReloadOptions);
+			bAwaitingWorldModeChoice = false;
 		}
 		else if (!bShowWorldModeChoiceOnBeginPlay && WorldMode == ETerraDyneWorldMode::Imported && !GeoTIFFImportPath.IsEmpty())
 		{
@@ -143,29 +149,31 @@ void ATerraDyneManager::BeginPlay()
 			// refreshes population itself (it has to -- it's also the entry point the runtime
 			// file-picker calls long after BeginPlay), so this doesn't need bChunkMapDirty too.
 			ImportGeoTIFF(GeoTIFFImportPath);
+			bAwaitingWorldModeChoice = false;
 		}
 		else if (!bShowWorldModeChoiceOnBeginPlay && WorldMode == ETerraDyneWorldMode::Sandbox && bSpawnDefaultChunksOnBeginPlay && ActiveChunkMap.Num() == 0)
 		{
 			SpawnDefaultSandboxChunk();
 			bChunkMapDirty = true;
+			bAwaitingWorldModeChoice = false;
+		}
+		else if (!bShowWorldModeChoiceOnBeginPlay)
+		{
+			// Nothing above matched but the level still opted out of the choice screen entirely (e.g.
+			// bSpawnDefaultChunksOnBeginPlay is also off) -- still not "awaiting" anything, since
+			// there is no choice screen for the player to be awaiting in the first place.
+			bAwaitingWorldModeChoice = false;
 		}
 		// else: bShowWorldModeChoiceOnBeginPlay is true (the default) and nothing has been decided
-		// yet -- BeginPlay spawns nothing at all. The mode-choice widget calls StartSandboxMode() or
-		// ImportGeoTIFF() through ATerraDyneEditController once the player actually picks one.
+		// yet. bAwaitingWorldModeChoice defaults true at construction (see its own doc comment for
+		// why -- other actors' BeginPlay order relative to this one is not guaranteed), so this
+		// branch deliberately does nothing: the default already holds. BeginPlay itself spawns
+		// nothing either way; UpdateStreaming (Tick-driven) is what this flag actually guards,
+		// staying off until StartSandboxMode() or a successful ImportGeoTIFF() clears it.
 
 		if (bSetupDefaultLightingOnBeginPlay)
 		{
 			SetupLighting();
-		}
-
-		if (bSpawnShowcaseOnBeginPlay)
-		{
-			TArray<AActor*> ExistingOrch;
-			UGameplayStatics::GetAllActorsOfClass(GetWorld(), ATerraDyneOrchestrator::StaticClass(), ExistingOrch);
-			if (ExistingOrch.Num() == 0)
-			{
-				GetWorld()->SpawnActor<ATerraDyneOrchestrator>(ATerraDyneOrchestrator::StaticClass(), FVector(0, 0, 5000), FRotator::ZeroRotator);
-			}
 		}
 
 		if (bChunkMapDirty)
@@ -336,24 +344,76 @@ void ATerraDyneManager::SetupLighting()
 
 void ATerraDyneManager::StartSandboxMode()
 {
-	if (!HasAuthority())
+	WorldOriginKind = ETerraDyneChunkOrigin::Procedural;
+
+	if (ActiveChunkMap.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("TerraDyne: StartSandboxMode called on a non-authority instance; ignored (chunks are server-spawned only)."));
+		MarkWorldModeChosen();
+		if (HasAuthority())
+		{
+			SpawnDefaultSandboxChunk();
+			RebuildChunkMap();
+			ApplyMaterialToActiveChunks();
+			RefreshPopulationForLoadedChunks();
+		}
+	}
+	else
+	{
+		MarkWorldModeChosen();
+	}
+}
+
+void ATerraDyneManager::StartDEMImportMode()
+{
+	WorldOriginKind = ETerraDyneChunkOrigin::ImportedGeoTIFF;
+
+	PendingLoadQueue.Reset();
+	PendingUnloadQueue.Reset();
+	DirtyChunkSet.Reset();
+
+	// Destroy all existing chunk actors so DEM session is completely empty
+	if (UWorld* World = GetWorld())
+	{
+		TArray<AActor*> AllChunks;
+		UGameplayStatics::GetAllActorsOfClass(World, ATerraDyneChunk::StaticClass(), AllChunks);
+		for (AActor* ChunkActor : AllChunks)
+		{
+			if (ChunkActor)
+			{
+				ChunkActor->Destroy();
+			}
+		}
+	}
+	ActiveChunkMap.Reset();
+	if (GetWorld())
+	{
+		RebuildChunkMap();
+	}
+
+	MarkWorldModeChosen();
+}
+
+void ATerraDyneManager::MarkWorldModeChosen()
+{
+	if (!bAwaitingWorldModeChoice)
+	{
 		return;
 	}
 
-	if (ActiveChunkMap.Num() > 0 || WorldOriginKind != ETerraDyneChunkOrigin::Procedural)
-	{
-		// Already spawned (a duplicate or late call), or the world already resolved to something
-		// else entirely (an import got there first) -- either way there is nothing for a fresh
-		// sandbox start to do.
-		return;
-	}
+	bAwaitingWorldModeChoice = false;
 
-	SpawnDefaultSandboxChunk();
-	RebuildChunkMap();
-	ApplyMaterialToActiveChunks();
-	RefreshPopulationForLoadedChunks();
+	// Streaming only rescans when the player's chunk-coordinate hash changes. On the late path --
+	// a mode chosen after streaming has already run once -- that hash is already cached, and the
+	// player standing still would leave the world empty until they happened to walk into a new
+	// chunk. Zeroing it forces one rescan, the same idiom the Landscape-import and save-load paths
+	// already use for the same reason.
+	LastStreamingHash = 0;
+
+	// Broadcast after the flag is actually cleared, so anything bound here (the showcase sequence,
+	// notably) that turns around and inspects bAwaitingWorldModeChoice sees the resolved state.
+	OnWorldModeChosen.Broadcast();
+
+	UE_LOG(LogTemp, Log, TEXT("TerraDyne: world mode chosen -- chunk streaming released."));
 }
 
 void ATerraDyneManager::SpawnDefaultSandboxChunk()
@@ -949,6 +1009,11 @@ bool ATerraDyneManager::IsImportedChunkCoord(FIntPoint Coord) const
 
 bool ATerraDyneManager::ShouldAllowChunkCoord(FIntPoint Coord) const
 {
+	if (WorldOriginKind == ETerraDyneChunkOrigin::ImportedGeoTIFF)
+	{
+		return ImportedChunkCoords.Contains(Coord) && ActiveGeoTIFFHeightSource.IsValid();
+	}
+
 	if (ImportedChunkCoords.Contains(Coord))
 	{
 		return true;
@@ -1748,6 +1813,12 @@ void ATerraDyneManager::UnloadChunk(FIntPoint Coord)
 void ATerraDyneManager::UpdateStreaming(const TArray<FVector>& PlayerPositions)
 {
 	if (bStreamingPaused || PlayerPositions.Num() == 0) return;
+
+	// Nothing has been decided yet, so there is no world to stream. Without this the mode choice is
+	// cosmetic: BeginPlay spawns nothing, then this fills a ChunkLoadRadius diamond of procedural
+	// chunks around the player anyway, and the player watches a sandbox build itself underneath the
+	// dialog asking whether they want a sandbox.
+	if (bAwaitingWorldModeChoice) return;
 
 	const UTerraDyneSettings* Settings = GetDefault<UTerraDyneSettings>();
 	if (!Settings) return;

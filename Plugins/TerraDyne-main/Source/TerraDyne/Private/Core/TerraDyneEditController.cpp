@@ -1390,6 +1390,96 @@ void ATerraDyneEditController::Server_ImportGeoTIFF_Implementation(const FString
 	RequestImportGeoTIFF(FilePath);
 }
 
+void ATerraDyneEditController::RequestImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath)
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			FString OutError;
+			Manager->ImportRasterLayer(Layer, FilePath, OutError);
+		}
+	}
+	else
+	{
+		Server_ImportRasterLayer(Layer, FilePath);
+	}
+}
+
+void ATerraDyneEditController::Server_ImportRasterLayer_Implementation(ETerraDyneRasterLayer Layer, const FString& FilePath)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestImportRasterLayer(Layer, FilePath);
+}
+
+void ATerraDyneEditController::RequestUnloadRasterLayer(ETerraDyneRasterLayer Layer)
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			Manager->UnloadRasterLayer(Layer);
+		}
+	}
+	else
+	{
+		Server_UnloadRasterLayer(Layer);
+	}
+}
+
+void ATerraDyneEditController::Server_UnloadRasterLayer_Implementation(ETerraDyneRasterLayer Layer)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestUnloadRasterLayer(Layer);
+}
+
+void ATerraDyneEditController::RequestUnloadAllRasterLayers()
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			Manager->UnloadAllRasterLayers();
+		}
+	}
+	else
+	{
+		Server_UnloadAllRasterLayers();
+	}
+}
+
+void ATerraDyneEditController::Server_UnloadAllRasterLayers_Implementation()
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestUnloadAllRasterLayers();
+}
+
+void ATerraDyneEditController::RequestLoadRasterLayersIntoScene()
+{
+	if (HasAuthority())
+	{
+		if (ATerraDyneManager* Manager = GetManager())
+		{
+			FString OutError;
+			Manager->LoadRasterLayersIntoScene(OutError);
+		}
+	}
+	else
+	{
+		Server_LoadRasterLayersIntoScene();
+	}
+}
+
+void ATerraDyneEditController::Server_LoadRasterLayersIntoScene_Implementation()
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+
+	RequestLoadRasterLayersIntoScene();
+}
+
 void ATerraDyneEditController::RequestStartSandboxMode()
 {
 	if (HasAuthority())

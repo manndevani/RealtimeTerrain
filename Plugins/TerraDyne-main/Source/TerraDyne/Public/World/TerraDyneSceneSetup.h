@@ -13,7 +13,6 @@ class UTerraDyneWorldPreset;
 UENUM(BlueprintType)
 enum class ETerraDyneDemoTemplate : uint8
 {
-	FullFeatureShowcase UMETA(DisplayName = "Full Feature Showcase"),
 	Sandbox UMETA(DisplayName = "Sandbox"),
 	SurvivalFramework UMETA(DisplayName = "Survival Framework"),
 	AuthoredWorldConversion UMETA(DisplayName = "Authored World Conversion")

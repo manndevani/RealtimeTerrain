@@ -7,6 +7,7 @@
 #include "Core/TerraDyneManager.h"
 #include "Core/TerraDyneEditController.h"
 #include "World/TerraDyneChunk.h"
+#include "IO/TerraDyneArchiveHelper.h"
 #include "Kismet/GameplayStatics.h"
 #include "TerraDyneModule.h"
 
@@ -126,6 +127,13 @@ void UTerraDyneToolWidget::ResetActiveLayer()
 
 void UTerraDyneToolWidget::OpenGeoTIFFImportPicker()
 {
+	OpenRasterLayerImportPicker(ETerraDyneRasterLayer::Elevation);
+}
+
+void UTerraDyneToolWidget::OpenRasterLayerImportPicker(ETerraDyneRasterLayer Layer)
+{
+	PendingImportLayer = Layer;
+
 	if (ActiveGeoTIFFPicker)
 	{
 		// Already up -- avoid stacking a second picker on top of it.
@@ -145,9 +153,18 @@ void UTerraDyneToolWidget::OpenGeoTIFFImportPicker()
 
 void UTerraDyneToolWidget::HandleGeoTIFFChosen(const FString& FilePath)
 {
-	if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(GetOwningPlayer()))
+	FString ResolvedPath;
+	FString ExtractError;
+	if (FTerraDyneArchiveHelper::ResolveOrExtractRaster(FilePath, PendingImportLayer, ResolvedPath, ExtractError))
 	{
-		PC->RequestImportGeoTIFF(FilePath);
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(GetOwningPlayer()))
+		{
+			PC->RequestImportRasterLayer(PendingImportLayer, ResolvedPath);
+		}
+	}
+	else
+	{
+		UE_LOG(LogTerraDyne, Error, TEXT("TerraDyne: Failed to resolve raster '%s': %s"), *FilePath, *ExtractError);
 	}
 
 	if (ActiveGeoTIFFPicker)
@@ -155,6 +172,9 @@ void UTerraDyneToolWidget::HandleGeoTIFFChosen(const FString& FilePath)
 		ActiveGeoTIFFPicker->RemoveFromParent();
 		ActiveGeoTIFFPicker = nullptr;
 	}
+
+	// The import request is away; hand the tools back so the player can work the imported world.
+	RevealToolPanelAfterChoice();
 }
 
 void UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled()
@@ -163,6 +183,19 @@ void UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled()
 	{
 		ActiveGeoTIFFPicker->RemoveFromParent();
 		ActiveGeoTIFFPicker = nullptr;
+	}
+
+	// Cancelling the picker used to be a dead end: the choice widget was already gone, so the player
+	// was left in a deliberately-empty world with no route back to either mode. Re-offer the choice
+	// if nothing has actually started yet; otherwise just hand the tools back.
+	ATerraDyneManager* Manager = GetManager();
+	if (Manager && Manager->bAwaitingWorldModeChoice)
+	{
+		ShowWorldModeChoiceIfNeeded();
+	}
+	else
+	{
+		RevealToolPanelAfterChoice();
 	}
 }
 
@@ -179,19 +212,6 @@ void UTerraDyneToolWidget::ShowWorldModeChoiceIfNeeded()
 		return;
 	}
 
-	ATerraDyneManager* Manager = GetManager();
-	if (!Manager || !Manager->bShowWorldModeChoiceOnBeginPlay)
-	{
-		return;
-	}
-
-	// Only genuinely undecided -- not a reload of a level that already resolved to an import in an
-	// earlier session, which BeginPlay resumes on its own regardless of this setting.
-	if (Manager->WorldOriginKind != ETerraDyneChunkOrigin::Procedural)
-	{
-		return;
-	}
-
 	ActiveWorldModeChoice = CreateWidget<UTerraDyneWorldModeChoiceWidget>(GetOwningPlayer(), UTerraDyneWorldModeChoiceWidget::StaticClass());
 	if (!ActiveWorldModeChoice)
 	{
@@ -200,9 +220,14 @@ void UTerraDyneToolWidget::ShowWorldModeChoiceIfNeeded()
 
 	ActiveWorldModeChoice->OnSandboxChosen.AddDynamic(this, &UTerraDyneToolWidget::HandleWorldModeSandboxChosen);
 	ActiveWorldModeChoice->OnImportChosen.AddDynamic(this, &UTerraDyneToolWidget::HandleWorldModeImportChosen);
-	// Above the main panel (Z 100) and the GeoTIFF picker (also Z 100) -- this is the very first
-	// thing the player should see and act on.
 	ActiveWorldModeChoice->AddToViewport(200);
+
+	SetVisibility(ESlateVisibility::Collapsed);
+}
+
+void UTerraDyneToolWidget::RevealToolPanelAfterChoice()
+{
+	SetVisibility(ESlateVisibility::Visible);
 }
 
 void UTerraDyneToolWidget::HandleWorldModeSandboxChosen()
@@ -211,22 +236,32 @@ void UTerraDyneToolWidget::HandleWorldModeSandboxChosen()
 	{
 		PC->RequestStartSandboxMode();
 	}
+	else if (ATerraDyneManager* Manager = GetManager())
+	{
+		Manager->StartSandboxMode();
+	}
 
 	if (ActiveWorldModeChoice)
 	{
 		ActiveWorldModeChoice->RemoveFromParent();
 		ActiveWorldModeChoice = nullptr;
 	}
+
+	RevealToolPanelAfterChoice();
 }
 
 void UTerraDyneToolWidget::HandleWorldModeImportChosen()
 {
+	if (ATerraDyneManager* Manager = GetManager())
+	{
+		Manager->StartDEMImportMode();
+	}
+
 	if (ActiveWorldModeChoice)
 	{
 		ActiveWorldModeChoice->RemoveFromParent();
 		ActiveWorldModeChoice = nullptr;
 	}
 
-	// Reuses the exact same picker flow the tool panel's own "Import GeoTIFF..." button uses.
-	OpenGeoTIFFImportPicker();
+	RevealToolPanelAfterChoice();
 }

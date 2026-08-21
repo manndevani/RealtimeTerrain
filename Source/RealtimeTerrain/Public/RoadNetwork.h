@@ -73,8 +73,15 @@ namespace RoadNetwork
 	 * Crossings closer together than MergeRadius collapse into one node, so a pair of roads that
 	 * touch twice in quick succession, or three roads meeting at almost but not exactly a point,
 	 * produce a single intersection rather than a cluster of overlapping ones.
+	 *
+	 * OnlyInvolvingRoad, when set, skips every pair that doesn't include it -- cutting the search
+	 * from every-road-against-every-road down to one-against-every-other. Only the road actually
+	 * moving can have gained or lost a crossing since the last full pass, so this is exact, not an
+	 * approximation: it just skips pairs that provably could not have changed.
 	 */
-	void DetectCrossings(UWorld* World, double MergeRadius, TArray<FCrossing>& OutCrossings);
+	void DetectCrossings(
+		UWorld* World, double MergeRadius, TArray<FCrossing>& OutCrossings,
+		const ARealtimeRoadSplineActor* OnlyInvolvingRoad = nullptr);
 
 	/**
 	 * Brings the world's junctions in line with where roads actually cross: one at each detected
@@ -85,4 +92,20 @@ namespace RoadNetwork
 	 * Returns how many generated junctions are live afterwards.
 	 */
 	int32 RebuildIntersections(UWorld* World);
+
+	/**
+	 * The same reconciliation as RebuildIntersections, scoped to crossings involving one road.
+	 *
+	 * Built for the interactive drag path: re-solving every auto-generated junction in the level on
+	 * every throttled tick (RebuildIntersections's full O(roads^2) crossing scan, repeated ~12x a
+	 * second) is a real, felt stutter in anything but a small level, and almost all of that work is
+	 * wasted -- a drag can only possibly create, move, or remove a crossing that the road being
+	 * dragged is part of. This creates/updates junctions for FocusRoad's own crossings exactly like
+	 * RebuildIntersections does (so the junction the player is dragging toward still reshapes live,
+	 * with no visible change in behaviour), but deliberately skips the orphan-cleanup pass -- a
+	 * crossing between two OTHER roads that this scoped scan didn't look at is not evidence it
+	 * disappeared, only that it wasn't checked this time. Cleanup still happens, just at the next full
+	 * RebuildIntersections (every drag ends by calling one), so nothing is left permanently stale.
+	 */
+	int32 RebuildIntersectionsNear(UWorld* World, ARealtimeRoadSplineActor* FocusRoad);
 }

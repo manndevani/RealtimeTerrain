@@ -43,6 +43,27 @@ public:
 	float GetZScale() const { return ZScale; }
 
 	/**
+	 * Unreal Z, in cm, that an imported chunk actor must sit at for its terrain to land at the DEM's
+	 * true real-world altitude.
+	 *
+	 * A chunk builds its vertices at local Z = normalizedHeight * ZScale, i.e. always from zero up.
+	 * On its own that pins the bottom of the elevation band to whatever Z the chunk actor happens to
+	 * be at -- so a Himalayan DEM whose terrain genuinely sits 500-1500 m above sea level renders as
+	 * a 0-1000 m slab starting at the player's feet, and a sea-level DEM renders identically. The
+	 * altitude information is simply discarded.
+	 *
+	 * Initialize() puts the Cesium georeference origin at the DEM's own centre INCLUDING its real
+	 * elevation, so Unreal Z = 0 means "the altitude at the middle of this DEM". This offset then
+	 * places the band correctly relative to that: terrain below the centre elevation goes below Z=0,
+	 * terrain above goes above, and the player standing at Z ~ 0 is standing on the ground rather
+	 * than under a kilometre of it.
+	 */
+	double GetChunkWorldZOffset() const { return (ElevationFloorMeters - OriginElevationMeters) * 100.0; }
+
+	/** Real-world elevation, in metres, that Unreal Z = 0 corresponds to for this import. */
+	double GetOriginElevationMeters() const { return OriginElevationMeters; }
+
+	/**
 	 * Bilinear-sampled, [0,1]-normalized height at a world XY (cm, relative to the TerraDyne
 	 * manager's own actor location -- callers pass the same world-space values chunk generation
 	 * already works in). False if WorldX/WorldY falls outside the raster's coverage.
@@ -54,6 +75,17 @@ private:
 	TWeakObjectPtr<ACesiumGeoreference> Georeference;
 
 	FBox2D WorldFootprintXY = FBox2D(ForceInit);
+
+	/**
+	 * Raw elevation in metres at a pixel, or Fallback when that pixel is NoData.
+	 *
+	 * Used to pick the origin altitude, which must not be a NoData sentinel -- taking -9999 as
+	 * "the altitude of Unreal Z 0" would put the entire import ten kilometres into the sky.
+	 */
+	double SampleElevationMetersAtPixelOrFallback(double Col, double Row, double Fallback) const;
+
+	/** Elevation at the DEM's centre; the georeference origin is placed here, so this is Unreal Z 0. */
+	double OriginElevationMeters = 0.0;
 
 	double ElevationFloorMeters = 0.0;
 	double ElevationRangeMeters = 1.0;

@@ -347,3 +347,13 @@ struct FTerraDynePopulationChangeEvent
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTerraDyneTerrainChangedDelegate, const FTerraDyneTerrainChangeEvent&, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTerraDyneFoliageChangedDelegate, const FTerraDyneFoliageChangeEvent&, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTerraDynePopulationChangedDelegate, const FTerraDynePopulationChangeEvent&, Event);
+
+/**
+ * Fired once, the moment an undecided world's Sandbox/Import choice actually resolves --
+ * ATerraDyneManager::MarkWorldModeChosen() clearing bAwaitingWorldModeChoice from true to false.
+ * Anything that wants to build world content but must not jump ahead of the player's choice (the
+ * showcase/demo sequence, notably) waits on this instead of either racing BeginPlay order against
+ * the manager or, worse, calling MarkWorldModeChosen() itself just to unblock its own startup --
+ * the latter silently resolves the choice for the player before they ever see it.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FTerraDyneWorldModeChosenDelegate);

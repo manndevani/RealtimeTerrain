@@ -6,6 +6,7 @@
 #include "Core/TerraDyneSaveGame.h"
 #include "World/TerraDyneTileData.h"
 #include "Building/TerraDyneGizmoActor.h"
+#include "IO/TerraDyneRasterLayers.h"
 #include "TerraDyneEditController.generated.h"
 
 class ATerraDyneManager;
@@ -86,6 +87,12 @@ public:
 	/** Runs Manager->ImportGeoTIFF(FilePath) on the server -- the client-facing entry point the
 	 *  runtime file-picker widget calls, since ImportGeoTIFF itself only does anything on authority. */
 	void RequestImportGeoTIFF(const FString& FilePath);
+
+	/** Multi-layer raster import / unload / scene loading */
+	void RequestImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath);
+	void RequestUnloadRasterLayer(ETerraDyneRasterLayer Layer);
+	void RequestUnloadAllRasterLayers();
+	void RequestLoadRasterLayersIntoScene();
 
 	/** Runs Manager->StartSandboxMode() on the server -- the client-facing entry point the runtime
 	 *  world-mode-choice widget's "Sandbox" button calls. */
@@ -274,6 +281,18 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_ImportGeoTIFF(const FString& FilePath);
+
+	UFUNCTION(Server, Reliable)
+	void Server_ImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath);
+
+	UFUNCTION(Server, Reliable)
+	void Server_UnloadRasterLayer(ETerraDyneRasterLayer Layer);
+
+	UFUNCTION(Server, Reliable)
+	void Server_UnloadAllRasterLayers();
+
+	UFUNCTION(Server, Reliable)
+	void Server_LoadRasterLayersIntoScene();
 
 	UFUNCTION(Server, Reliable)
 	void Server_StartSandboxMode();

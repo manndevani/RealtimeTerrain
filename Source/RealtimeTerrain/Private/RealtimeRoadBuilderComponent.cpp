@@ -68,7 +68,9 @@ void URealtimeRoadBuilderComponent::TickComponent(
 		if (TimeSinceJunctionResolve >= FMath::Max(0.0f, JunctionResolveInterval))
 		{
 			TimeSinceJunctionResolve = 0.0f;
-			SelectedRoadActor->RefreshAffectedJunctions();
+			// Scoped to this road's own crossings -- see RefreshAffectedJunctions's header comment.
+			// EndPointDrag runs the full, authoritative reconciliation once the drag actually ends.
+			SelectedRoadActor->RefreshAffectedJunctions(false);
 		}
 	}
 

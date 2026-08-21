@@ -194,4 +194,12 @@ private:
 
 	UFUNCTION()
 	void HandlePopulationChanged(const FTerraDynePopulationChangeEvent& Event);
+
+	/**
+	 * Bound to the manager's OnWorldModeChosen. BeginPlay defers RestartShowcase() to this instead
+	 * of calling it immediately when the world is still genuinely awaiting the player's Sandbox/
+	 * Import choice -- see BeginPlay's own comment for why forcing the choice open here was wrong.
+	 */
+	UFUNCTION()
+	void HandleWorldModeChosen();
 };

@@ -55,52 +55,27 @@ void ATerraDyneSceneSetup::InitializeWorld()
 
 		switch (DemoTemplate)
 		{
-		case ETerraDyneDemoTemplate::FullFeatureShowcase:
-			Manager->bSpawnDefaultChunksOnBeginPlay = false;
-			Manager->bSetupDefaultLightingOnBeginPlay = true;
-			Manager->bSpawnShowcaseOnBeginPlay = false;
-			break;
-
 		case ETerraDyneDemoTemplate::SurvivalFramework:
 			Manager->bSpawnDefaultChunksOnBeginPlay = true;
 			Manager->bSetupDefaultLightingOnBeginPlay = true;
-			Manager->bSpawnShowcaseOnBeginPlay = false;
 			break;
 
 		case ETerraDyneDemoTemplate::AuthoredWorldConversion:
 			Manager->bSpawnDefaultChunksOnBeginPlay = false;
 			Manager->bSetupDefaultLightingOnBeginPlay = true;
-			Manager->bSpawnShowcaseOnBeginPlay = false;
 			break;
 
 		case ETerraDyneDemoTemplate::Sandbox:
 		default:
 			Manager->bSpawnDefaultChunksOnBeginPlay = true;
 			Manager->bSetupDefaultLightingOnBeginPlay = false;
-			Manager->bSpawnShowcaseOnBeginPlay = false;
 			break;
 		}
 
 		Manager->RebuildChunkMap();
 	}
 
-	// 3. Spawn Orchestrator (The Showcase Director)
-	ATerraDyneOrchestrator* Director = World->SpawnActor<ATerraDyneOrchestrator>(
-		ATerraDyneOrchestrator::StaticClass(),
-		FVector(0,0,1000), FRotator::ZeroRotator
-	);
-	if (Director)
-	{
-		Director->SetActorLabel(TEXT("TerraDyne_Showcase_Director"));
-		// The scripted ~95s showcase no longer auto-runs on Play for any template — go straight
-		// to Interactive so sculpting/tool input works immediately. "Run Full Showcase" in the
-		// panel still works to trigger it manually.
-		Director->bStartInInteractivePhase = true;
-	}
-
-	// 4. Setup Spectacular Lighting — CelestialVault gives a physically-accurate sun/moon/sky
-	// (SkyAtmosphere, ExponentialHeightFog, real ephemeris-driven sun) in one actor, replacing
-	// the old flat DirectionalLight+SkyLight-only setup that had no atmosphere or fog at all.
+	// 3. Setup Lighting — CelestialVault
 	if (!UGameplayStatics::GetActorOfClass(World, ACelestialVaultDaySequenceActor::StaticClass()))
 	{
 		ACelestialVaultDaySequenceActor* Vault = World->SpawnActor<ACelestialVaultDaySequenceActor>(
@@ -116,6 +91,6 @@ void ATerraDyneSceneSetup::InitializeWorld()
 		}
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("SHOWCASE READY: Just press PLAY to watch the feature tour."));
+	UE_LOG(LogTemp, Log, TEXT("TerraDyne: Scene setup completed successfully."));
 #endif
 }

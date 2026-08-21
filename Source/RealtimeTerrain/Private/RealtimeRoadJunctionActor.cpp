@@ -812,6 +812,14 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 
 	TArray<FVector> Boundary;
 	TArray<TArray<FVector>> CornerChains;
+
+	// Room available for a curb/footpath band at each entry of CornerChains, aligned 1:1 with it.
+	// Kept per-corner rather than collapsed to one junction-wide minimum: a junction with one tight
+	// corner (several arms clustered a few degrees apart, say) used to lose curbs and footpaths
+	// everywhere on it, even at corners with plenty of room to spare, because a single global scale
+	// was clamped against whichever corner was tightest. Only the corner actually short on room
+	// should lose its band.
+	TArray<double> CornerBandRadii;
 	double MaxBandWidth = 0.0;
 
 	// Prefer a surface solved from the roads actually passing through the bounds. Authored legs
@@ -823,21 +831,28 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 		Boundary = SolvedBoundary;
 
 		CornerChains.Reset(SolvedRoadsideChains.Num());
-		for (const TArray<FVector>& Chain : SolvedRoadsideChains)
+		CornerBandRadii.Reset(SolvedRoadsideChains.Num());
+		for (int32 ChainIndex = 0; ChainIndex < SolvedRoadsideChains.Num(); ++ChainIndex)
 		{
 			TArray<FVector>& Out = CornerChains.AddDefaulted_GetRef();
-			Out = Chain;
+			Out = SolvedRoadsideChains[ChainIndex];
 
 			// Swept frames take Right from world up crossed with the tangent, which points inward
 			// along a counter-clockwise path; reversing turns it outward.
 			Algo::Reverse(Out);
+
+			// The solver clamps each corner's own fillet radius against the geometry available
+			// there, but that is not the same as clamping the roadside band -- a tight/acute corner
+			// can still resolve a small radius, and a curb+footpath band wider than that radius
+			// folds over itself exactly like BuildBoundary's fallback path already guards against
+			// below.
+			CornerBandRadii.Add(SolvedCornerRadii.IsValidIndex(ChainIndex)
+				? SolvedCornerRadii[ChainIndex]
+				: TNumericLimits<double>::Max());
 		}
 
-		// The solver clamps each corner's own fillet radius against the geometry available there,
-		// but that is not the same as clamping the roadside band -- a tight/acute corner can still
-		// resolve a small radius, and a curb+footpath band wider than that radius folds over itself
-		// exactly like BuildBoundary's fallback path already guards against below. Match that: take
-		// the tightest corner the solver actually reported, the same BandRadiusSafetyFactor margin.
+		// Still used by BuildBoundary's fallback path below, which has no per-corner radii of its
+		// own to offer.
 		MaxBandWidth = TNumericLimits<double>::Max();
 		for (const double CornerRadius : SolvedCornerRadii)
 		{
@@ -855,24 +870,7 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 
 	const float UVScale = FMath::Max(1.0e-5f, UVTilingScale);
 	const double Thickness = FMath::Max(2.0f, RoadThickness);
-
-	// Scale the band down if the tightest corner cannot carry it at full width.
 	const double RequestedBand = FMath::Max(0.0f, CurbWidth) + FMath::Max(0.0f, FootpathWidth);
-	const double BandScale = (RequestedBand > UE_KINDA_SMALL_NUMBER)
-		? FMath::Clamp(MaxBandWidth / RequestedBand, 0.0, 1.0)
-		: 0.0;
-
-	RoadMesh::FSection BandSection;
-	if (BandScale > 0.05)
-	{
-		RoadMesh::BuildRoadsideSection(
-			CurbWidth * BandScale,
-			CurbHeight,
-			FootpathWidth * BandScale,
-			FootpathHeight,
-			Thickness,
-			BandSection);
-	}
 
 	const FTransform WorldToLocal = JunctionMeshComponent->GetComponentTransform().Inverse();
 
@@ -884,7 +882,7 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 			RoadMesh::Slots::Surface, RoadMesh::Slots::Flank,
 			WorldToLocal, UVScale);
 
-		if (BandSection.Num() < 2)
+		if (RequestedBand <= UE_KINDA_SMALL_NUMBER)
 		{
 			return;
 		}
@@ -897,12 +895,40 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 		BandOptions.bCapStart = false;
 		BandOptions.bCapEnd = false;
 
-		for (const TArray<FVector>& Chain : CornerChains)
+		for (int32 ChainIndex = 0; ChainIndex < CornerChains.Num(); ++ChainIndex)
 		{
-			TArray<RoadMesh::FFrame> Frames;
-			if (RoadMesh::BuildFramesFromPolyline(Chain, Frames))
+			// BuildBoundary's fallback path supplies one shared MaxBandWidth for every chain
+			// (already * BandRadiusSafetyFactor applied); the solved path has a real per-corner
+			// radius to divide back down instead.
+			const double CornerRadius = CornerBandRadii.IsValidIndex(ChainIndex)
+				? CornerBandRadii[ChainIndex]
+				: MaxBandWidth * RoadMesh::BandRadiusSafetyFactor;
+			const double AvailableForBand = CornerRadius / RoadMesh::BandRadiusSafetyFactor;
+			const double ChainBandScale = FMath::Clamp(AvailableForBand / RequestedBand, 0.0, 1.0);
+
+			if (ChainBandScale <= 0.05)
 			{
-				RoadMesh::SweepSection(Mesh, BandSection, Frames, WorldToLocal, BandOptions);
+				continue;
+			}
+
+			RoadMesh::FSection ChainBandSection;
+			RoadMesh::BuildRoadsideSection(
+				CurbWidth * ChainBandScale,
+				CurbHeight,
+				FootpathWidth * ChainBandScale,
+				FootpathHeight,
+				Thickness,
+				ChainBandSection);
+
+			if (ChainBandSection.Num() < 2)
+			{
+				continue;
+			}
+
+			TArray<RoadMesh::FFrame> Frames;
+			if (RoadMesh::BuildFramesFromPolyline(CornerChains[ChainIndex], Frames))
+			{
+				RoadMesh::SweepSection(Mesh, ChainBandSection, Frames, WorldToLocal, BandOptions);
 			}
 		}
 	});

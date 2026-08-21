@@ -1,24 +1,30 @@
-# RealtimeTerrain
+# RealtimeTerrain (Unreal Engine 5.8)
 
-## Third-party setup: GDAL
+A high-performance, runtime-editable chunk terrain framework for Unreal Engine 5.8. Supports real-time sculpting, multi-layer GIS/DEM raster ingestion, procedural spline road generation, modular spline buildings, and world persistence without voxelization.
 
-TerraDyne's Imported world mode (importing a GeoTIFF DEM and georeferencing it via Cesium)
-reads the file through [GDAL](https://gdal.org/). There is no first-party UE5 GDAL plugin, so
-this project builds GDAL locally from source with Microsoft's
-[vcpkg](https://github.com/microsoft/vcpkg) rather than depending on a prebuilt binary from a
-third-party mirror.
+---
 
-Before building the `TerraDyne` module, run:
+## 🛠️ Third-Party Dependencies: GDAL
+
+The DEM raster import mode (importing GeoTIFF elevation stacks and georeferencing via Cesium) processes geospatial raster data through GDAL. GDAL is built locally from source with vcpkg.
+
+Before building the project module:
 
 ```powershell
 ./Tools/Setup-GDAL.ps1
 ```
 
-This clones and bootstraps vcpkg under `Tools/vcpkg/` (gitignored) and builds
-`gdal:x64-windows`. First run takes roughly 30-60+ minutes and a few GB of disk -- it's
-compiling GDAL and its own dependencies (PROJ, libtiff, zlib, sqlite3, and others), not just
-downloading them. Safe to re-run; it skips steps that already succeeded.
+This bootstraps vcpkg under `Tools/vcpkg/` and builds `gdal:x64-windows` alongside all required dependencies (PROJ, libtiff, zlib, sqlite3).
 
-`Plugins/TerraDyne-main/Source/ThirdParty/GDAL/GDAL.Build.cs` reads GDAL straight out of
-`Tools/vcpkg/installed/x64-windows/` -- nothing else needs configuring afterward.
+---
+
+## ⚡ Core Capabilities
+
+* **Dual Session Modes**: Sandbox mode (procedural grid) & DEM Import mode (multi-raster GIS ingestion).
+* **Multi-Layer Height Editing**: Non-destructive Base, Sculpt, and Detail layer buffers.
+* **Procedural Roads & Networks**: Interactive spline curved roads with width control and curb extrusion.
+* **Modular Spline Buildings**: Footprint spline definition, floor stepper, and automatic terrain pad flattening.
+* **Pure Slate HUD**: Left-anchored technical dark-theme control panel with live mode switching.
+* **Disk Persistence**: Chunk streaming caching, binary serialization, and undo/redo stacks.
+
 

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IO/TerraDyneRasterLayers.h"
 #include "GameFramework/Actor.h"
 #include "Core/TerraDyneWorldTypes.h"
 #include "World/TerraDyneTileData.h"
@@ -268,6 +269,99 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	bool bShowWorldModeChoiceOnBeginPlay = true;
+
+	/**
+	 * True from BeginPlay until the player actually picks Sandbox or Import.
+	 *
+	 * bShowWorldModeChoiceOnBeginPlay only stops BeginPlay itself from spawning; it does NOT stop
+	 * UpdateStreaming, which runs off Tick every ~0.25s and fills a ChunkLoadRadius diamond around
+	 * the player regardless of whether anything has been decided. That is why an undecided world
+	 * still came up full of procedural sandbox terrain (a radius of 4 yields 2*4*4+2*4+1 = 41 chunks)
+	 * a quarter-second after a BeginPlay that had correctly spawned nothing. Streaming is suppressed
+	 * while this is set, so "spawns nothing" means nothing.
+	 *
+	 * Replicated because the UI that presents the choice runs on the client, and the tool panel keys
+	 * its own visibility off this so the choice is genuinely the first and only thing on screen.
+	 */
+	// Defaults true (not false): other actors' BeginPlay order relative to this one is not
+	// guaranteed, so anything that reads this before this actor's own BeginPlay has run must still
+	// see the safe "awaiting" value, not a stale "not awaiting" default. BeginPlay explicitly clears
+	// it on every path that resolves the decision itself (resume, legacy auto-import, legacy
+	// auto-sandbox); the undecided path leaves this default true untouched.
+	UPROPERTY(BlueprintReadOnly, Replicated, Category = "TerraDyne|Bootstrap")
+	bool bAwaitingWorldModeChoice = true;
+
+	/** Clears bAwaitingWorldModeChoice and lets streaming resume. Safe to call more than once. */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Bootstrap")
+	void MarkWorldModeChosen();
+
+	/**
+	 * Fires once, exactly when MarkWorldModeChosen() actually transitions bAwaitingWorldModeChoice
+	 * from true to false. Anything that must not build world content ahead of the player's choice --
+	 * the showcase/demo sequence in particular -- binds here and defers its own startup until this
+	 * fires, rather than either racing this actor's BeginPlay or forcing the choice itself.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "TerraDyne|Events")
+	FTerraDyneWorldModeChosenDelegate OnWorldModeChosen;
+
+	//--- MULTI-LAYER RASTER IMPORT ---
+
+	/**
+	 * One slot per ETerraDyneRasterLayer, indexed by that enum's value.
+	 *
+	 * Sized once at construction and never resized, so a layer's slot is always addressable whether
+	 * or not anything has been imported into it.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	TArray<FTerraDyneRasterLayerSlot> RasterLayerSlots;
+
+	/**
+	 * Validates a raster and records it in its layer slot. Reads only the header, so it returns
+	 * immediately even for a very large file -- the pixels are decoded later, by LoadRasterLayers.
+	 *
+	 * Enforces the two rules that keep a layer set coherent:
+	 *   1. Elevation must be imported before any other layer. Everything else is checked for
+	 *      agreement against the elevation grid, so without it there is nothing to check against.
+	 *   2. Every later layer must sit on the same grid as the elevation raster -- same size, same
+	 *      pixel scale, same CRS, origin within the half-pixel grid-convention allowance. This is
+	 *      what stops a DEM of one valley being combined with a hillshade of another.
+	 *
+	 * Returns false with a human-readable OutError on any violation; the slot is left untouched.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool ImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath, FString& OutError);
+
+	/**
+	 * Clears one layer slot.
+	 *
+	 * Unloading Elevation also unloads every other layer: they were only ever admitted because they
+	 * matched that specific DEM's grid, so keeping them once it is gone would leave a set validated
+	 * against nothing, and the next DEM imported could be somewhere else entirely.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	void UnloadRasterLayer(ETerraDyneRasterLayer Layer);
+
+	/** Clears every layer slot and any terrain built from them. */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	void UnloadAllRasterLayers();
+
+	/**
+	 * Decodes the imported layers and builds the world from them -- the expensive step the import
+	 * calls deliberately skip.
+	 *
+	 * Elevation drives the terrain itself (the existing GeoTIFF import path). Returns false with
+	 * OutError if no elevation layer has been imported, since there is no world to build without it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool LoadRasterLayersIntoScene(FString& OutError);
+
+	/** True when a layer slot holds a validated raster. */
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
+	bool IsRasterLayerImported(ETerraDyneRasterLayer Layer) const;
+
+	/** The elevation slot, which gates everything else. */
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
+	bool HasElevationLayer() const { return IsRasterLayerImported(ETerraDyneRasterLayer::Elevation); }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Bootstrap")
 	bool bSpawnDefaultChunksOnBeginPlay = false;
@@ -574,6 +668,9 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Bootstrap")
 	void StartSandboxMode();
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Bootstrap")
+	void StartDEMImportMode();
 
 protected:
 	virtual void BeginPlay() override;

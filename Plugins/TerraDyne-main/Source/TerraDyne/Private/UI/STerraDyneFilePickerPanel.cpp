@@ -1,5 +1,5 @@
-// Copyright (c) 2026 GregOrigin. All Rights Reserved.
 #include "STerraDyneFilePickerPanel.h"
+#include "IO/TerraDyneArchiveHelper.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
@@ -9,15 +9,17 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Brushes/SlateColorBrush.h"
+#include "STerraDyneHudStyle.h"
 
 #define LOCTEXT_NAMESPACE "TerraDyneFilePicker"
 
 namespace
 {
-	bool HasTiffExtension(const FString& Filename)
+	bool HasRasterExtension(const FString& Filename)
 	{
-		const FString Ext = FPaths::GetExtension(Filename);
-		return Ext.Equals(TEXT("tif"), ESearchCase::IgnoreCase) || Ext.Equals(TEXT("tiff"), ESearchCase::IgnoreCase);
+		return FTerraDyneArchiveHelper::HasSupportedExtension(Filename);
 	}
 }
 
@@ -26,91 +28,140 @@ void STerraDyneFilePickerPanel::Construct(const FArguments& InArgs)
 	OnFileChosenDelegate = InArgs._OnFileChosen;
 	OnCancelledDelegate = InArgs._OnCancelled;
 
-	const FSlateFontInfo HeaderFont = FCoreStyle::GetDefaultFontStyle("Bold", 14);
-	const FSlateFontInfo LabelFont = FCoreStyle::GetDefaultFontStyle("Regular", 10);
-	const FLinearColor BGColor(0.05f, 0.05f, 0.05f, 0.95f);
-	const FLinearColor SectionBGColor(0.1f, 0.1f, 0.1f, 0.9f);
+	const FSlateFontInfo MicroFont = FCoreStyle::GetDefaultFontStyle("Bold", 7);
+	const FSlateFontInfo HeaderFont = FCoreStyle::GetDefaultFontStyle("Bold", 11);
+	const FSlateFontInfo LabelFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
 
+	TerraDyneHud::MakeButtonStyle(HudButtonStyle);
+	TerraDyneHud::MakeRowStyle(HudEntryStyle);
+
+	// Structure mirrors the reference HUD: a micro eyebrow label over an uppercase title, a hairline
+	// outline around the whole panel, and a recessed list body -- rather than one flat grey box.
 	ChildSlot
 	[
-		SNew(SBox)
-		.WidthOverride(520.0f)
-		.HeightOverride(420.0f)
+		SNew(SOverlay)
+		+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
 		[
-			SNew(SBorder)
-			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(BGColor)
-			.Padding(10.0f)
+			SNew(SBox)
+			.WidthOverride(560.0f)
+			.HeightOverride(470.0f)
 			[
-				SNew(SVerticalBox)
-
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("Title", "Select a GeoTIFF (.tif / .tiff)"))
-					.Font(HeaderFont)
-				]
-
-				// Current directory + Up button
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
-					[
-						SNew(SButton)
-						.Text(LOCTEXT("Up", "Up"))
-						.OnClicked(this, &STerraDyneFilePickerPanel::OnUpClicked)
-					]
-					+ SHorizontalBox::Slot().VAlign(VAlign_Center).FillWidth(1.0f)
-					[
-						SNew(STextBlock)
-						.Text(this, &STerraDyneFilePickerPanel::GetCurrentDirectoryText)
-						.Font(LabelFont)
-						.AutoWrapText(true)
-					]
-				]
-
-				// Listing
-				+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 0, 0, 6)
+				// Outer 1px hairline: an outline-coloured border padded by 1, wrapping the real
+				// panel surface. Slate borders have no stroke of their own, so the outline has to be
+				// built from a nested pair like this.
+				SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+				.BorderBackgroundColor(TerraDyneHud::LineStrong)
+				.Padding(1.0f)
 				[
 					SNew(SBorder)
 					.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-					.BorderBackgroundColor(SectionBGColor)
-					.Padding(4.0f)
+					.BorderBackgroundColor(TerraDyneHud::PanelBG)
+					.Padding(FMargin(14.0f, 12.0f))
 					[
-						SNew(SScrollBox)
-						+ SScrollBox::Slot()
-						[
-							SAssignNew(ListContainer, SVerticalBox)
-						]
-					]
-				]
+						SNew(SVerticalBox)
 
-				// Selected file + Import/Cancel
-				+ SVerticalBox::Slot().AutoHeight()
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
-					[
-						SNew(STextBlock)
-						.Text(this, &STerraDyneFilePickerPanel::GetSelectedFileText)
-						.Font(LabelFont)
-					]
-					+ SVerticalBox::Slot().AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(SButton)
-							.Text(LOCTEXT("Import", "Import"))
-							.IsEnabled(this, &STerraDyneFilePickerPanel::IsImportEnabled)
-							.OnClicked(this, &STerraDyneFilePickerPanel::OnImportClicked)
+							SNew(STextBlock)
+							.Text(LOCTEXT("Eyebrow", "IMPORT"))
+							.Font(MicroFont)
+							.ColorAndOpacity(TerraDyneHud::Dim)
 						]
-						+ SHorizontalBox::Slot().AutoWidth()
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 1, 0, 10)
 						[
-							SNew(SButton)
-							.Text(LOCTEXT("Cancel", "Cancel"))
-							.OnClicked(this, &STerraDyneFilePickerPanel::OnCancelClicked)
+							SNew(STextBlock)
+							.Text(LOCTEXT("Title", "SELECT A GEOTIFF  (.TIF / .TIFF)"))
+							.Font(HeaderFont)
+							.ColorAndOpacity(TerraDyneHud::Text)
+						]
+
+						// Current directory + Up button
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+							[
+								SNew(SButton)
+								.ButtonStyle(&HudButtonStyle)
+								.OnClicked(this, &STerraDyneFilePickerPanel::OnUpClicked)
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("Up", "UP"))
+									.Font(MicroFont)
+									.ColorAndOpacity(TerraDyneHud::Text)
+								]
+							]
+							+ SHorizontalBox::Slot().VAlign(VAlign_Center).FillWidth(1.0f)
+							[
+								SNew(STextBlock)
+								.Text(this, &STerraDyneFilePickerPanel::GetCurrentDirectoryText)
+								.Font(LabelFont)
+								.ColorAndOpacity(TerraDyneHud::Dim)
+								.AutoWrapText(true)
+							]
+						]
+
+						// Listing (recessed, hairline-outlined)
+						+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 0, 0, 10)
+						[
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+							.BorderBackgroundColor(TerraDyneHud::Line)
+							.Padding(1.0f)
+							[
+								SNew(SBorder)
+								.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+								.BorderBackgroundColor(TerraDyneHud::SurfaceBG)
+								.Padding(4.0f)
+								[
+									SNew(SScrollBox)
+									+ SScrollBox::Slot()
+									[
+										SAssignNew(ListContainer, SVerticalBox)
+									]
+								]
+							]
+						]
+
+						// Selected file + Import/Cancel
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+						[
+							SNew(STextBlock)
+							.Text(this, &STerraDyneFilePickerPanel::GetSelectedFileText)
+							.Font(LabelFont)
+							.ColorAndOpacity(this, &STerraDyneFilePickerPanel::GetSelectedFileColor)
+						]
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0, 0, 6, 0)
+							[
+								SNew(SButton)
+								.ButtonStyle(&HudButtonStyle)
+								.HAlign(HAlign_Center)
+								.IsEnabled(this, &STerraDyneFilePickerPanel::IsImportEnabled)
+								.OnClicked(this, &STerraDyneFilePickerPanel::OnImportClicked)
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("Import", "IMPORT"))
+									.Font(MicroFont)
+									.ColorAndOpacity(this, &STerraDyneFilePickerPanel::GetImportLabelColor)
+								]
+							]
+							+ SHorizontalBox::Slot().FillWidth(1.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(&HudButtonStyle)
+								.HAlign(HAlign_Center)
+								.OnClicked(this, &STerraDyneFilePickerPanel::OnCancelClicked)
+								[
+									SNew(STextBlock)
+									.Text(LOCTEXT("Cancel", "CANCEL"))
+									.Font(MicroFont)
+									.ColorAndOpacity(TerraDyneHud::Dim)
+								]
+							]
 						]
 					]
 				]
@@ -152,7 +203,7 @@ void STerraDyneFilePickerPanel::RefreshListing()
 		{
 			Subdirectories.Add(Entry);
 		}
-		else if (HasTiffExtension(Entry))
+		else if (HasRasterExtension(Entry))
 		{
 			Files.Add(Entry);
 		}
@@ -174,17 +225,21 @@ void STerraDyneFilePickerPanel::RebuildListWidgets()
 
 	ListContainer->ClearChildren();
 
+	const FSlateFontInfo RowFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
+	const FLinearColor HudDirColor(0.62f, 0.75f, 0.92f);
+	const FLinearColor HudDim(0.56f, 0.57f, 0.62f);
+
 	for (const FString& Dir : Subdirectories)
 	{
 		const FString Label = FString::Printf(TEXT("[Dir]  %s"), *FPaths::GetCleanFilename(Dir));
 		ListContainer->AddSlot().AutoHeight().Padding(0, 1)
 		[
 			SNew(SButton)
-			.ButtonStyle(FCoreStyle::Get(), "NoBorder")
+			.ButtonStyle(&HudEntryStyle)
 			.HAlign(HAlign_Left)
 			.OnClicked(this, &STerraDyneFilePickerPanel::OnEntryClicked, Dir, true)
 			[
-				SNew(STextBlock).Text(FText::FromString(Label))
+				SNew(STextBlock).Text(FText::FromString(Label)).Font(RowFont).ColorAndOpacity(HudDirColor)
 			]
 		];
 	}
@@ -194,12 +249,13 @@ void STerraDyneFilePickerPanel::RebuildListWidgets()
 		ListContainer->AddSlot().AutoHeight().Padding(0, 1)
 		[
 			SNew(SButton)
-			.ButtonStyle(FCoreStyle::Get(), "NoBorder")
+			.ButtonStyle(&HudEntryStyle)
 			.HAlign(HAlign_Left)
 			.OnClicked(this, &STerraDyneFilePickerPanel::OnEntryClicked, File, false)
 			[
 				SNew(STextBlock)
 				.Text(FText::FromString(FPaths::GetCleanFilename(File)))
+				.Font(RowFont)
 				.ColorAndOpacity(this, &STerraDyneFilePickerPanel::GetEntryColor, File)
 			]
 		];
@@ -209,7 +265,7 @@ void STerraDyneFilePickerPanel::RebuildListWidgets()
 	{
 		ListContainer->AddSlot().AutoHeight().Padding(0, 4)
 		[
-			SNew(STextBlock).Text(LOCTEXT("Empty", "(no subdirectories or .tif/.tiff files here)"))
+			SNew(STextBlock).Text(LOCTEXT("Empty", "(no subdirectories or .tif/.tiff files here)")).Font(RowFont).ColorAndOpacity(HudDim)
 		];
 	}
 }
@@ -267,7 +323,22 @@ bool STerraDyneFilePickerPanel::IsImportEnabled() const
 
 FSlateColor STerraDyneFilePickerPanel::GetEntryColor(FString FullPath) const
 {
-	return (FullPath == SelectedFilePath) ? FSlateColor(FLinearColor(0.3f, 0.7f, 1.0f)) : FSlateColor::UseForeground();
+	return (FullPath == SelectedFilePath)
+		? FSlateColor(TerraDyneHud::Accent)
+		: FSlateColor(TerraDyneHud::Text);
+}
+
+FSlateColor STerraDyneFilePickerPanel::GetSelectedFileColor() const
+{
+	// Dim while nothing is chosen ("No file selected" is a prompt, not a result), accent once it is.
+	return SelectedFilePath.IsEmpty() ? FSlateColor(TerraDyneHud::Dim) : FSlateColor(TerraDyneHud::Accent);
+}
+
+FSlateColor STerraDyneFilePickerPanel::GetImportLabelColor() const
+{
+	// Slate does not tint button content by enabled-state, so the label has to carry it itself --
+	// otherwise a disabled Import still reads as a live, clickable control.
+	return IsImportEnabled() ? FSlateColor(TerraDyneHud::Accent) : FSlateColor(TerraDyneHud::Locked);
 }
 
 #undef LOCTEXT_NAMESPACE

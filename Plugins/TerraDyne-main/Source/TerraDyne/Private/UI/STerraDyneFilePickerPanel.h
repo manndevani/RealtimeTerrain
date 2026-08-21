@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Styling/SlateTypes.h"
 
 DECLARE_DELEGATE_OneParam(FTerraDyneFilePickerChosen, FString /*FullPath*/);
 
@@ -31,6 +32,8 @@ private:
 	FSimpleDelegate OnCancelledDelegate;
 
 	TSharedPtr<class SVerticalBox> ListContainer;
+	FButtonStyle HudButtonStyle;
+	FButtonStyle HudEntryStyle;
 
 	void NavigateToDirectory(const FString& Path);
 	void RefreshListing();
@@ -45,4 +48,6 @@ private:
 	FText GetSelectedFileText() const;
 	bool IsImportEnabled() const;
 	FSlateColor GetEntryColor(FString FullPath) const;
+	FSlateColor GetSelectedFileColor() const;
+	FSlateColor GetImportLabelColor() const;
 };

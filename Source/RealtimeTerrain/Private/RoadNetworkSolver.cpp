@@ -2,6 +2,8 @@
 
 #include "RoadNetworkSolver.h"
 
+#include "Algo/Reverse.h"
+
 namespace RoadNetworkSolver
 {
 namespace
@@ -71,6 +73,124 @@ namespace
 			if (FVector2D::DistSquared(Points[i], Points[i - 1]) < WeldTolerance * WeldTolerance)
 			{
 				Points.RemoveAt(i);
+			}
+		}
+	}
+
+	/** True when two segments cross at an interior point of both (shared endpoints don't count). */
+	bool SegmentsProperlyCross(const FVector2D& A0, const FVector2D& A1, const FVector2D& B0, const FVector2D& B1)
+	{
+		auto Side = [](const FVector2D& O, const FVector2D& P, const FVector2D& Q) -> double
+		{
+			return Cross2D(P - O, Q - O);
+		};
+
+		const double D1 = Side(B0, B1, A0);
+		const double D2 = Side(B0, B1, A1);
+		const double D3 = Side(A0, A1, B0);
+		const double D4 = Side(A0, A1, B1);
+
+		return ((D1 > 0) != (D2 > 0)) && D1 != 0 && D2 != 0 &&
+			((D3 > 0) != (D4 > 0)) && D3 != 0 && D4 != 0;
+	}
+
+	/**
+	 * Forces the boundary counter-clockwise, reversing it in place if it came out clockwise.
+	 *
+	 * RoadMesh::AppendPrism takes its outline as `BoundaryCCW` and emits the top cap in exactly the
+	 * order given -- "Counter-clockwise boundary: this order faces +Z". A clockwise boundary is not
+	 * rejected or corrected there; it silently builds the junction slab inside-out, top face pointing
+	 * down, so the road surface is invisible from above and only the underside renders.
+	 *
+	 * Walking arms in CCW angular order does not by itself guarantee a CCW *boundary*: each arm
+	 * contributes its cap right-then-left plus a corner chain, and once trims grow large enough
+	 * relative to the node (arms pushed far out, caps nearly meeting) that walk can enclose its area
+	 * the other way round. Rather than reason about which arm counts and trim ratios do that, the
+	 * shoelace signed area is measured and the order flipped when it is negative -- cheap, and correct
+	 * for every configuration including whatever RemoveSelfIntersections' 2-opt reversals leave
+	 * behind (a 2-opt move is not orientation-preserving in general).
+	 *
+	 * Each FBoundaryVertex carries its own Arm/ArcAlpha provenance, and reversing the array moves
+	 * that provenance with its vertex, so per-vertex height interpolation downstream is unaffected.
+	 */
+	void EnsureCounterClockwise(TArray<FBoundaryVertex>& Boundary)
+	{
+		const int32 NumVerts = Boundary.Num();
+		if (NumVerts < 3)
+		{
+			return;
+		}
+
+		double SignedAreaTwice = 0.0;
+		for (int32 i = 0; i < NumVerts; ++i)
+		{
+			const FVector2D& P = Boundary[i].Position;
+			const FVector2D& Q = Boundary[(i + 1) % NumVerts].Position;
+			SignedAreaTwice += (P.X * Q.Y) - (Q.X * P.Y);
+		}
+
+		if (SignedAreaTwice < 0.0)
+		{
+			Algo::Reverse(Boundary);
+		}
+	}
+
+	/**
+	 * Guarantees a simple (non-self-crossing) polygon regardless of how the boundary was assembled.
+	 *
+	 * Per-corner geometry only ever reasons about two arms at a time. Given enough arms packed into a
+	 * narrow enough wedge, each one's own cap can flare wide enough (roughly atan(HalfWidth/Trim), which
+	 * grows as trim is squeezed down to fit the wedge) to overlap a cap two or three arms away rather
+	 * than just its immediate neighbour -- a case no purely local, pairwise fix can rule out. Rather
+	 * than chase every such configuration individually, this runs the standard 2-opt "uncrossing" pass
+	 * used for exactly this class of problem: whenever two non-adjacent edges cross, reversing the
+	 * vertex run between them removes that crossing (and only ever shortens the boundary), so repeating
+	 * it converges on a simple polygon. This changes only the *order* edges are stitched between
+	 * existing vertices -- it neither moves nor drops any vertex, so every arm keeps the exact
+	 * connection point its own trim/cap math already decided.
+	 */
+	void RemoveSelfIntersections(TArray<FBoundaryVertex>& Boundary)
+	{
+		const int32 NumVerts = Boundary.Num();
+		if (NumVerts < 4)
+		{
+			return;
+		}
+
+		int32 SafetyIterations = NumVerts * NumVerts + 16;
+		bool bChanged = true;
+		while (bChanged && SafetyIterations-- > 0)
+		{
+			bChanged = false;
+			for (int32 i = 0; i < NumVerts && !bChanged; ++i)
+			{
+				const int32 INext = (i + 1) % NumVerts;
+				for (int32 j = i + 2; j < NumVerts && !bChanged; ++j)
+				{
+					const int32 JNext = (j + 1) % NumVerts;
+					if (JNext == i)
+					{
+						continue; // The two edges already share vertex i -- adjacent, not a crossing.
+					}
+
+					if (SegmentsProperlyCross(
+						Boundary[i].Position, Boundary[INext].Position,
+						Boundary[j].Position, Boundary[JNext].Position))
+					{
+						// Reverse the run strictly between the two crossing edges -- the classic 2-opt
+						// move that swaps a crossing pair of edges for a non-crossing pair joining the
+						// same four endpoints.
+						int32 Lo = INext;
+						int32 Hi = j;
+						while (Lo < Hi)
+						{
+							Boundary.Swap(Lo, Hi);
+							++Lo;
+							--Hi;
+						}
+						bChanged = true;
+					}
+				}
 			}
 		}
 	}
@@ -275,6 +395,42 @@ bool IntersectPolylines(
 	return bFound;
 }
 
+namespace
+{
+	/**
+	 * Where two rays actually converge, unlike IntersectPolylines which only looks within the finite
+	 * sampled polyline. Two offset sides from arms that meet at a shallow angle can converge well
+	 * beyond however far the caller happened to sample the arm -- the true distance is
+	 * HalfWidth / tan(halfAngle), which grows without bound as the angle between the arms shrinks, so
+	 * no fixed sample length can cover every angle. Both OutTA and OutTB must be >= 0 (the crossing
+	 * has to be ahead of both rays); a negative t means the rays are diverging, which is a real open
+	 * gap (e.g. a T-junction's straight-through side), not a missed collision.
+	 */
+	bool RayIntersect(
+		const FVector2D& OriginA, const FVector2D& DirA,
+		const FVector2D& OriginB, const FVector2D& DirB,
+		FVector2D& OutPoint, double& OutTA, double& OutTB)
+	{
+		const double Denominator = Cross2D(DirA, DirB);
+		if (FMath::Abs(Denominator) < UE_DOUBLE_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		const FVector2D Delta = OriginB - OriginA;
+		OutTA = Cross2D(Delta, DirB) / Denominator;
+		OutTB = Cross2D(Delta, DirA) / Denominator;
+
+		if (OutTA < 0.0 || OutTB < 0.0)
+		{
+			return false;
+		}
+
+		OutPoint = OriginA + DirA * OutTA;
+		return true;
+	}
+}
+
 FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const FNodeOptions& Options)
 {
 	FNodeSolution Solution;
@@ -339,8 +495,46 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 		FVector2D Point;
 		double AlongLeft = 0.0;
 		double AlongRight = 0.0;
+		const double BaseLenA = PolylineLength(LeftSides[i]);
+		const double BaseLenB = PolylineLength(RightSides[Next]);
+
 		if (!IntersectPolylines(LeftSides[i], RightSides[Next], Point, AlongLeft, AlongRight))
 		{
+			// The bounded search found nothing. Two things produce that: the arms genuinely diverge
+			// (an open gap, like a T-junction's straight side), or they converge at an angle so
+			// shallow that the true mitre point lies beyond where either road's own surface actually
+			// reaches (HalfWidth / tan(halfAngle) grows without bound as the angle shrinks -- several
+			// roads clustered a few degrees apart is exactly this). RayIntersect tells the two apart:
+			// diverging rays never produce a forward (t >= 0) crossing.
+			const FVector2D OriginA = LeftSides[i].Last();
+			const FVector2D DirA = DirectionAtDistance(LeftSides[i], BaseLenA);
+			const FVector2D OriginB = RightSides[Next].Last();
+			const FVector2D DirB = DirectionAtDistance(RightSides[Next], BaseLenB);
+
+			double TA = 0.0;
+			double TB = 0.0;
+			if (!RayIntersect(OriginA, DirA, OriginB, DirB, Point, TA, TB))
+			{
+				continue;
+			}
+
+			// Converges, but past what either road covers: chasing the spike out to the true mitre
+			// point would place the corner far from where the caps (clamped to each arm's own length
+			// below) actually end up, tearing the boundary. Bevel between each arm's own end instead
+			// -- a flat cut standing in for a mitre neither road is long enough to grow into.
+			HasCollision[i] = true;
+			ArmConstrained[i] = true;
+			ArmConstrained[Next] = true;
+
+			const FVector2D BevelA = PointAtDistance(LeftSides[i], BaseLenA * 0.9);
+			const FVector2D BevelB = PointAtDistance(RightSides[Next], BaseLenB * 0.9);
+			CornerArcs[i] = { BevelA, BevelB };
+			Solution.CornerRadii[i] = 0.0;
+
+			Arms[i].TrimDistance = FMath::Max(
+				Arms[i].TrimDistance, ProjectOntoPolyline(Arms[i].Centreline, BevelA));
+			Arms[Next].TrimDistance = FMath::Max(
+				Arms[Next].TrimDistance, ProjectOntoPolyline(Arms[Next].Centreline, BevelB));
 			continue;
 		}
 
@@ -369,8 +563,8 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 		{
 			// The tangent points sit further out along each edge than the corner does, so the arc
 			// has to fit in the edge that is actually left beyond the collision.
-			const double AvailableA = FMath::Max(0.0, PolylineLength(LeftSides[i]) - AlongLeft);
-			const double AvailableB = FMath::Max(0.0, PolylineLength(RightSides[Next]) - AlongRight);
+			const double AvailableA = FMath::Max(0.0, BaseLenA - AlongLeft);
+			const double AvailableB = FMath::Max(0.0, BaseLenB - AlongRight);
 			const double MaxTangent = FMath::Min(AvailableA, AvailableB) * 0.9;
 
 			const double Radius = FMath::Min(Options.CornerRadius, MaxTangent * TanHalf);
@@ -467,6 +661,32 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 		CapLeft[i] = End + Normal * Arms[i].HalfWidth;
 	}
 
+	// Every corner arc above was built from its own collision's *local* view of where the two arms
+	// meet. But an arm's final TrimDistance is the max across BOTH of its neighbours, so a corner can
+	// go stale: its arc stays anchored to the nearer point it originally found, while the arm it
+	// touches got trimmed much further back by its OTHER neighbour (this is exactly what happens when
+	// several arms are clustered a few degrees apart -- each pair in the cluster forces the others far
+	// back, while a normal-angle neighbour on the far side expected almost no trim at all). A stale
+	// arc no longer meets its own arm's cap, and the long, wrongly-placed edge that results is what
+	// tears the boundary. Re-anchor any corner whose arc doesn't land exactly on its final caps.
+	for (int32 i = 0; i < NumArms; ++i)
+	{
+		if (!HasCollision[i] || CornerArcs[i].Num() == 0)
+		{
+			continue;
+		}
+
+		const int32 Next = (i + 1) % NumArms;
+		const double ToleranceSq = WeldTolerance * WeldTolerance * 4.0;
+		const bool bStartMatches = FVector2D::DistSquared(CornerArcs[i][0], CapLeft[i]) < ToleranceSq;
+		const bool bEndMatches = FVector2D::DistSquared(CornerArcs[i].Last(), CapRight[Next]) < ToleranceSq;
+
+		if (!bStartMatches || !bEndMatches)
+		{
+			CornerArcs[i] = { CapLeft[i], CapRight[Next] };
+		}
+	}
+
 	Solution.RoadsideChains.SetNum(NumArms);
 
 	for (int32 i = 0; i < NumArms; ++i)
@@ -502,6 +722,12 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 	{
 		return Solution;
 	}
+
+	RemoveSelfIntersections(Solution.Boundary);
+
+	// After uncrossing, not before: a 2-opt reversal can itself flip the polygon's orientation, so
+	// the winding has to be settled once the vertex order is final.
+	EnsureCounterClockwise(Solution.Boundary);
 
 	WeldBoundary(Solution.Boundary);
 	if (Solution.Boundary.Num() >= 2 &&

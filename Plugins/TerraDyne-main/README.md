@@ -1,120 +1,108 @@
-# 🌍 TerraDyne 0.3
+# RealtimeTerrain (Unreal Engine 5.8)
 
-> Turn an authored Unreal Landscape into a persistent, runtime-editable world without switching to voxels.
+A high-performance, runtime-editable chunk terrain framework for Unreal Engine 5.8. Supports real-time sculpting, multi-layer GIS/DEM raster ingestion, procedural spline road generation, modular spline buildings, and world persistence without voxelization.
 
-<p align="center">
-  <img src="Content/terrrrrrra.png" alt="TerraDyne preview" width="760" />
-</p>
+---
 
-TerraDyne is an MIT-licensed Unreal Engine 5.7 plugin for teams building survival, sandbox, and open-world games on top of Unreal Landscapes. It starts from the world you already authored, converts that terrain into a runtime-managed framework, and then layers persistence, replication, population state, procedural extension, and gameplay hooks on top.
-
-*If you have consulting and/or custom pipeline integration in mind: I offer dedicated architecture consulting for production games & projects.* 📬 Please [contact me](https://gregorigin.com/contact.html) or see my [extended portfolio](https://www.gregorigin.com/Portfolio/). 👨‍💻 
-
-
-## 🚀 Start Here
-
-| What you need | Link |
-|---|---|
-| Commercial build on Fab | [🛒 TerraDyne on Fab](https://www.fab.com/listings/20f72d71-9737-4ac1-bce5-034eca166529) |
-| Setup and usage manual | [📘 TerraDyne Manual](https://gregorigin.com/Terradyne/) |
-| Demo walkthrough | [🎬 DEMO.md](DEMO.md) |
-| Release notes | [🧾 CHANGELOG.md](CHANGELOG.md) |
-| Runtime-world docs | [🗺️ docs/runtime-world-framework.md](docs/runtime-world-framework.md) |
-
-## 🧭 What TerraDyne Does
+## ⚡ Core Architecture
 
 ```text
-Authored Unreal Landscape
-          ↓
-Landscape conversion + foliage transfer + paint capture
-          ↓
-Persistent runtime terrain
-          ↓
-Population state + procedural outskirts + gameplay hooks
+       ┌───────────────────────────────┐
+       │   Session Mode Selection      │
+       └───────┬───────────────┬───────┘
+               │               │
+      [SANDBOX MODE]    [DEM IMPORT MODE]
+               │               │
+    Procedural Grid       GDAL GeoTIFF Ingestion
+    (Base/Sculpt/Detail)  (Elevation + 6 Derived Layers)
+               │               │
+               └───────┬───────┘
+                       ▼
+       ┌───────────────────────────────┐
+       │   Runtime Chunk Framework     │
+       ├───────────────────────────────┤
+       │ • Dynamic Mesh & Collision    │
+       │ • Multi-Layer Buffer Blending │
+       │ • Spline Roads & Buildings    │
+       │ • Undo/Redo & Save System     │
+       └───────────────────────────────┘
 ```
 
-This repo is no longer just a terrain deformation prototype. TerraDyne now targets a broader runtime world workflow:
+---
 
-- 🏞️ keep the authored Landscape pipeline
-- ✏️ sculpt and paint terrain at runtime
-- 🌿 carry over foliage and actor foliage
-- 💾 save and restore world state
-- 🌐 replicate terrain and world metadata
-- 🧱 plug into survival and sandbox gameplay systems
+## ✨ Features
 
-## ✨ Highlights
+### 1. Dual Session Modes
+* **Sandbox Mode**: Instant procedural grid initialization ready for immediate sculpting, layer editing, road drawing, and building placement.
+* **DEM Import Mode**: Clean, dedicated GIS workflow that loads zero procedural chunks on startup and awaits user-provided GeoTIFF datasets.
 
-- 🏗️ **Authored world conversion**
-  Landscape import, paint layer capture, placed foliage transfer, actor foliage transfer, save/load, and replicated chunk state.
-- ⛏️ **Runtime terrain editing**
-  Raise, lower, smooth, flatten, paint layers, undo/redo, and runtime tool controls.
-- 🌲 **Persistent world population**
-  Register placed actors, place new runtime actors, persist harvest and destruction state, and restore regrowth-ready entries from saves.
-- 🧬 **Procedural extension**
-  Seeded outskirts, biome overlays, runtime spawn rules, optional edge growth, and PCG-ready point export.
-- 🎮 **Gameplay hooks**
-  Navmesh dirtying, AI spawn zone queries, build-permission checks, biome queries, Blueprint APIs, and terrain/foliage/population change delegates.
-- 🧰 **Designer workflow**
-  World presets, scene setup templates, and a full feature showcase flow for first-run evaluation.
-- 🖼️ **Hybrid visual path**
-  CPU-authoritative terrain with optional render-target-assisted visuals layered on top.
+### 2. Multi-Layer GeoTIFF / GIS Ingestion
+* Ingests synchronized 7-layer raster stacks powered by local GDAL compilation:
+  1. **Elevation (DEM)** — Required reference grid establishing georeferenced bounds.
+  2. **Hillshade** — Surface relief shading.
+  3. **Color Relief** — Hypsometric color-mapped elevation.
+  4. **Color Hillshade** — Blended topographic visualization.
+  5. **Slope** — Gradient/incline angle mapping.
+  6. **Aspect** — Slope azimuth/direction mapping.
+  7. **Roughness** — Micro-topographic variability.
+* Seamless Cesium georeference origin alignment.
+* Support for single GeoTIFF files or compressed multi-raster archives.
 
-## 👥 Who It Is For
+### 3. Non-Destructive Layered Sculpting
+* Multi-layer height buffer pipeline:
+  * **Base**: Foundation heightmap data.
+  * **Sculpt**: User deformations and live brush modifications.
+  * **Detail**: Fine-grain micro-adjustments.
+* Real-time brush operations: **Raise**, **Lower**, **Smooth**, and **Flatten**.
+* Configurable brush radius and strength with smooth falloff.
+* Full undo and redo transaction history.
 
-- Survival games that need editable terrain plus persistent world state
-- Sandbox builders that want authored terrain instead of a voxel-first workflow
-- Open-world prototypes that need runtime hooks for AI, spawning, and permissions
-- Unreal teams who want Landscape-based production workflows with gameplay-friendly runtime systems
+### 4. Interactive Spline Roads
+* Procedural curved road network authoring.
+* Adjustable road width slider with automatic curb extrusion and trail generation.
+* Interactive spline manipulation with point insertion, deletion, and spline resets.
 
-## 🛠️ Requirements
+### 5. Modular Spline Buildings
+* Custom footprint spline definition for structures.
+* Live floor count stepper controls.
+* Automatic terrain pad terraforming beneath structures to keep ground leveled.
 
-- Unreal Engine `5.7`
-- `GeometryScripting`
-- `VirtualHeightfieldMesh`
-- `CelestialVault` (engine plugin; used by the scene-setup lighting path)
-- `DaySequence` (engine plugin, Experimental; pulled in by CelestialVault)
-- `Win64` is the currently packaged and validated target in this repository
+### 6. Native Slate Runtime HUD
+* Left-anchored technical dark-theme control panel.
+* Live session mode switcher badge (`DEM` / `SANDBOX`).
+* Collapsible accordion sections:
+  * **Levels**: Save to file / Load from file.
+  * **GeoTIFF / Raster Layers**: Layer stack management, individual replacement/unloading, and scene ingestion.
+  * **Sculpting**: Brush selection, layer routing, and radius/strength sliders.
+  * **Roads**: Draw/Select modes, width adjustment, and spline controls.
+  * **Buildings**: Place/Select modes, floor stepper, and footprint spline controls.
 
-## 📦 GitHub Or Fab?
+### 7. World Persistence & Chunk Streaming
+* Complete disk serialization format for terrain state, building transforms, and road splines.
+* Distance-based chunk streaming with asynchronous dirty-buffer saving.
 
-| Option | Best for |
-|---|---|
-| **GitHub repo** | Source-first access, MIT license, and direct inspection of the runtime-world framework code |
-| **Fab version** | [Commercial distribution](https://www.fab.com/listings/20f72d71-9737-4ac1-bce5-034eca166529), polished marketplace delivery, and the version intended for users who want the store build |
+---
 
-## 🚀 Installation
+## 🛠️ Requirements & Setup
 
-1. Copy the `TerraDyne` plugin folder into your project's `Plugins/` directory.
-2. Enable `GeometryScripting`, `VirtualHeightfieldMesh`, `CelestialVault`, and `DaySequence`.
-3. Regenerate project files.
-4. Build the `Development Editor` target for your project.
+### Unreal Engine Plugins
+* Unreal Engine `5.8`
+* `GeometryScripting`
+* `VirtualHeightfieldMesh`
+* `CelestialVault` & `DaySequence`
 
-## 🎮 Quick Start
+### GDAL Third-Party Setup
+The DEM raster pipeline utilizes GDAL for geospatial parsing. To compile the local GDAL dependencies via vcpkg:
 
-1. Add `BP_TerraDyneManager` if you want direct terrain control.
-2. Add `ATerraDyneSceneSetup` if you want a template-driven setup flow.
-3. Choose a scene template:
-   `Full Feature Showcase`, `Sandbox`, `Survival Framework`, or `Authored World Conversion`.
-4. Import an authored Landscape or initialize a runtime world directly.
-5. Press Play and use the TerraDyne panel to sculpt, paint, save/load, or run the showcase flow.
+```powershell
+./Tools/Setup-GDAL.ps1
+```
 
-## 📚 Documentation Map
+---
 
-- `README.md` → product overview and entry point
-- `DEMO.md` → showcase sequence and demo templates
-- `CHANGELOG.md` → release history
-- `docs/runtime-world-framework.md` → population, procedural, and gameplay-layer APIs
+## 🎮 Runtime Controls
 
-## ✅ Validation
-
-- `TerraDyneEditor` builds cleanly on Unreal Engine 5.7
-- `Automation RunTests TerraDyne` passes with 16 TerraDyne tests
-
-## 🔗 Useful Links
-
-- [🛒 Fab version](https://www.fab.com/listings/20f72d71-9737-4ac1-bce5-034eca166529)
-- [📘 TerraDyne Manual](https://gregorigin.com/Terradyne/)
-
-## 📝 License
-
-MIT. Code by Andras Gregori.
+* **Switch Session Mode**: Click the `DEM` / `SANDBOX` badge in the HUD header.
+* **Sculpting**: Select a brush mode (`Raise`, `Lower`, `Smooth`, `Flatten`) and drag across terrain in the viewport.
+* **Roads**: Select `Draw`, click on terrain to drop spline points, and adjust `ROAD WIDTH`.
+* **Buildings**: Select `Place`, click to position footprint spline points, and use `+` / `–` to adjust floor count.

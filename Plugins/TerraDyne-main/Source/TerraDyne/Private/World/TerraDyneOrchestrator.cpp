@@ -205,29 +205,10 @@ int32 ATerraDyneOrchestrator::GetPhaseIndex(EShowcasePhase Phase) const
 void ATerraDyneOrchestrator::BeginPlay()
 {
 	Super::BeginPlay();
-	UE_LOG(LogTemp, Log, TEXT("Showcase: Sequence Started"));
+}
 
-	InitShowcaseSequence();
-	InitPhaseConfigs();
-
-	// Adopt the tool panel if one is already up, so the showcase can read values from it.
-	//
-	// This actor deliberately does NOT create a panel. The tool UI and sculpt input live on
-	// ATerraDyneEditController, which unlike this actor exists on clients too; creating a second
-	// panel here would double up on a listen server and still leave clients with nothing.
-	if (UGameplayStatics::GetPlayerController(this, 0))
-	{
-		TArray<UUserWidget*> FoundWidgets;
-		UWidgetBlueprintLibrary::GetAllWidgetsOfClass(GetWorld(), FoundWidgets, UTerraDyneToolWidget::StaticClass(), false);
-
-		if (FoundWidgets.Num() > 0)
-		{
-			ActiveUI = FoundWidgets[0];
-			UE_LOG(LogTemp, Log, TEXT("Showcase: Connected to existing ToolWidget."));
-		}
-	}
-
-	RestartShowcase();
+void ATerraDyneOrchestrator::HandleWorldModeChosen()
+{
 }
 
 void ATerraDyneOrchestrator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -424,7 +405,7 @@ UTerraDyneWorldPreset* ATerraDyneOrchestrator::BuildFallbackPreset()
 
 ATerraDyneChunk* ATerraDyneOrchestrator::EnsurePrimaryAuthoredChunk(ATerraDyneManager* Manager)
 {
-	if (!Manager || !GetWorld() || !HasAuthority())
+	if (!Manager || !GetWorld() || !HasAuthority() || Manager->bAwaitingWorldModeChoice || Manager->WorldOriginKind == ETerraDyneChunkOrigin::ImportedGeoTIFF)
 	{
 		return nullptr;
 	}
@@ -620,8 +601,13 @@ bool ATerraDyneOrchestrator::RestoreShowcaseBaseline()
 
 void ATerraDyneOrchestrator::EnsureShowcaseWorld()
 {
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	ATerraDyneManager* Manager = EnsureShowcaseManager();
-	if (!Manager)
+	if (!Manager || Manager->bAwaitingWorldModeChoice)
 	{
 		return;
 	}
@@ -657,6 +643,7 @@ void ATerraDyneOrchestrator::BindManagerEvents(ATerraDyneManager* Manager)
 	Manager->OnTerrainChanged.AddDynamic(this, &ATerraDyneOrchestrator::HandleTerrainChanged);
 	Manager->OnFoliageChanged.AddDynamic(this, &ATerraDyneOrchestrator::HandleFoliageChanged);
 	Manager->OnPopulationChanged.AddDynamic(this, &ATerraDyneOrchestrator::HandlePopulationChanged);
+	Manager->OnWorldModeChosen.AddDynamic(this, &ATerraDyneOrchestrator::HandleWorldModeChosen);
 	BoundManager = Manager;
 }
 
@@ -667,6 +654,7 @@ void ATerraDyneOrchestrator::UnbindManagerEvents()
 		Manager->OnTerrainChanged.RemoveDynamic(this, &ATerraDyneOrchestrator::HandleTerrainChanged);
 		Manager->OnFoliageChanged.RemoveDynamic(this, &ATerraDyneOrchestrator::HandleFoliageChanged);
 		Manager->OnPopulationChanged.RemoveDynamic(this, &ATerraDyneOrchestrator::HandlePopulationChanged);
+		Manager->OnWorldModeChosen.RemoveDynamic(this, &ATerraDyneOrchestrator::HandleWorldModeChosen);
 	}
 
 	BoundManager.Reset();
@@ -837,10 +825,13 @@ void ATerraDyneOrchestrator::OnPhaseEnter(EShowcasePhase Phase)
 	const int32 PhaseCount = ShowcaseSequence.Num();
 	if (const FShowcasePhaseConfig* Config = PhaseConfigs.Find(Phase))
 	{
-		SetOverlay(
-			FString::Printf(TEXT("[%d/%d] %s"), PhaseIndex + 1, PhaseCount, *Config->Title),
-			Config->Description
-		);
+		if (Phase != EShowcasePhase::Interactive)
+		{
+			SetOverlay(
+				FString::Printf(TEXT("[%d/%d] %s"), PhaseIndex + 1, PhaseCount, *Config->Title),
+				Config->Description
+			);
+		}
 	}
 
 	UndoRedoDemoStep = 0;

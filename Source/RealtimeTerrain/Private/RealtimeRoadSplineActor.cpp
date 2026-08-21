@@ -891,7 +891,24 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 		RoadMeshComponent->SetDeferredCollisionUpdatesEnabled(false, true);
 	}
 
-	GenerateScatter(RunFrames);
+	// Scatter is per-instance HISM: every regenerate clears and re-adds every prop along the whole
+	// road, each with its own terrain-height sample. Repeating that on every frame of a drag is a
+	// lot of work for cosmetic detail, so it waits for the settle pass like the terrain pad below.
+	//
+	// But simply skipping the regenerate would leave the previous frame's instances sitting where
+	// the road USED to be -- props stranded off the road, drifting further from it the longer the
+	// drag goes, which reads as broken geometry rather than as detail that hasn't caught up yet.
+	// Clearing instead is unambiguous: the road surface, curbs and junctions still update live every
+	// frame (that is the shape the player is actually judging), and the decorative scatter simply
+	// isn't drawn until the edit settles, at which point it reappears correctly placed.
+	if (bUpdateCollision)
+	{
+		GenerateScatter(RunFrames);
+	}
+	else if (ScatterHISMComponent && ScatterHISMComponent->GetInstanceCount() > 0)
+	{
+		ScatterHISMComponent->ClearInstances();
+	}
 
 	// Rebasing rasterises into every chunk the road touches and rebuilds their meshes, so it waits
 	// for the settle pass rather than running on each frame of a drag.
@@ -901,7 +918,7 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	}
 }
 
-void ARealtimeRoadSplineActor::RefreshAffectedJunctions()
+void ARealtimeRoadSplineActor::RefreshAffectedJunctions(bool bFullNetworkReconcile)
 {
 	// A junction that is mid-solve is the reason this road is rebuilding at all; re-solving from
 	// here would recurse.
@@ -958,9 +975,22 @@ void ARealtimeRoadSplineActor::RefreshAffectedJunctions()
 		}
 	}
 
-	// Then let the detector reconcile the whole network, so a road dragged across another creates
-	// the crossing rather than only refreshing intersections it already belonged to.
-	RoadNetwork::RebuildIntersections(World);
+	// Then let the detector reconcile crossings, so a road dragged across another creates the
+	// crossing rather than only refreshing intersections it already belonged to. The interactive
+	// drag path scopes this to crossings involving just this road (see the header comment) --
+	// re-solving every auto-generated junction in the level ~12 times a second regardless of
+	// whether the drag was anywhere near them is work whose cost grows with the whole level rather
+	// than with the edit. Every commit-time caller still gets the full, authoritative
+	// reconciliation, so this only ever narrows what the interactive path re-solves, never what the
+	// final committed state is.
+	if (bFullNetworkReconcile)
+	{
+		RoadNetwork::RebuildIntersections(World);
+	}
+	else
+	{
+		RoadNetwork::RebuildIntersectionsNear(World, this);
+	}
 }
 
 void ARealtimeRoadSplineActor::ClearTerrainPad()
