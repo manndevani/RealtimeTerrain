@@ -35,15 +35,21 @@ public:
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
 
 private:
 	//--- State & References ---
 	TWeakObjectPtr<UTerraDyneToolWidget> OwnerWidget;
 	
-	// Window State
+	// Window & Resize State
 	bool bIsDragging = false;
 	FVector2D DragOffset;
 	FVector2D WindowPosition = FVector2D(50, 50);
+
+	bool bIsResizing = false;
+	FVector2D ResizeStartMouse;
+	float InitialPanelWidth = 340.0f;
+	float PanelWidth = 340.0f;
 
 	/**
 	 * Shared button look for every SButton in this panel (dark HUD control fill, no rounded chrome).
@@ -60,6 +66,7 @@ private:
 	bool bSectionRoadsOpen = true;
 	bool bSectionBuildingsOpen = true;
 	bool bSectionTelemetryOpen = false;
+	bool bSectionTiledCesiumOpen = true;
 
 	// Road UI state
 	float RoadWidth = 8.0f;
@@ -148,6 +155,17 @@ private:
 	FReply OnLoadRasterLayersIntoSceneClicked();
 	FReply OnTopViewClicked();
 
+	// Dynamic Layers
+	FReply OnAddDynamicLayerClicked();
+	FReply OnRemoveDynamicLayerClicked(int32 Index);
+	FReply OnToggleDynamicLayerLoadClicked(int32 Index);
+	FReply OnClearAllDynamicLayersClicked();
+	TSharedRef<SWidget> MakeDynamicLayerRow(int32 Index, const struct FTerraDyneDynamicRasterLayer& Layer);
+	void RefreshDynamicLayersList();
+	void ShowNotificationModal(const FText& Title, const FText& Message, bool bIsError);
+
+	TSharedPtr<class SVerticalBox> DynamicLayersListBox;
+
 	bool IsImportLayerEnabled(ETerraDyneRasterLayer Layer) const;
 	bool IsUnloadLayerEnabled(ETerraDyneRasterLayer Layer) const;
 	bool IsToggleLayerLoadEnabled(ETerraDyneRasterLayer Layer) const;
@@ -163,9 +181,36 @@ private:
 
 	TOptional<float> GetGeoTIFFProgressFraction() const;
 	FText GetGeoTIFFProgressText() const;
+	FSlateColor GetGeoTIFFProgressTextColor() const;
 	EVisibility GetGeoTIFFProgressVisibility() const;
+	EVisibility GetGeoTIFFProgressBarVisibility() const;
 
 	void PickAndImportFileForLayer(ETerraDyneRasterLayer Layer);
+
+	//--- Tiled Cesium Import (local quantized-mesh terrain / XYZ imagery pyramids) ---
+	// Folder pickers rather than a typed-in path, so nothing points at a machine-specific
+	// location baked into source: the user browses to the pyramid root each time, and the last
+	// pick per pyramid type is remembered across editor sessions via GConfig (see .cpp).
+	FString LastCesiumTerrainFolder;
+	FString LastCesiumOverlayFolder;
+	FString LastCesiumTiledStatusMessage;
+	bool bLastCesiumTiledStatusIsError = false;
+
+	FReply OnImportCesiumTerrainTilesetClicked();
+	FReply OnImportCesiumImageryOverlayClicked();
+	FText GetCesiumTiledStatusText() const;
+	FSlateColor GetCesiumTiledStatusColor() const;
+
+	/** Flies the local player's camera to an aerial view over a just-imported pyramid's footprint. */
+	void FlyCameraOverImportedFootprint(FVector2D CenterLonLat, double SpanDegrees);
+
+	ECheckBoxState IsCutOutBackdropChecked() const;
+	void OnCutOutBackdropCheckedChanged(ECheckBoxState NewState);
+
+	/** -500m..+500m, mapped to/from the slider's normalized [0,1] range. */
+	float GetTiledCesiumHeightOffsetSliderValue() const;
+	void OnTiledCesiumHeightOffsetSliderChanged(float NewValue);
+	FText GetTiledCesiumHeightOffsetText() const;
 
 	// Buildings
 	class ATerraDyneBuildingActor* GetSelectedBuilding() const;
@@ -177,6 +222,7 @@ private:
 	FReply OnAddSplinePointClicked();
 	FReply OnRemoveSplinePointClicked();
 	FReply OnResetFootprintClicked();
+	FReply OnFocusBuildingClicked();
 	FReply OnRelevelClicked();
 	FReply OnDeleteBuildingClicked();
 

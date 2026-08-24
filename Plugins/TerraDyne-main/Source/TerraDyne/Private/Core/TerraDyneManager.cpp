@@ -74,6 +74,7 @@ void ATerraDyneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(ATerraDyneManager, bAwaitingWorldModeChoice);
 	DOREPLIFETIME(ATerraDyneManager, WorldOriginKind);
 	DOREPLIFETIME(ATerraDyneManager, RasterLayerSlots);
+	DOREPLIFETIME(ATerraDyneManager, DynamicRasterLayers);
 }
 
 void ATerraDyneManager::OnRep_RasterLayerSlots()

@@ -19,6 +19,9 @@ class USceneComponent;
 class UTerraDyneWorldPreset;
 class ATerraDyneEditController;
 class FTerraDyneGeoTIFFHeightSource;
+class ACesium3DTileset;
+class UCesiumUrlTemplateRasterOverlay;
+class ACesiumCartographicPolygon;
 
 /** Buffers snapshot for a single chunk before a stroke begins. */
 struct FTerraDyneChunkSnapshot
@@ -358,6 +361,40 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
 	bool LoadRasterLayersIntoScene(FString& OutError);
 
+	/** Dynamic raster layers imported by user (in addition to the primary Elevation DEM slot). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "TerraDyne|Raster")
+	TArray<FTerraDyneDynamicRasterLayer> DynamicRasterLayers;
+
+	/**
+	 * Inspects, auto-detects, checks for duplicates, and adds a dynamic raster layer.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool AddDynamicRasterLayer(const FString& FilePath, FTerraDyneDynamicRasterLayer& OutLayer, FString& OutError);
+
+	/**
+	 * Removes a dynamic layer by index.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool RemoveDynamicRasterLayer(int32 LayerIndex);
+
+	/**
+	 * Clears all dynamic layers.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	void ClearAllDynamicRasterLayers();
+
+	/**
+	 * Loads and applies a dynamic raster layer as the active visual overlay on the terrain.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	bool LoadDynamicRasterLayer(int32 LayerIndex, FString& OutError);
+
+	/**
+	 * Unloads a dynamic raster layer from the scene.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Raster")
+	void UnloadDynamicRasterLayer(int32 LayerIndex);
+
 	/** True when a layer slot holds a validated raster. */
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Raster")
 	bool IsRasterLayerImported(ETerraDyneRasterLayer Layer) const;
@@ -390,6 +427,112 @@ public:
 
 	/** True if ActiveGeoTIFFHeightSource is decoded and ready for sampling */
 	bool HasElevationHeightSource() const;
+
+	/** Currently active visual overlay texture (e.g. Color Relief / Hillshade) */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "TerraDyne|Raster")
+	TObjectPtr<class UTexture2D> ActiveGeoTIFFVisualOverlayTexture;
+
+	/** Decoded pixel buffer of the active visual overlay for instant chunk color sampling */
+	TArray<FColor> ActiveGeoTIFFVisualOverlayPixels;
+	int32 ActiveGeoTIFFVisualOverlayWidth = 0;
+	int32 ActiveGeoTIFFVisualOverlayHeight = 0;
+
+	/** Active visual overlay raster layer and display name */
+	ETerraDyneRasterLayer ActiveVisualOverlayLayer = ETerraDyneRasterLayer::Elevation;
+	FString ActiveVisualOverlayName;
+
+	bool HasActiveVisualOverlay() const { return ActiveGeoTIFFVisualOverlayPixels.Num() > 0 && ActiveVisualOverlayLayer != ETerraDyneRasterLayer::Elevation; }
+	ETerraDyneRasterLayer GetActiveVisualOverlayLayer() const { return ActiveVisualOverlayLayer; }
+	const FString& GetActiveVisualOverlayName() const { return ActiveVisualOverlayName; }
+
+	/** Updates the visual layer coloring across all active chunks */
+	void ApplyVisualOverlayToAllChunks();
+
+	//--- TILED CESIUM IMPORT ---
+	// Displays disk-based Cesium tile pyramids (quantized-mesh terrain, XYZ imagery) alongside
+	// TerraDyne's own chunk terrain, entirely offline via file:/// URLs -- ACesium3DTileset's
+	// FromUrl source and UCesiumUrlTemplateRasterOverlay never touch CesiumIonServer or open a
+	// socket for a local path. This is a separate rendered actor, not a height/overlay source
+	// TerraDyne's own chunks sample from (see FTerraDyneGeoTIFFHeightSource for that).
+	//
+	// DEM-only: both entry points refuse to run in a Sandbox (procedural) world -- a tiled real-world
+	// pyramid dropped next to procedurally generated terrain would sit at the wrong scale and the
+	// wrong place relative to it, since Sandbox has no georeferenced footprint to align against.
+	// Gated on the same WorldOriginKind/HasElevationLayer check the GeoTIFF raster UI already uses
+	// (see STerraDynePanel::GetGeoTIFFSectionVisibility) so the two stay consistent.
+
+	/**
+	 * Points a Cesium3DTileset at a local quantized-mesh pyramid: a folder containing layer.json
+	 * and its {z}/{x}/{y}.terrain tiles. Spawns the tileset actor on first call; later calls
+	 * repoint the same actor at a new folder.
+	 *
+	 * OutCenterLonLat/OutSpanDegrees describe the pyramid's own geographic footprint (its deepest
+	 * zoom level's tile index range, converted to lon/lat) so the caller can fly the camera there --
+	 * left at (0,0)/0 if the footprint couldn't be determined, which is not itself a failure.
+	 *
+	 * When bCutOutBackdropForTiledImport is on (the default), also cuts a hole -- via a
+	 * UCesiumPolygonRasterOverlay clip on a rectangle matching this footprint -- in every OTHER
+	 * ACesium3DTileset already in the world (e.g. a placed Cesium World Terrain used as the level's
+	 * default globe backdrop), so it stops rendering real terrain geometry for the same ground this
+	 * import now covers instead of visibly overlapping/z-fighting with it. See
+	 * SetCutOutBackdropForTiledImport to turn this off.
+	 *
+	 * Returns false with OutError if the world is Sandbox rather than Imported/DEM, or if
+	 * PyramidFolder has no layer.json.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|TiledImport")
+	bool ImportCesiumTerrainTileset(const FString& PyramidFolder, FString& OutError, FVector2D& OutCenterLonLat, double& OutSpanDegrees);
+
+	/**
+	 * Adds (or repoints) a URL-template raster overlay reading a local XYZ PNG pyramid -- files laid
+	 * out on disk as {z}/{x}/{y}.png under PyramidFolder, WebMercator projection -- onto the tileset
+	 * spawned by ImportCesiumTerrainTileset, spawning a bare ellipsoid tileset first if none exists
+	 * yet so the overlay has something to drape onto. Requested via Cesium's "{reverseY}" template
+	 * token, not "{y}": Cesium's own convention for "{y}" is TMS row-ordering (0 = south), while a
+	 * standard XYZ/slippy-map export like these (0 = north) needs "{reverseY}" -- using "{y}" here
+	 * would silently request every row from the wrong end of the pyramid.
+	 *
+	 * The zoom range is read from PyramidFolder's own numeric subfolder names, not hardcoded.
+	 * OutCenterLonLat/OutSpanDegrees are the same kind of footprint result as
+	 * ImportCesiumTerrainTileset's, computed from this pyramid's own tiles.
+	 *
+	 * Returns false with OutError if the world is Sandbox rather than Imported/DEM, or if no
+	 * numeric zoom subfolders are found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|TiledImport")
+	bool ImportCesiumImageryOverlay(const FString& PyramidFolder, FString& OutError, FVector2D& OutCenterLonLat, double& OutSpanDegrees);
+
+	/** The tileset actor spawned by either tiled-import call above, or null if neither has run. */
+	ACesium3DTileset* GetActiveTiledCesiumTileset() const { return ActiveTiledCesiumTileset; }
+
+	/** The imagery overlay component spawned by ImportCesiumImageryOverlay, or null if it hasn't run. */
+	UCesiumUrlTemplateRasterOverlay* GetActiveTiledCesiumOverlay() const { return ActiveTiledCesiumOverlay; }
+
+	/**
+	 * Turns the backdrop cutout described on ImportCesiumTerrainTileset on/off, live -- switching it
+	 * off removes any clip this manager already applied and leaves every other tileset fully intact;
+	 * switching it back on re-applies the clip for whatever footprint was last imported. Off is the
+	 * right call if the computed footprint is wrong/approximate (a bad zoom-level scan, say) and the
+	 * cutout would carve a hole in the wrong place.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|TiledImport")
+	void SetCutOutBackdropForTiledImport(bool bEnabled);
+
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|TiledImport")
+	bool GetCutOutBackdropForTiledImport() const { return bCutOutBackdropForTiledImport; }
+
+	/**
+	 * Vertical offset (metres) applied to the imported tiled Cesium actor (terrain or the bare
+	 * ellipsoid an imagery-only import spawns) -- lets the user nudge the imported layer up/down to
+	 * work around a residual vertical mismatch against the backdrop, or z-fighting right at the
+	 * cutout edge. Absolute, not cumulative: calling this twice with the same value is a no-op, not
+	 * a double lift.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|TiledImport")
+	void SetTiledCesiumHeightOffset(double OffsetMeters);
+
+	UFUNCTION(BlueprintPure, Category = "TerraDyne|TiledImport")
+	double GetTiledCesiumHeightOffset() const { return TiledCesiumHeightOffsetMeters; }
 
 	/** Spawns or loads a chunk at the given grid coordinate */
 	void LoadOrSpawnChunk(FIntPoint Coord);
@@ -757,6 +900,36 @@ private:
 	 * a file.
 	 */
 	TUniquePtr<FTerraDyneGeoTIFFHeightSource> ActiveGeoTIFFHeightSource;
+
+	/** The actor spawned by ImportCesiumTerrainTileset/ImportCesiumImageryOverlay, if either has run. */
+	UPROPERTY(Transient)
+	TObjectPtr<ACesium3DTileset> ActiveTiledCesiumTileset;
+
+	/** The overlay component spawned by ImportCesiumImageryOverlay, if it has run. */
+	UPROPERTY(Transient)
+	TObjectPtr<UCesiumUrlTemplateRasterOverlay> ActiveTiledCesiumOverlay;
+
+	/** See SetCutOutBackdropForTiledImport. */
+	UPROPERTY(Transient)
+	bool bCutOutBackdropForTiledImport = true;
+
+	/** The clip polygon RefreshTiledCesiumBackdropCutout maintains, matching the last-imported footprint. */
+	UPROPERTY(Transient)
+	TObjectPtr<ACesiumCartographicPolygon> ActiveTiledCesiumClipPolygon;
+
+	/** See SetTiledCesiumHeightOffset. */
+	UPROPERTY(Transient)
+	double TiledCesiumHeightOffsetMeters = 0.0;
+
+	/** The last footprint either tiled-import call computed -- what RefreshTiledCesiumBackdropCutout clips to. */
+	FVector2D LastTiledImportFootprintCenterLonLat = FVector2D::ZeroVector;
+	double LastTiledImportFootprintSpanDegrees = 0.0;
+
+	/** Applies (or removes, per bCutOutBackdropForTiledImport) the backdrop cutout described on ImportCesiumTerrainTileset. */
+	void RefreshTiledCesiumBackdropCutout();
+
+	/** Applies TiledCesiumHeightOffsetMeters to ActiveTiledCesiumTileset, if one exists. */
+	void ApplyTiledCesiumHeightOffset();
 
 	void ImportGeoTIFFInternal(const FString& FilePath, const FTerraDyneGeoTIFFImportOptions& Options);
 	bool TryPopulateChunkFromGeoTIFF(ATerraDyneChunk* Chunk, FIntPoint Coord);

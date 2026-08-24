@@ -225,7 +225,21 @@ bool ATerraDyneManager::TryPopulateChunkFromGeoTIFF(ATerraDyneChunk* Chunk, FInt
 	const double ChunkWorldZ = ActiveGeoTIFFHeightSource->GetChunkWorldZOffset();
 	const float ResolvedZScale = ActiveGeoTIFFHeightSource->GetZScale();
 
-	Chunk->PopulateFromDEM(MoveTemp(Sampled), ResolvedZScale, ChunkWorldZ, /*bGenerateCollision=*/false);
+	Chunk->PopulateFromDEM(
+		MoveTemp(Sampled),
+		ResolvedZScale,
+		ChunkWorldZ,
+		/*bGenerateCollision=*/true,
+		GeoTIFFImportState.WorldFootprintMin,
+		GeoTIFFImportState.WorldFootprintMax,
+		ActiveGeoTIFFVisualOverlayPixels,
+		ActiveGeoTIFFVisualOverlayWidth,
+		ActiveGeoTIFFVisualOverlayHeight);
+
+	if (ActiveGeoTIFFVisualOverlayTexture)
+	{
+		Chunk->SetOverlayTexture(ActiveGeoTIFFVisualOverlayTexture);
+	}
 
 	return true;
 }
@@ -303,8 +317,42 @@ bool ATerraDyneManager::LoadSpecificRasterLayer(ETerraDyneRasterLayer Layer, FSt
 		return false;
 	}
 
-	RasterLayerSlots[Index].bLoadedIntoScene = true;
-	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: loaded raster layer %s into scene"),
+	// Decode GeoTIFF visual layer into pixel buffer and GPU texture
+	FString DecodeErr;
+	if (!FTerraDyneGeoTIFFReader::DecodeRasterPixels(
+		RasterLayerSlots[Index].SourceFilePath,
+		4096,
+		ActiveGeoTIFFVisualOverlayPixels,
+		ActiveGeoTIFFVisualOverlayWidth,
+		ActiveGeoTIFFVisualOverlayHeight,
+		DecodeErr))
+	{
+		OutError = FString::Printf(TEXT("Failed to decode visual layer %s: %s"),
+			*TerraDyneRasterLayers::GetDisplayName(Layer).ToString(), *DecodeErr);
+		return false;
+	}
+
+	ActiveGeoTIFFVisualOverlayTexture = FTerraDyneGeoTIFFReader::DecodeRasterToTexture(
+		RasterLayerSlots[Index].SourceFilePath,
+		4096,
+		DecodeErr);
+
+	ActiveVisualOverlayLayer = Layer;
+	ActiveVisualOverlayName = TerraDyneRasterLayers::GetDisplayName(Layer).ToString();
+
+	// Reset any other visual overlay slots
+	for (int32 i = 0; i < RasterLayerSlots.Num(); ++i)
+	{
+		if (i != (int32)ETerraDyneRasterLayer::Elevation)
+		{
+			RasterLayerSlots[i].bLoadedIntoScene = (i == Index);
+		}
+	}
+
+	// Apply overlay colors across all active chunks in the world
+	ApplyVisualOverlayToAllChunks();
+
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: loaded visual raster layer %s into scene"),
 		*TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
 	return true;
 }
@@ -325,6 +373,12 @@ bool ATerraDyneManager::UnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer, F
 		ImportedChunkCoords.Reset();
 		GeoTIFFImportState = FTerraDyneGeoTIFFImportState();
 		WorldOriginKind = ETerraDyneChunkOrigin::Procedural;
+		ActiveGeoTIFFVisualOverlayPixels.Reset();
+		ActiveGeoTIFFVisualOverlayWidth = 0;
+		ActiveGeoTIFFVisualOverlayHeight = 0;
+		ActiveGeoTIFFVisualOverlayTexture = nullptr;
+		ActiveVisualOverlayLayer = ETerraDyneRasterLayer::Elevation;
+		ActiveVisualOverlayName.Reset();
 
 		TArray<FIntPoint> ExistingCoords;
 		ActiveChunkMap.GetKeys(ExistingCoords);
@@ -357,9 +411,39 @@ bool ATerraDyneManager::UnloadSpecificRasterLayer(ETerraDyneRasterLayer Layer, F
 	}
 
 	RasterLayerSlots[Index].bLoadedIntoScene = false;
+	ActiveGeoTIFFVisualOverlayPixels.Reset();
+	ActiveGeoTIFFVisualOverlayWidth = 0;
+	ActiveGeoTIFFVisualOverlayHeight = 0;
+	ActiveGeoTIFFVisualOverlayTexture = nullptr;
+	ActiveVisualOverlayLayer = ETerraDyneRasterLayer::Elevation;
+	ActiveVisualOverlayName.Reset();
+
+	ApplyVisualOverlayToAllChunks();
+
 	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: unloaded raster layer %s from scene"),
 		*TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
 	return true;
+}
+
+void ATerraDyneManager::ApplyVisualOverlayToAllChunks()
+{
+	for (const auto& Pair : ActiveChunkMap)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->ApplyVisualOverlay(
+				ActiveGeoTIFFVisualOverlayPixels,
+				ActiveGeoTIFFVisualOverlayWidth,
+				ActiveGeoTIFFVisualOverlayHeight,
+				GeoTIFFImportState.WorldFootprintMin,
+				GeoTIFFImportState.WorldFootprintMax);
+
+			if (ActiveGeoTIFFVisualOverlayTexture)
+			{
+				Pair.Value->SetOverlayTexture(ActiveGeoTIFFVisualOverlayTexture);
+			}
+		}
+	}
 }
 
 bool ATerraDyneManager::ImportRasterLayer(ETerraDyneRasterLayer Layer, const FString& FilePath, FString& OutError)
@@ -549,4 +633,190 @@ bool ATerraDyneManager::LoadRasterLayersIntoScene(FString& OutError)
 	}
 
 	return true;
+}
+
+bool ATerraDyneManager::AddDynamicRasterLayer(
+	const FString& FilePath,
+	FTerraDyneDynamicRasterLayer& OutLayer,
+	FString& OutError)
+{
+	OutError.Reset();
+
+	if (FilePath.IsEmpty() || !FPaths::FileExists(FilePath))
+	{
+		OutError = TEXT("File does not exist or path is invalid.");
+		return false;
+	}
+
+	// 1. Check for duplicates against primary Elevation DEM
+	if (RasterLayerSlots.IsValidIndex((int32)ETerraDyneRasterLayer::Elevation) &&
+		RasterLayerSlots[(int32)ETerraDyneRasterLayer::Elevation].bImported &&
+		FPaths::IsSamePath(RasterLayerSlots[(int32)ETerraDyneRasterLayer::Elevation].SourceFilePath, FilePath))
+	{
+		OutError = FString::Printf(
+			TEXT("Duplicate Layer: '%s' is already imported as the master Elevation (DEM)."),
+			*FPaths::GetCleanFilename(FilePath));
+		return false;
+	}
+
+	// 2. Check for duplicates in DynamicRasterLayers
+	for (const FTerraDyneDynamicRasterLayer& Existing : DynamicRasterLayers)
+	{
+		if (FPaths::IsSamePath(Existing.SourceFilePath, FilePath))
+		{
+			OutError = FString::Printf(
+				TEXT("Duplicate Layer: '%s' is already in your dynamic layer stack (%s)."),
+				*FPaths::GetCleanFilename(FilePath), *Existing.DisplayName);
+			return false;
+		}
+	}
+
+	// 3. Auto-detect raster type and metadata
+	if (!TerraDyneRasterLayers::AutoDetectRasterType(
+		FilePath,
+		OutLayer.LayerType,
+		OutLayer.DisplayName,
+		OutLayer.Info,
+		OutError))
+	{
+		return false;
+	}
+
+	// 4. Validate georeferencing against master DEM if present
+	if (HasElevationLayer())
+	{
+		const FTerraDyneRasterInfo& DemInfo = RasterLayerSlots[(int32)ETerraDyneRasterLayer::Elevation].Info;
+		if (DemInfo.Width > 0 && DemInfo.Height > 0)
+		{
+			// Check CRS compatibility if both declare projection
+			if (DemInfo.bIsUTM && OutLayer.Info.bIsUTM && DemInfo.UTMZone != OutLayer.Info.UTMZone)
+			{
+				UE_LOG(LogTerraDyne, Warning,
+					TEXT("TerraDyne: Layer '%s' UTM Zone (%d) differs from DEM UTM Zone (%d) -- proceeding with local footprint mapping."),
+					*FPaths::GetCleanFilename(FilePath), OutLayer.Info.UTMZone, DemInfo.UTMZone);
+			}
+		}
+	}
+
+	OutLayer.LayerId = FGuid::NewGuid();
+	OutLayer.SourceFilePath = FilePath;
+	OutLayer.Width = OutLayer.Info.Width;
+	OutLayer.Height = OutLayer.Info.Height;
+	OutLayer.BandCount = OutLayer.Info.BandCount;
+	OutLayer.bIsActiveInScene = false;
+
+	DynamicRasterLayers.Add(OutLayer);
+
+	UE_LOG(LogTerraDyne, Log,
+		TEXT("TerraDyne: Added dynamic raster layer '%s' as [%s] (%dx%d, %d bands)"),
+		*FilePath, *OutLayer.DisplayName, OutLayer.Width, OutLayer.Height, OutLayer.BandCount);
+
+	return true;
+}
+
+bool ATerraDyneManager::RemoveDynamicRasterLayer(int32 LayerIndex)
+{
+	if (!DynamicRasterLayers.IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+
+	if (DynamicRasterLayers[LayerIndex].bIsActiveInScene)
+	{
+		UnloadDynamicRasterLayer(LayerIndex);
+	}
+
+	DynamicRasterLayers.RemoveAt(LayerIndex);
+	return true;
+}
+
+void ATerraDyneManager::ClearAllDynamicRasterLayers()
+{
+	for (int32 i = 0; i < DynamicRasterLayers.Num(); ++i)
+	{
+		if (DynamicRasterLayers[i].bIsActiveInScene)
+		{
+			UnloadDynamicRasterLayer(i);
+		}
+	}
+	DynamicRasterLayers.Reset();
+}
+
+bool ATerraDyneManager::LoadDynamicRasterLayer(int32 LayerIndex, FString& OutError)
+{
+	OutError.Reset();
+
+	if (!DynamicRasterLayers.IsValidIndex(LayerIndex))
+	{
+		OutError = TEXT("Invalid dynamic layer index.");
+		return false;
+	}
+
+	if (!HasElevationLayer() || !IsRasterLayerLoadedInScene(ETerraDyneRasterLayer::Elevation))
+	{
+		OutError = TEXT("Cannot load overlay layer before Elevation (DEM) is loaded into the scene.");
+		return false;
+	}
+
+	const FTerraDyneDynamicRasterLayer& Layer = DynamicRasterLayers[LayerIndex];
+
+	// Decode GeoTIFF visual layer into pixel buffer and GPU texture
+	FString DecodeErr;
+	if (!FTerraDyneGeoTIFFReader::DecodeRasterPixels(
+		Layer.SourceFilePath,
+		4096,
+		ActiveGeoTIFFVisualOverlayPixels,
+		ActiveGeoTIFFVisualOverlayWidth,
+		ActiveGeoTIFFVisualOverlayHeight,
+		DecodeErr))
+	{
+		OutError = FString::Printf(TEXT("Failed to decode layer '%s': %s"), *Layer.DisplayName, *DecodeErr);
+		return false;
+	}
+
+	ActiveGeoTIFFVisualOverlayTexture = FTerraDyneGeoTIFFReader::DecodeRasterToTexture(
+		Layer.SourceFilePath,
+		4096,
+		DecodeErr);
+
+	ActiveVisualOverlayLayer = Layer.LayerType;
+	ActiveVisualOverlayName = Layer.DisplayName;
+
+	// Reset any static visual overlay slots
+	for (int32 i = 0; i < RasterLayerSlots.Num(); ++i)
+	{
+		if (i != (int32)ETerraDyneRasterLayer::Elevation)
+		{
+			RasterLayerSlots[i].bLoadedIntoScene = false;
+		}
+	}
+
+	// Update active state in dynamic list
+	for (int32 i = 0; i < DynamicRasterLayers.Num(); ++i)
+	{
+		DynamicRasterLayers[i].bIsActiveInScene = (i == LayerIndex);
+	}
+
+	// Apply overlay colors across all active chunks in the world
+	ApplyVisualOverlayToAllChunks();
+
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: loaded dynamic raster layer '%s' into scene"), *Layer.DisplayName);
+	return true;
+}
+
+void ATerraDyneManager::UnloadDynamicRasterLayer(int32 LayerIndex)
+{
+	if (DynamicRasterLayers.IsValidIndex(LayerIndex))
+	{
+		DynamicRasterLayers[LayerIndex].bIsActiveInScene = false;
+	}
+
+	ActiveGeoTIFFVisualOverlayPixels.Reset();
+	ActiveGeoTIFFVisualOverlayWidth = 0;
+	ActiveGeoTIFFVisualOverlayHeight = 0;
+	ActiveGeoTIFFVisualOverlayTexture = nullptr;
+	ActiveVisualOverlayLayer = ETerraDyneRasterLayer::Elevation;
+	ActiveVisualOverlayName.Reset();
+
+	ApplyVisualOverlayToAllChunks();
 }

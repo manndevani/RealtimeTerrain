@@ -28,6 +28,7 @@ enum class ETerraDyneRasterLayer : uint8
 	Slope           UMETA(DisplayName = "Slope"),
 	Aspect          UMETA(DisplayName = "Aspect"),
 	Roughness       UMETA(DisplayName = "Roughness"),
+	Satellite       UMETA(DisplayName = "Satellite / Ortho"),
 
 	MAX             UMETA(Hidden)
 };
@@ -67,6 +68,45 @@ struct TERRADYNE_API FTerraDyneRasterLayerSlot
 	}
 };
 
+/** Dynamic layer entry in the user's overlay stack. */
+USTRUCT(BlueprintType)
+struct TERRADYNE_API FTerraDyneDynamicRasterLayer
+{
+	GENERATED_BODY()
+
+	/** Unique ID for this dynamic layer instance. */
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	FGuid LayerId = FGuid::NewGuid();
+
+	/** Detected or assigned raster type. */
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	ETerraDyneRasterLayer LayerType = ETerraDyneRasterLayer::Satellite;
+
+	/** User-facing display title (e.g. "Satellite / Ortho", "Slope", "Aspect"). */
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	FString DisplayName;
+
+	/** Source file path. */
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	FString SourceFilePath;
+
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	int32 Width = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	int32 Height = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	int32 BandCount = 0;
+
+	/** True if currently loaded and active in the scene. */
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
+	bool bIsActiveInScene = false;
+
+	/** Georeferencing detail. */
+	FTerraDyneRasterInfo Info;
+};
+
 namespace TerraDyneRasterLayers
 {
 	/** Human-readable name for a layer, for UI and log messages. */
@@ -80,11 +120,16 @@ namespace TerraDyneRasterLayers
 
 	/**
 	 * Whether a raster's band count suits the layer it is being imported as.
-	 *
-	 * Elevation must be single-band -- a 3-band RGB image carries no height. Colour layers are
-	 * expected to be 3 or 4 band, greyscale analytical products (slope/aspect/roughness/hillshade)
-	 * single-band, but those are accepted either way since a greyscale product saved as RGB is
-	 * harmless as an overlay.
 	 */
 	TERRADYNE_API bool IsBandCountValidFor(ETerraDyneRasterLayer Layer, int32 BandCount, FString& OutReason);
+
+	/**
+	 * Automatically inspects a GeoTIFF raster file and detects its product type.
+	 */
+	TERRADYNE_API bool AutoDetectRasterType(
+		const FString& FilePath,
+		ETerraDyneRasterLayer& OutType,
+		FString& OutTypeLabel,
+		FTerraDyneRasterInfo& OutInfo,
+		FString& OutError);
 }

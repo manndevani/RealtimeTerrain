@@ -41,10 +41,15 @@ TArray<int32> UTerraDyneBuildingKit::GetPanelWidthsDescending() const
 
 	for (const FTerraDyneWallPanelEntry& Entry : WallPanels)
 	{
-		if (Entry.WidthUnits > 0 && !Entry.Mesh.IsNull())
+		if (Entry.WidthUnits > 0)
 		{
 			Widths.AddUnique(Entry.WidthUnits);
 		}
+	}
+
+	if (Widths.Num() == 0)
+	{
+		Widths = { 800, 400, 200 };
 	}
 
 	Widths.Sort([](int32 A, int32 B) { return A > B; });
@@ -57,10 +62,15 @@ UStaticMesh* UTerraDyneBuildingKit::ResolvePanelOfWidth(int32 WidthUnits) const
 	{
 		if (Entry.WidthUnits == WidthUnits && !Entry.Mesh.IsNull())
 		{
-			return Entry.Mesh.LoadSynchronous();
+			if (UStaticMesh* Loaded = Entry.Mesh.LoadSynchronous())
+			{
+				return Loaded;
+			}
 		}
 	}
-	return nullptr;
+
+	// Graceful fallback to engine cube
+	return LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 }
 
 int32 UTerraDyneBuildingKit::GetSmallestPanelWidth() const
@@ -68,12 +78,12 @@ int32 UTerraDyneBuildingKit::GetSmallestPanelWidth() const
 	int32 Smallest = 0;
 	for (const FTerraDyneWallPanelEntry& Entry : WallPanels)
 	{
-		if (Entry.WidthUnits > 0 && !Entry.Mesh.IsNull())
+		if (Entry.WidthUnits > 0)
 		{
 			Smallest = (Smallest == 0) ? Entry.WidthUnits : FMath::Min(Smallest, Entry.WidthUnits);
 		}
 	}
-	return Smallest;
+	return Smallest > 0 ? Smallest : 200;
 }
 
 TArray<FTerraDyneFloorTileEntry> UTerraDyneBuildingKit::GetFloorTilesDescending() const
@@ -81,10 +91,19 @@ TArray<FTerraDyneFloorTileEntry> UTerraDyneBuildingKit::GetFloorTilesDescending(
 	TArray<FTerraDyneFloorTileEntry> Tiles;
 	for (const FTerraDyneFloorTileEntry& Entry : FloorTiles)
 	{
-		if (Entry.SizeUnits > 0 && !Entry.Mesh.IsNull())
+		if (Entry.SizeUnits > 0)
 		{
 			Tiles.Add(Entry);
 		}
+	}
+
+	if (Tiles.Num() == 0)
+	{
+		Tiles = {
+			{ 400, TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube"))) },
+			{ 200, TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube"))) },
+			{ 100, TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cube.Cube"))) }
+		};
 	}
 
 	Tiles.Sort([](const FTerraDyneFloorTileEntry& A, const FTerraDyneFloorTileEntry& B)
@@ -99,7 +118,7 @@ TArray<FTerraDyneFloorTileEntry> UTerraDyneBuildingKit::GetRoofTilesDescending()
 	TArray<FTerraDyneFloorTileEntry> Tiles;
 	for (const FTerraDyneFloorTileEntry& Entry : RoofTiles)
 	{
-		if (Entry.SizeUnits > 0 && !Entry.Mesh.IsNull())
+		if (Entry.SizeUnits > 0)
 		{
 			Tiles.Add(Entry);
 		}
@@ -119,5 +138,5 @@ TArray<FTerraDyneFloorTileEntry> UTerraDyneBuildingKit::GetRoofTilesDescending()
 
 bool UTerraDyneBuildingKit::IsUsable() const
 {
-	return GetSmallestPanelWidth() > 0;
+	return ModuleWidth > 0.0f && FloorHeight > 0.0f;
 }

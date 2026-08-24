@@ -797,13 +797,27 @@ void ATerraDyneBuildingActor::BuildWalls(const TArray<FVector>& Points, const UT
 
 				if (!Mesh)
 				{
-					continue;
+					Mesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 				}
 
-				if (UInstancedStaticMeshComponent* ISM = GetOrCreateInstancer(Mesh))
+				if (Mesh)
 				{
-					const FVector Location = A + Dir3 * Placement.Offset + FVector(0.0f, 0.0f, FloorZ);
-					ISM->AddInstance(FTransform(PanelRot, Location));
+					if (UInstancedStaticMeshComponent* ISM = GetOrCreateInstancer(Mesh))
+					{
+						const bool bIsBasicCube = Mesh->GetPathName().Contains(TEXT("BasicShapes"));
+						if (bIsBasicCube)
+						{
+							const FVector Scale(0.2f, static_cast<float>(Placement.Width) / 100.0f, InKit->FloorHeight / 100.0f);
+							const FVector CenterLoc = A + Dir3 * (Placement.Offset + Placement.Width * 0.5f) + FVector(0.0f, 0.0f, FloorZ + InKit->FloorHeight * 0.5f);
+							const float WallYaw = FMath::RadiansToDegrees(FMath::Atan2(Dir.Y, Dir.X));
+							ISM->AddInstance(FTransform(FRotator(0.0f, WallYaw, 0.0f), CenterLoc, Scale));
+						}
+						else
+						{
+							const FVector Location = A + Dir3 * Placement.Offset + FVector(0.0f, 0.0f, FloorZ);
+							ISM->AddInstance(FTransform(PanelRot, Location));
+						}
+					}
 				}
 			}
 		}
@@ -812,12 +826,11 @@ void ATerraDyneBuildingActor::BuildWalls(const TArray<FVector>& Points, const UT
 
 void ATerraDyneBuildingActor::BuildCornerPosts(const TArray<FVector>& Points, const UTerraDyneBuildingKit* InKit)
 {
-	if (InKit->CornerPost.IsNull())
+	UStaticMesh* PostMesh = InKit->CornerPost.IsNull() ? nullptr : InKit->CornerPost.LoadSynchronous();
+	if (!PostMesh)
 	{
-		return;
+		PostMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	}
-
-	UStaticMesh* PostMesh = InKit->CornerPost.LoadSynchronous();
 	if (!PostMesh)
 	{
 		return;
@@ -829,6 +842,7 @@ void ATerraDyneBuildingActor::BuildCornerPosts(const TArray<FVector>& Points, co
 		return;
 	}
 
+	const bool bIsBasicCube = PostMesh->GetPathName().Contains(TEXT("BasicShapes"));
 	const int32 NumPoints = Points.Num();
 	const bool bClosed = FootprintSpline && FootprintSpline->IsClosedLoop();
 	const int32 NumPosts = bClosed ? NumPoints : NumPoints;
@@ -856,8 +870,17 @@ void ATerraDyneBuildingActor::BuildCornerPosts(const TArray<FVector>& Points, co
 
 		for (int32 Floor = 0; Floor < FloorCount; ++Floor)
 		{
-			const FVector Location = Points[i] + FVector(0.0f, 0.0f, Floor * InKit->FloorHeight);
-			ISM->AddInstance(FTransform(PostRot, Location));
+			if (bIsBasicCube)
+			{
+				const FVector Scale(0.35f, 0.35f, InKit->FloorHeight / 100.0f);
+				const FVector CenterLoc = Points[i] + FVector(0.0f, 0.0f, Floor * InKit->FloorHeight + InKit->FloorHeight * 0.5f);
+				ISM->AddInstance(FTransform(FRotator(0.0f, Yaw - InKit->SegmentYawOffset, 0.0f), CenterLoc, Scale));
+			}
+			else
+			{
+				const FVector Location = Points[i] + FVector(0.0f, 0.0f, Floor * InKit->FloorHeight);
+				ISM->AddInstance(FTransform(PostRot, Location));
+			}
 		}
 	}
 }
@@ -951,12 +974,28 @@ void ATerraDyneBuildingActor::PlaceSlabCell(
 
 	if (IsCellInsidePolygon(Polygon, CellCorner, Size))
 	{
-		if (UStaticMesh* Mesh = Tiles[TileIndex].Mesh.LoadSynchronous())
+		UStaticMesh* Mesh = Tiles[TileIndex].Mesh.IsNull() ? nullptr : Tiles[TileIndex].Mesh.LoadSynchronous();
+		if (!Mesh)
+		{
+			Mesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		}
+
+		if (Mesh)
 		{
 			if (UInstancedStaticMeshComponent* ISM = GetOrCreateInstancer(Mesh))
 			{
-				ISM->AddInstance(FTransform(FRotator::ZeroRotator,
-					FVector(CellCorner.X, CellCorner.Y, LevelZ)));
+				const bool bIsBasicCube = Mesh->GetPathName().Contains(TEXT("BasicShapes"));
+				if (bIsBasicCube)
+				{
+					const FVector Scale(Size / 100.0f, Size / 100.0f, 0.2f);
+					const FVector Center(CellCorner.X + Size * 0.5f, CellCorner.Y - Size * 0.5f, LevelZ - 10.0f);
+					ISM->AddInstance(FTransform(FRotator::ZeroRotator, Center, Scale));
+				}
+				else
+				{
+					ISM->AddInstance(FTransform(FRotator::ZeroRotator,
+						FVector(CellCorner.X, CellCorner.Y, LevelZ)));
+				}
 			}
 		}
 		return;

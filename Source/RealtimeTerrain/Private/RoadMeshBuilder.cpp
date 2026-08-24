@@ -649,8 +649,8 @@ bool SampleGroundHeight(
 	}
 
 	// Either there is no TerraDyne in this world, or no chunk is streamed in at this spot.
-	const FVector Start(WorldXY.X, WorldXY.Y, 200000.0);
-	const FVector End(WorldXY.X, WorldXY.Y, -100000.0);
+	const FVector Start(WorldXY.X, WorldXY.Y, 20000000.0); // 200 km
+	const FVector End(WorldXY.X, WorldXY.Y, -20000000.0);
 
 	FHitResult Hit;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(RoadGroundSample), false, Context);

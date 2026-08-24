@@ -1,6 +1,6 @@
 # RealtimeTerrain (Unreal Engine 5.8)
 
-A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for large-scale geographic datasets, real-time procedural sculpting, multi-layer GIS/DEM raster ingestion, spline road networks, modular buildings, and world persistence.
+A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
 
 ---
 
@@ -13,12 +13,13 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
                        │                         │
                [SANDBOX MODE]            [GIS DEM MODE]
                        │                         │
-            Procedural Fractal Grid         GDAL Multi-Layer Ingestion
-            (Base / Sculpt / Detail)       (Elevation + 6 Derived Layers)
+            Procedural Fractal Grid         Dynamic GIS Layer Stack
+            (Base / Sculpt / Detail)       (Master DEM + Auto-Detected Overlays)
                        │                         │
                        │             Cesium GlobeAnchor Georeferencing
                        │             Adaptive Macro Chunk Sizing (~13.7km)
-                       │             Zero High-Altitude Eviction
+                       │             16-bit Multi-Band Satellite Ingestion
+                       │             Dynamic Overlay Stack & Modal Validation
                        │                         │
                        └───────────┬─────────────┘
                                    ▼
@@ -28,9 +29,9 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
        │ • High-Speed FDynamicMesh3 & Dynamic Collisions         │
        │ • Cesium DynamicPawn (WGS84, ESU Horizon, Zoom, TopView)│
        │ • Procedural Spline Roads & Junction Networks           │
-       │ • Modular Spline Buildings & Terraforming Pads          │
+       │ • Modular Spline Buildings & Dynamic-Step Pad Leveling  │
        │ • Full Undo/Redo (Ctrl+Z/Y) & Disk Persistence          │
-       │ • Slate Technical HUD with Live Progress & Layer Toggles│
+       │ • Dynamic Slate HUD (Auto-Detect, Load/Unload, Delete)  │
        └─────────────────────────────────────────────────────────┘
 ```
 
@@ -47,42 +48,41 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **WGS84 Georeferencing**: Live Longitude, Latitude, and Height coordinate tracking.
   * **ESU Horizon Leveling**: Computes true East-South-Up orientation, eliminating horizon skew and gimbal lock across planetary distances.
   * **Ellipsoid-Aligned Flight**: `MoveUp_World` automatically follows the true geodetic surface normal.
-  * **Smooth Altitude-Scaled Zoom**: Mouse wheel zoom exponentially scales with camera altitude ($100\text{ m}$ ground level to $500\text{ km}$ orbit).
+  * **Smooth Altitude-Scaled Zoom**: Mouse wheel zoom exponentially scales with camera altitude ($100\text{ m}$ ground level to $500\text{ km}$ orbit) — scaled from the pawn's real WGS84 height, not raw Unreal Z, so it stays correct far from the `CesiumGeoreference` origin (e.g. after flying to a Tiled Cesium Import footprint on another part of the globe), where Unreal Z alone no longer means "altitude".
   * **Top-Down Map Framing (`F` / `Home` / HUD Button)**: Instantly computes active dataset bounds and frames the entire terrain footprint.
-  * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($Altitude \times 2.5$) for effortless navigation from centimeters to regional scales.
+  * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($\text{Altitude} \times 2.5$) for effortless navigation from centimeters to regional scales, same real-WGS84-height basis as zoom.
   * **Sculpt Isolation**: Left-click drag is dedicated to terrain editing and spline drawing; right-click drag orbits freely without fighting camera controls.
+  * **World Bounds Checks disabled at startup**: `AWorldSettings::bEnableWorldBoundsChecks` is forced off in `UTerraDyneSubsystem::Initialize` (before any actor's `BeginPlay`). Left on — Unreal's default — it's incompatible with Cesium's origin rebasing: a rebase shifts every actor's absolute Z, so an airborne pawn can spuriously read as having fallen below `KillZ`, get destroyed, and respawn at the default `PlayerStart` — visible as the camera snapping back mid-flight to wherever it started.
 
-### 3. Multi-Layer GIS GeoTIFF Ingestion & Macro Loading
-* Ingests synchronized 7-layer raster products powered by local GDAL compilation:
-  1. **Elevation (DEM)** — Reference grid establishing georeferenced bounds.
-  2. **Hillshade** — Analytical surface relief shading.
-  3. **Color Relief** — Hypsometric color-mapped elevation.
-  4. **Color Hillshade** — Blended topographic color visualization.
-  5. **Slope** — Gradient/incline angle mapping ($0^\circ–90^\circ$).
-  6. **Aspect** — Slope azimuth/direction mapping ($0^\circ–360^\circ$).
-  7. **Roughness** — Surface roughness variability.
-* **Adaptive Chunk Scaling**: Dynamically sizes chunk footprints for large datasets (e.g. $435\text{ km} \times 291\text{ km}$ sized to $13.7\text{ km}$ chunks), loading hundreds of kilometers in **726 high-performance chunks** in seconds.
-* **Zero High-Altitude Eviction**: Imported DEM chunks remain resident when orbiting at high altitudes.
-* **High-Throughput Streaming**: Processes up to 16 chunk allocations per tick for instant dataset streaming.
+### 3. Dynamic GIS Raster Layer Stack & Auto-Detection Engine
+* **Slot 1 (Master DEM)**: Fixed reference grid establishing georeferenced bounds and base 3D terrain geometry.
+* **Slots 2+ (Dynamic Overlays)**: Single `+ Add Overlay Layer…` button that launches the native file picker for any GeoTIFF raster (`.tif`, `.tiff`, `.zip`, `.tar.gz`, `.tgz`).
+* **Auto-Detection Engine (`AutoDetectRasterType`)**: Inspects GDAL metadata without full-pixel decoding to classify:
+  * **Multi-Band (3–4 bands)**: Satellite / Ortho imagery, Color Relief, and Color Hillshade.
+  * **16-bit Surface Reflectance Support**: Auto-contrast dynamic range stretching for Sentinel-2/Landsat 16-bit imagery.
+  * **Single-Band (Float32 / UInt16 / Byte)**: Slope ($0^\circ\text{–}90^\circ$), Aspect ($0^\circ\text{–}360^\circ$), Roughness, Hillshade, and Elevation.
+* **Duplicate & Incompatibility Rejection**: Validates paths and CRS/UTM alignment; immediately shows an interactive modal error dialog on duplicate selection.
+* **Dynamic Layer Cards**: Color-coded badges, resolution/band stats, `Load` / `Unload` live scene toggles, individual delete (`✕`), and `Clear All`.
 
 ### 4. Interactive Slate Runtime HUD
 * Left-anchored technical dark-theme control panel (`STerraDynePanel`):
   * **Live Progress Bar (`SProgressBar`)**: Real-time tile load tracking (`Loading DEM chunks: X / Total (Y%)`).
-  * **Per-Layer Controls**: Individual `Load` / `Unload` toggles and `✕` clear buttons for each of the 7 raster slots.
+  * **Dynamic Overlay Stack**: Real-time list of added GIS layers with active emerald highlighting and `● ACTIVE` status badge.
   * **Top View Button**: One-click framing of active terrain footprints.
   * **Sculpting Accordion**: Brush selection (`Raise`, `Lower`, `Smooth`, `Flatten`), radius/strength sliders, and layer routing.
-  * **Roads Accordion**: Spline node placement, road width adjustment, and mesh building.
-  * **Buildings Accordion**: Footprint spline placement, floor stepper, and leveling controls.
+  * **Roads Accordion**: Spline node placement, road width adjustment, and mesh building with $\pm 200\text{ km}$ elevation raytracing.
+  * **Buildings Accordion**: Footprint spline placement, floor stepper, and dynamic-step pad leveling.
 
 ### 5. Procedural Spline Roads & Junction Networks
 * Interactive spline curve authoring with dynamic mesh generation.
 * Automated N-way road intersection/junction detection and topological solving.
 * Real-time road width scaling with automatic curb extrusion.
+* Ground raytrace bounds expanded to $\pm 200\text{ km}$ to support extreme high-altitude Himalayan terrain ($3000\text{–}7000\text{ m}$).
 
-### 6. Modular Spline Buildings & Terraforming
+### 6. Modular Spline Buildings & Dynamic Terraforming
 * Arbitrary polygon footprint definition using spline nodes.
 * Live floor count stepper controls.
-* Automatic terrain pad terraforming beneath structures to keep foundations level.
+* Macro chunk step-scaled pad terraforming (`EffectiveFalloff = Max(Falloff, Step * 1.5)`) ensuring smooth foundations on all grid resolutions.
 
 ### 7. World Persistence & Transaction History
 * Complete disk serialization format for terrain state, building transforms, and road splines.
@@ -92,8 +92,19 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 ### 8. 100% Multiplayer & Network Replication
 * **Authoritative Server Architecture**: Strictly validated through `HasEditAuthority()`. Unauthorized edits are rejected on the server.
 * **Delta-Broadcasting**: Raw $64 \times 64$ height buffers are deterministically evaluated locally; live sculpting strokes are multicast via lightweight geometric parameters (`Multicast_BroadcastBrushStroke`), consuming minimal bandwidth.
-* **Full Actor & Property Replication**: `RasterLayerSlots`, `BuildingActors`, and `RoadSplineActors` automatically synchronize with `DOREPLIFETIME` and `OnRep` handlers.
+* **Full Actor & Property Replication**: `RasterLayerSlots`, `DynamicRasterLayers`, `BuildingActors`, and `RoadSplineActors` automatically synchronize with `DOREPLIFETIME` and `OnRep` handlers.
 * **Multi-User Streaming**: Throttled view reporting (`Server_ReportViewLocation`) keeps server-side chunk streaming centered around all connected players.
+
+### 9. Tiled Cesium Import (Local Quantized-Mesh Terrain & XYZ Imagery)
+* **DEM-only**: only available once a world is Imported/GIS-DEM (or already has an elevation layer) — a real-world tile pyramid has no meaningful place next to Sandbox's procedural terrain, so the panel section and the underlying `ATerraDyneManager` calls both gate on it.
+* **No hardcoded paths**: `Import Terrain Tileset Folder…` / `Import Imagery Overlay Folder…` open a native folder picker; the last folder picked per pyramid type is remembered across editor sessions via `GConfig` (`GEditorPerProjectIni`), never baked into source.
+* **Terrain**: points a `ACesium3DTileset` (`FromUrl`) at a local Cesium `quantized-mesh-1.0` pyramid — a folder containing `layer.json` and `{z}/{x}/{y}.terrain` tiles.
+* **Imagery**: adds a `UCesiumUrlTemplateRasterOverlay` reading a local XYZ PNG pyramid — files laid out on disk as `{z}/{x}/{y}.png`, requested via Cesium's `{reverseY}` template token (not `{y}`, which Cesium defines as TMS row-ordering — opposite of the standard XYZ/slippy-map ordering these QGIS-style exports actually use) — WebMercator projection; the zoom range is auto-detected from the pyramid's own numeric subfolder names, spawning a bare ellipsoid tileset first if no terrain has been imported yet.
+* **Fully offline**: both use `file:///` URLs, which `UnrealAssetAccessor` short-circuits before ever reaching `FHttpModule` or Cesium Ion — no network access, no Cesium ion token required. Actors are spawned deferred (`SpawnActorDeferred`) with the tileset source set before `FinishSpawning()`, since `ACesium3DTileset` otherwise defaults to `FromCesiumIon` and calls `LoadTileset()` from `OnConstruction` immediately on spawn.
+* **Auto-fly-to-footprint**: each successful import reads the pyramid's own geographic extent (from its deepest zoom level's actual tile index range, not the often-boilerplate `bounds` field in `layer.json`) and flies the camera to an aerial top-down view centred over it — the same framing angle as the existing "Top View" feature, altitude scaled to the footprint's size so it fits comfortably in frame.
+* **Cuts a hole in the backdrop globe** (toggle: *Cut Out Backdrop Globe*, on by default): a successful terrain import clips every other `ACesium3DTileset` already in the world — e.g. a placed "Cesium World Terrain" used as the level's default globe backdrop — via a `UCesiumPolygonRasterOverlay` on a rectangle matching the imported footprint, so the backdrop stops rendering real terrain geometry for that ground (which would otherwise visibly overlap/z-fight with the local import) while staying fully visible everywhere else. Turn the toggle off if the computed footprint looks wrong and the cutout lands in the wrong spot. (Imagery-only imports don't touch this: the bare ellipsoid they spawn has no relief of its own to compete with the backdrop.)
+* **Height Offset slider** (-500m to +500m): nudges the imported tiled layer (terrain, or the bare ellipsoid an imagery-only import spawns) up or down — for working around a residual vertical mismatch against the backdrop, or z-fighting right at the cutout edge. Absolute, not cumulative.
+* **Separate render path**: this drapes a Cesium tileset actor alongside TerraDyne's own chunk terrain — it does not feed TerraDyne's chunk heightfield/sculpting pipeline (that remains `FTerraDyneGeoTIFFHeightSource`, driven by the GDAL GeoTIFF importer above).
 
 ---
 
@@ -135,5 +146,6 @@ To compile the project via Unreal Build Tool (UBT):
 | **Road Spline Authoring** | Left Click on terrain in Road mode |
 | **Building Placement** | Left Click on terrain in Building mode |
 | **Undo / Redo** | `Ctrl + Z` / `Ctrl + Y` |
+
 
 

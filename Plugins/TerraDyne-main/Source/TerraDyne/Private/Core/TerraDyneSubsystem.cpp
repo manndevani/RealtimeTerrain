@@ -2,11 +2,28 @@
 #include "Core/TerraDyneSubsystem.h"
 #include "Core/TerraDyneManager.h"
 #include "Engine/World.h"
+#include "GameFramework/WorldSettings.h"
 #include "Async/TaskGraphInterfaces.h"
 
 void UTerraDyneSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+
+	// Cesium's own world-origin rebasing (keeping the camera near small Unreal-space coordinates as
+	// it moves real-world distances from wherever the level's default origin sits) shifts every
+	// actor's absolute Z along with it. AWorldSettings::KillZ is a fixed absolute threshold, so a
+	// rebase can make an airborne pawn spuriously read as "fallen below KillZ" and get destroyed --
+	// which respawns it at the default PlayerStart, looking exactly like the camera "bouncing back"
+	// mid-flight to wherever it started. This is not project-specific: CesiumRuntime itself logs
+	// "Please consider disabling [world bounds checks] to avoid potential issues" whenever a
+	// Cesium3DTileset loads with it still on. Forced off here, in world-subsystem Initialize (which
+	// runs before any actor's BeginPlay, including whatever placed Cesium actor would otherwise log
+	// that warning first), rather than relying on the level's saved WorldSettings, so it can't
+	// silently regress if a new map is added or the checkbox gets re-enabled by accident.
+	if (AWorldSettings* Settings = GetWorld()->GetWorldSettings())
+	{
+		Settings->bEnableWorldBoundsChecks = false;
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("TerraDyneSubsystem: Initializing for World %s"), *GetWorld()->GetName());
 }

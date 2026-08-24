@@ -114,9 +114,29 @@ public:
 	void PopulateProcedural();
 
 	/** Dedicated High-Performance DEM raster population (bypasses procedural noise & auto-material) */
-	void PopulateFromDEM(TArray<float>&& InHeightBuffer, float InZScale, double InWorldZOffset, bool bGenerateCollision = false);
+	void PopulateFromDEM(
+		TArray<float>&& InHeightBuffer,
+		float InZScale,
+		double InWorldZOffset,
+		bool bGenerateCollision = true,
+		FVector2D GlobalFootprintMin = FVector2D::ZeroVector,
+		FVector2D GlobalFootprintMax = FVector2D::ZeroVector,
+		const TArray<FColor>& OverlayPixels = TArray<FColor>(),
+		int32 OverlayWidth = 0,
+		int32 OverlayHeight = 0);
 
 	void SetMaterial(UMaterialInterface* InMaterial);
+
+	/** Sets active GeoTIFF visual layer overlay texture (e.g. Color Relief / Hillshade) */
+	void SetOverlayTexture(class UTexture2D* InTexture);
+
+	/** Applies or updates the active GIS raster visual overlay colors across the chunk mesh */
+	void ApplyVisualOverlay(
+		const TArray<FColor>& OverlayPixels,
+		int32 OverlayWidth,
+		int32 OverlayHeight,
+		FVector2D FootprintMin,
+		FVector2D FootprintMax);
 
 	// BrushMode replaces bIsHole; FlattenHeight is mode-specific
 	void ApplyLocalIdempotentEdit(

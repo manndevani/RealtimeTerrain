@@ -28,10 +28,16 @@ public:
 		const TArray<float>& HeightBuffer,
 		int32 Resolution,
 		float WorldSize,
-		float ZScale);
+		float ZScale,
+		FVector ChunkLocation = FVector::ZeroVector,
+		FVector2D GlobalFootprintMin = FVector2D::ZeroVector,
+		FVector2D GlobalFootprintMax = FVector2D::ZeroVector,
+		const TArray<FColor>& OverlayPixels = TArray<FColor>(),
+		int32 OverlayWidth = 0,
+		int32 OverlayHeight = 0);
 
 	/**
-	 * Updates an existing DynamicMeshComponent with DEM geometry efficiently.
+	 * Updates an existing DynamicMeshComponent with DEM geometry and vertex colors efficiently.
 	 */
 	static void UpdateComponentMesh(
 		UDynamicMeshComponent* MeshComp,
@@ -39,5 +45,26 @@ public:
 		int32 Resolution,
 		float WorldSize,
 		float ZScale,
-		bool bComputeCollision = false);
+		bool bComputeCollision = false,
+		FVector ChunkLocation = FVector::ZeroVector,
+		FVector2D GlobalFootprintMin = FVector2D::ZeroVector,
+		FVector2D GlobalFootprintMax = FVector2D::ZeroVector,
+		const TArray<FColor>& OverlayPixels = TArray<FColor>(),
+		int32 OverlayWidth = 0,
+		int32 OverlayHeight = 0);
+
+	/**
+	 * Updates only the vertex color overlay on an existing mesh in place in microseconds.
+	 */
+	static void UpdateDEMVertexColors(
+		UE::Geometry::FDynamicMesh3& TargetMesh,
+		const TArray<float>& HeightBuffer,
+		int32 Resolution,
+		float WorldSize,
+		FVector ChunkLocation,
+		FVector2D GlobalFootprintMin,
+		FVector2D GlobalFootprintMax,
+		const TArray<FColor>& OverlayPixels = TArray<FColor>(),
+		int32 OverlayWidth = 0,
+		int32 OverlayHeight = 0);
 };

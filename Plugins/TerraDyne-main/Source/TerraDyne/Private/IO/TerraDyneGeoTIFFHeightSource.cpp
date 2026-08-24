@@ -298,3 +298,27 @@ bool FTerraDyneGeoTIFFHeightSource::TrySampleWorldXY(double WorldX, double World
 	OutNormalized01 = (float)FMath::Clamp((ElevationMeters - ElevationFloorMeters) / ElevationRangeMeters, 0.0, 1.0);
 	return true;
 }
+
+bool FTerraDyneGeoTIFFHeightSource::TrySampleRasterPixel(double WorldX, double WorldY, double& OutPixelX, double& OutPixelY) const
+{
+	if (!WorldFootprintXY.IsInside(FVector2D(WorldX, WorldY)))
+	{
+		return false;
+	}
+
+	double CrsX = 0.0, CrsY = 0.0;
+	if (!WorldXYToRasterCrs(WorldX, WorldY, CrsX, CrsY))
+	{
+		return false;
+	}
+
+	const FVector2D Pixel = Raster.CrsToPixel(CrsX, CrsY);
+	if (Pixel.X < 0.0 || Pixel.Y < 0.0 || Pixel.X > Raster.Width - 1 || Pixel.Y > Raster.Height - 1)
+	{
+		return false;
+	}
+
+	OutPixelX = Pixel.X;
+	OutPixelY = Pixel.Y;
+	return true;
+}

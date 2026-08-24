@@ -44,6 +44,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Camera")
 	void FocusOnMap();
 
+	/** Focus the camera on a specific world location at a given distance */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Camera")
+	void FocusOnLocation(FVector Location, float Distance = 3000.0f);
+
 	/** Get current WGS84 coordinates (Longitude, Latitude, Height in meters) from the Globe Anchor */
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|GIS")
 	FVector GetCurrentLongitudeLatitudeHeight() const;
@@ -51,6 +55,15 @@ public:
 	/** Fly smoothly to real-world WGS84 coordinates */
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|GIS")
 	void FlyToCoordinates(double Longitude, double Latitude, double Height, double Yaw = 0.0, double Pitch = -45.0);
+
+private:
+	/**
+	 * AGlobeAwareDefaultPawn::FlyToLocationLongitudeLatitudeHeight (which FlyToCoordinates wraps) is
+	 * a no-op without one of these -- it looks it up via FindComponentByClass and just logs a warning
+	 * and returns if none is found. Created here so FlyToCoordinates actually works out of the box.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "TerraDyne|Camera")
+	TObjectPtr<class UCesiumFlyToComponent> FlyToComponent;
 
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;

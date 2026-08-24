@@ -101,14 +101,31 @@ public:
 	void RequestStartSandboxMode();
 
 	//--- Building Requests ---
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestPlaceBuilding(TSubclassOf<class ATerraDyneBuildingActor> BuildingClass, const FTransform& WorldTransform, int32 FloorCount);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestMoveBuilding(class ATerraDyneBuildingActor* Building, const FTransform& NewTransform);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestSetBuildingFloorCount(class ATerraDyneBuildingActor* Building, int32 NewFloorCount);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestSetBuildingSplinePoints(class ATerraDyneBuildingActor* Building, const TArray<FVector>& NewPoints);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestAddSplinePoint(class ATerraDyneBuildingActor* Building);
-	void RequestRemoveSplinePoint(class ATerraDyneBuildingActor* Building, int32 PointIndex = INDEX_NONE);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
+	void RequestRemoveSplinePoint(class ATerraDyneBuildingActor* Building, int32 PointIndex = -1);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestResetFootprint(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestRelevelBuilding(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestDeleteBuilding(class ATerraDyneBuildingActor* Building);
 
 	//--- Population Requests ---

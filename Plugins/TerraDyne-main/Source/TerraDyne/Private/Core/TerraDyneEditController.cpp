@@ -175,8 +175,9 @@ bool ATerraDyneEditController::TraceUnderCursor(FHitResult& OutHit) const
 		TraceParams.AddIgnoredActor(ActiveMoveGizmo);
 	}
 
+	// 50,000,000 uu (500 km) reaches terrain from orbital and high flight altitudes across large GIS datasets
 	return GetWorld()->LineTraceSingleByChannel(
-		OutHit, WorldLoc, WorldLoc + WorldDir * 200000.0f, ECC_WorldStatic, TraceParams);
+		OutHit, WorldLoc, WorldLoc + WorldDir * 50000000.0f, ECC_WorldStatic, TraceParams);
 }
 
 bool ATerraDyneEditController::TraceGizmoUnderCursor(ETerraDyneGizmoAxis& OutAxis, FVector& OutHitPoint) const
@@ -496,7 +497,7 @@ void ATerraDyneEditController::HandleBuildingClick()
 	}
 
 	FHitResult Hit;
-	if (!TraceUnderCursor(Hit))
+	if (!TraceUnderCursor(Hit) || !Hit.bBlockingHit)
 	{
 		return;
 	}
@@ -513,12 +514,6 @@ void ATerraDyneEditController::HandleBuildingClick()
 	if (ToolUI->CurrentTool != ETerraDyneToolMode::PlaceBuilding)
 	{
 		ToolUI->SelectedBuilding = nullptr;
-		return;
-	}
-
-	if (!Cast<ATerraDyneChunk>(HitActor))
-	{
-		// Only terrain is a valid foundation; ignore clicks on props, sky, whatever else.
 		return;
 	}
 
@@ -894,7 +889,7 @@ void ATerraDyneEditController::UpdateHolographicPreview()
 	}
 
 	FHitResult Hit;
-	if (!TraceUnderCursor(Hit) || !Hit.bBlockingHit || !Cast<ATerraDyneChunk>(Hit.GetActor()))
+	if (!TraceUnderCursor(Hit) || !Hit.bBlockingHit)
 	{
 		if (HolographicGhostBuilding)
 		{

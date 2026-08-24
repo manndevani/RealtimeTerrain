@@ -11,13 +11,16 @@
 #include "Kismet/GameplayStatics.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Misc/Paths.h"
+#include "Misc/MessageDialog.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #if WITH_EDITOR
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Misc/ConfigCacheIni.h"
 #endif
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBorder.h"
@@ -74,11 +77,18 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 	TerraDyneHud::MakeButtonStyle(HudButtonStyle);
 	TerraDyneHud::MakeBadgeButtonStyle(BadgeButtonStyle);
 
-	auto MakeLayerRow = [this, &SubHeaderFont, &StatusFont, HudText, HudDim, HudLocked, HudAccent]
+	auto MakeLayerRow = [this, &SubHeaderFont, &StatusFont, HudText, HudDim, HudLocked, HudAccent, HudCyan, HudRowBG]
 		(ETerraDyneRasterLayer Layer, const FText& LayerTitle, bool bRequired) -> TSharedRef<SWidget>
 	{
-		auto TitleColor = [this, Layer, bRequired, HudLocked, HudAccent, HudText]() -> FSlateColor
+		auto TitleColor = [this, Layer, bRequired, HudLocked, HudAccent, HudText, HudCyan]() -> FSlateColor
 		{
+			if (const ATerraDyneManager* Mgr = GetManager())
+			{
+				if (Mgr->IsRasterLayerLoadedInScene(Layer))
+				{
+					return HudCyan;
+				}
+			}
 			if (!IsImportLayerEnabled(Layer) && !IsUnloadLayerEnabled(Layer))
 			{
 				return HudLocked;
@@ -90,54 +100,105 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			return HudText;
 		};
 
-		return SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight()
+		auto RowBGColor = [this, Layer, HudRowBG]() -> FSlateColor
+		{
+			if (const ATerraDyneManager* Mgr = GetManager())
+			{
+				if (Mgr->IsRasterLayerLoadedInScene(Layer))
+				{
+					return FLinearColor(0.06f, 0.22f, 0.16f, 0.75f); // Glowing active emerald tint
+				}
+			}
+			return HudRowBG;
+		};
+
+		return SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+			.BorderBackgroundColor_Lambda(RowBGColor)
+			.Padding(FMargin(6.0f, 5.0f))
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+				SNew(SVerticalBox)
+				// Row 1: Header (Title + ACTIVE Badge)
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(LayerTitle)
+							.Font(SubHeaderFont)
+							.ColorAndOpacity_Lambda(TitleColor)
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ActiveBadge", "● ACTIVE"))
+							.Font(StatusFont)
+							.ColorAndOpacity(FLinearColor(0.2f, 0.95f, 0.4f))
+							.Visibility_Lambda([this, Layer]()
+							{
+								if (const ATerraDyneManager* Mgr = GetManager())
+								{
+									if (Mgr->IsRasterLayerLoadedInScene(Layer))
+									{
+										return EVisibility::Visible;
+									}
+								}
+								return EVisibility::Collapsed;
+							})
+						]
+					]
+				]
+				// Row 2: File Info / Resolution text
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 4)
 				[
 					SNew(STextBlock)
-					.Text(LayerTitle)
-					.Font(SubHeaderFont)
-					.ColorAndOpacity_Lambda(TitleColor)
+					.Text_Lambda([this, Layer]() { return GetLayerStatusText(Layer); })
+					.ColorAndOpacity_Lambda([this, Layer]() { return GetLayerStatusColor(Layer); })
+					.Font(StatusFont)
+					.AutoWrapText(true)
 				]
-				+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0)
+				// Row 3: Action Buttons (Import/Replace, Load/Unload, Clear)
+				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(SButton)
-					.ButtonStyle(&HudButtonStyle)
-					.Text_Lambda([this, Layer]()
-					{
-						return IsUnloadLayerEnabled(Layer) ? LOCTEXT("BtnReplace", "Replace…") : LOCTEXT("BtnImport", "Import…");
-					})
-					.IsEnabled_Lambda([this, Layer]() { return IsImportLayerEnabled(Layer); })
-					.OnClicked(this, &STerraDynePanel::OnImportRasterLayerClicked, Layer)
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0, 0, 2, 0)
+					[
+						SNew(SButton)
+						.ButtonStyle(&HudButtonStyle)
+						.HAlign(HAlign_Center)
+						.Text_Lambda([this, Layer]()
+						{
+							return IsUnloadLayerEnabled(Layer) ? LOCTEXT("BtnReplace", "Replace…") : LOCTEXT("BtnImport", "Import…");
+						})
+						.IsEnabled_Lambda([this, Layer]() { return IsImportLayerEnabled(Layer); })
+						.OnClicked(this, &STerraDynePanel::OnImportRasterLayerClicked, Layer)
+					]
+					+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(2, 0)
+					[
+						SNew(SButton)
+						.ButtonStyle(&HudButtonStyle)
+						.ButtonColorAndOpacity(this, &STerraDynePanel::GetToggleLayerLoadColor, Layer)
+						.HAlign(HAlign_Center)
+						.Text_Lambda([this, Layer]() { return GetToggleLayerLoadText(Layer); })
+						.ToolTipText(LOCTEXT("BtnToggleLoadTip", "Load or Unload this specific layer into/from the active scene"))
+						.IsEnabled_Lambda([this, Layer]() { return IsToggleLayerLoadEnabled(Layer); })
+						.OnClicked(this, &STerraDynePanel::OnToggleLayerLoadClicked, Layer)
+					]
+					+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0, 0, 0)
+					[
+						SNew(SButton)
+						.ButtonStyle(&HudButtonStyle)
+						.HAlign(HAlign_Center)
+						.Text(FText::FromString(TEXT(" ✕ ")))
+						.ToolTipText(LOCTEXT("BtnUnloadTip", "Clear / remove this layer file"))
+						.IsEnabled_Lambda([this, Layer]() { return IsUnloadLayerEnabled(Layer); })
+						.OnClicked(this, &STerraDynePanel::OnUnloadRasterLayerClicked, Layer)
+					]
 				]
-				+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0)
-				[
-					SNew(SButton)
-					.ButtonStyle(&HudButtonStyle)
-					.Text_Lambda([this, Layer]() { return GetToggleLayerLoadText(Layer); })
-					.ToolTipText(LOCTEXT("BtnToggleLoadTip", "Load or Unload this specific layer into/from the active scene"))
-					.IsEnabled_Lambda([this, Layer]() { return IsToggleLayerLoadEnabled(Layer); })
-					.OnClicked(this, &STerraDynePanel::OnToggleLayerLoadClicked, Layer)
-				]
-				+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0)
-				[
-					SNew(SButton)
-					.ButtonStyle(&HudButtonStyle)
-					.Text(FText::FromString(TEXT("✕")))
-					.ToolTipText(LOCTEXT("BtnUnloadTip", "Clear / remove this layer file"))
-					.IsEnabled_Lambda([this, Layer]() { return IsUnloadLayerEnabled(Layer); })
-					.OnClicked(this, &STerraDynePanel::OnUnloadRasterLayerClicked, Layer)
-				]
-			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 0)
-			[
-				SNew(STextBlock)
-				.Text_Lambda([this, Layer]() { return GetLayerStatusText(Layer); })
-				.ColorAndOpacity_Lambda([this, Layer]() { return GetLayerStatusColor(Layer); })
-				.Font(StatusFont)
-				.AutoWrapText(true)
 			];
 	};
 
@@ -175,31 +236,59 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 	TSharedRef<SWidget> GeoTIFFContent = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
 		[
-			MakeLayerRow(ETerraDyneRasterLayer::Elevation, LOCTEXT("LayerElevation", "1. Elevation (DEM) • [Required]"), true)
+			MakeLayerRow(ETerraDyneRasterLayer::Elevation, LOCTEXT("LayerElevation", "1. Elevation (DEM)"), true)
 		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 2)
 		[
-			MakeLayerRow(ETerraDyneRasterLayer::Hillshade, LOCTEXT("LayerHillshade", "2. Hillshade"), false)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0, 0, 2, 0)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.ButtonColorAndOpacity(FLinearColor(0.15f, 0.45f, 0.9f))
+				.ToolTipText(LOCTEXT("BtnAddDynamicLayerTip", "Import any GeoTIFF raster (Satellite, Slope, Aspect, Hillshade, Color Relief). Auto-detects type and validates compatibility."))
+				.IsEnabled_Lambda([this]()
+				{
+					if (const ATerraDyneManager* Mgr = GetManager())
+					{
+						return Mgr->HasElevationLayer();
+					}
+					return false;
+				})
+				.OnClicked(this, &STerraDynePanel::OnAddDynamicLayerClicked)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("BtnAddDynamicLayer", "+ Add Overlay Layer…"))
+					.Font(SubHeaderFont)
+					.ColorAndOpacity(FLinearColor::White)
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0, 0, 0)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.ToolTipText(LOCTEXT("BtnClearAllLayersTip", "Remove all dynamic overlay layers from the stack"))
+				.IsEnabled_Lambda([this]()
+				{
+					if (const ATerraDyneManager* Mgr = GetManager())
+					{
+						return Mgr->DynamicRasterLayers.Num() > 0;
+					}
+					return false;
+				})
+				.OnClicked(this, &STerraDynePanel::OnClearAllDynamicLayersClicked)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("BtnClearAllLayers", "Clear All"))
+					.Font(StatusFont)
+					.ColorAndOpacity(HudDim)
+				]
+			]
 		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 		[
-			MakeLayerRow(ETerraDyneRasterLayer::ColorRelief, LOCTEXT("LayerColorRelief", "3. Color Relief"), false)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			MakeLayerRow(ETerraDyneRasterLayer::ColorHillshade, LOCTEXT("LayerColorHillshade", "4. Color Hillshade"), false)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			MakeLayerRow(ETerraDyneRasterLayer::Slope, LOCTEXT("LayerSlope", "5. Slope"), false)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			MakeLayerRow(ETerraDyneRasterLayer::Aspect, LOCTEXT("LayerAspect", "6. Aspect"), false)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			MakeLayerRow(ETerraDyneRasterLayer::Roughness, LOCTEXT("LayerRoughness", "7. Roughness"), false)
+			SAssignNew(DynamicLayersListBox, SVerticalBox)
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
 		[
@@ -218,12 +307,13 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(STextBlock)
 				.Text(this, &STerraDynePanel::GetGeoTIFFProgressText)
 				.Font(LabelFont)
-				.ColorAndOpacity(HudAccent)
+				.ColorAndOpacity(this, &STerraDynePanel::GetGeoTIFFProgressTextColor)
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 			[
 				SNew(SProgressBar)
 				.Percent(this, &STerraDynePanel::GetGeoTIFFProgressFraction)
+				.Visibility(this, &STerraDynePanel::GetGeoTIFFProgressBarVisibility)
 			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
@@ -444,6 +534,7 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
 				.Text(LOCTEXT("BtnRoadAddPoint", "+ Point"))
+				.ToolTipText(LOCTEXT("BtnRoadAddPointTip", "Click terrain in 3D viewport to draw and extend road"))
 				.OnClicked(this, &STerraDynePanel::OnAddRoadPointClicked)
 				.HAlign(HAlign_Center)
 			]
@@ -452,8 +543,9 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
 				.Text(LOCTEXT("BtnRoadRemovePoint", "– Point"))
-				.IsEnabled_Lambda([this](){ return RoadPointCount > 0; })
-				.OnClicked(this, &STerraDynePanel::OnRemoveRoadPointClicked)
+				.ToolTipText(LOCTEXT("BtnRoadRemovePointTip", "Delete currently selected road spline point"))
+				.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
+				.OnClicked(this, &STerraDynePanel::DeleteRoadPoint)
 				.HAlign(HAlign_Center)
 			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
@@ -461,7 +553,8 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
 				.Text(LOCTEXT("BtnRoadReset", "Reset"))
-				.IsEnabled_Lambda([this](){ return RoadPointCount > 0; })
+				.ToolTipText(LOCTEXT("BtnRoadResetTip", "Clear selected road"))
+				.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
 				.OnClicked(this, &STerraDynePanel::OnResetRoadPointsClicked)
 				.HAlign(HAlign_Center)
 			]
@@ -469,7 +562,7 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 		[
 			SNew(STextBlock)
-			.Text(this, &STerraDynePanel::GetRoadPointsText)
+			.Text(this, &STerraDynePanel::GetRoadStatusText)
 			.Font(LabelFont)
 			.ColorAndOpacity(HudDim)
 		];
@@ -502,9 +595,9 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 		[
 			SNew(STextBlock)
-			.Text(LOCTEXT("NoBuildingSelectedText", "No building selected"))
+			.Text(this, &STerraDynePanel::GetSelectedBuildingText)
 			.Font(LabelFont)
-			.ColorAndOpacity(HudDim)
+			.ColorAndOpacity(HudText)
 		]
 		// Stepper: Floors
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
@@ -553,7 +646,8 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
 				.Text(LOCTEXT("BtnAddSplinePoint", "+ Point"))
-				.OnClicked(this, &STerraDynePanel::OnAddBuildingPointClicked)
+				.IsEnabled_Lambda([this](){ return GetSelectedBuilding() != nullptr; })
+				.OnClicked(this, &STerraDynePanel::OnAddSplinePointClicked)
 				.HAlign(HAlign_Center)
 			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
@@ -561,8 +655,8 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
 				.Text(LOCTEXT("BtnRemoveSplinePoint", "– Point"))
-				.IsEnabled_Lambda([this](){ return BuildingPointCount > 0; })
-				.OnClicked(this, &STerraDynePanel::OnRemoveBuildingPointClicked)
+				.IsEnabled_Lambda([this](){ return GetSelectedBuilding() != nullptr; })
+				.OnClicked(this, &STerraDynePanel::OnRemoveSplinePointClicked)
 				.HAlign(HAlign_Center)
 			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
@@ -570,41 +664,115 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				SNew(SButton)
 				.ButtonStyle(&HudButtonStyle)
 				.Text(LOCTEXT("BtnResetFootprint", "Reset"))
-				.IsEnabled_Lambda([this](){ return BuildingPointCount > 0; })
-				.OnClicked(this, &STerraDynePanel::OnResetBuildingPointsClicked)
+				.IsEnabled_Lambda([this](){ return GetSelectedBuilding() != nullptr; })
+				.OnClicked(this, &STerraDynePanel::OnResetFootprintClicked)
 				.HAlign(HAlign_Center)
+			]
+		]
+		// Actions: Focus / Relevel / Delete
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnFocusBuilding", "Focus"))
+				.IsEnabled_Lambda([this](){ return GetSelectedBuilding() != nullptr; })
+				.OnClicked(this, &STerraDynePanel::OnFocusBuildingClicked)
+				.HAlign(HAlign_Center)
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnRelevelBuilding", "Relevel"))
+				.IsEnabled_Lambda([this](){ return GetSelectedBuilding() != nullptr; })
+				.OnClicked(this, &STerraDynePanel::OnRelevelClicked)
+				.HAlign(HAlign_Center)
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnDeleteBuilding", "Delete"))
+				.IsEnabled_Lambda([this](){ return GetSelectedBuilding() != nullptr; })
+				.OnClicked(this, &STerraDynePanel::OnDeleteBuildingClicked)
+				.HAlign(HAlign_Center)
+			]
+		];
+
+	// 6. Content for TILED CESIUM IMPORT section -- displays local Cesium quantized-mesh
+	// terrain and XYZ imagery pyramids alongside TerraDyne's own chunk terrain, entirely
+	// offline (file:/// URLs, no ion). Folder-picked each time, never a typed-in path.
+	TSharedRef<SWidget> TiledCesiumContent = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+		[
+			SNew(SButton)
+			.ButtonStyle(&HudButtonStyle)
+			.ToolTipText(LOCTEXT("BtnImportTilesetTip", "Browse to a folder containing layer.json (a Cesium quantized-mesh terrain tileset)."))
+			.OnClicked(this, &STerraDynePanel::OnImportCesiumTerrainTilesetClicked)
+			.HAlign(HAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("BtnImportTileset", "Import Terrain Tileset Folder…"))
+				.Font(SubHeaderFont)
+				.ColorAndOpacity(FLinearColor::White)
 			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 		[
-			SNew(STextBlock)
-			.Text(this, &STerraDynePanel::GetBuildingPointsText)
-			.Font(LabelFont)
-			.ColorAndOpacity(HudDim)
+			SNew(SButton)
+			.ButtonStyle(&HudButtonStyle)
+			.ToolTipText(LOCTEXT("BtnImportOverlayTip", "Browse to the root of an XYZ imagery tile pyramid (z/x/y.png)."))
+			.OnClicked(this, &STerraDynePanel::OnImportCesiumImageryOverlayClicked)
+			.HAlign(HAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("BtnImportOverlay", "Import Imagery Overlay Folder…"))
+				.Font(SubHeaderFont)
+				.ColorAndOpacity(FLinearColor::White)
+			]
 		]
-		// Building index indicator
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 1)
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &STerraDynePanel::IsCutOutBackdropChecked)
+			.OnCheckStateChanged(this, &STerraDynePanel::OnCutOutBackdropCheckedChanged)
+			.ToolTipText(LOCTEXT("CutOutBackdropTip", "Cut a hole in any other Cesium tileset already in the world (e.g. the default globe backdrop) where the imported terrain sits, so the two meshes don't visibly overlap. Turn off if the computed footprint looks wrong and the cutout lands in the wrong place."))
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("CutOutBackdrop", "Cut Out Backdrop Globe"))
+				.Font(LabelFont)
+				.ColorAndOpacity(HudDim)
+			]
+		]
+		// HEIGHT OFFSET Slider
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 1)
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth()
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 			[
-				SNew(SBox)
-				.WidthOverride(32.0f)
-				.HeightOverride(24.0f)
-				[
-					SNew(SBorder)
-					.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-					.BorderBackgroundColor(TerraDyneHud::Control)
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.Text(LOCTEXT("BuildingIndex", "1"))
-						.Font(SubHeaderFont)
-						.ColorAndOpacity(HudText)
-					]
-				]
+				SNew(STextBlock).Text(LOCTEXT("TiledHeightOffset", "HEIGHT OFFSET")).Font(MicroFont).ColorAndOpacity(HudDim)
 			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(this, &STerraDynePanel::GetTiledCesiumHeightOffsetText).Font(MicroFont).ColorAndOpacity(HudAccent)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1, 0, 2)
+		[
+			SNew(SSlider)
+			.Value(this, &STerraDynePanel::GetTiledCesiumHeightOffsetSliderValue)
+			.OnValueChanged(this, &STerraDynePanel::OnTiledCesiumHeightOffsetSliderChanged)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 2)
+		[
+			SNew(STextBlock)
+			.Text(this, &STerraDynePanel::GetCesiumTiledStatusText)
+			.Font(LabelFont)
+			.ColorAndOpacity(this, &STerraDynePanel::GetCesiumTiledStatusColor)
+			.AutoWrapText(true)
 		];
 
 	ChildSlot
@@ -615,15 +783,19 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Fill)
 		.HAlign(HAlign_Left)
 		[
-			SAssignNew(PanelBox, SBox)
-			.WidthOverride(320.0f)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
 			[
-				SNew(SBorder)
-				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(BGColor)
-				.Padding(6.0f)
+				SAssignNew(PanelBox, SBox)
+				.WidthOverride_Lambda([this]() { return PanelWidth; })
 				[
-					SNew(SVerticalBox)
+					SNew(SBorder)
+					.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+					.BorderBackgroundColor(BGColor)
+					.Padding(6.0f)
+					[
+						SNew(SVerticalBox)
 
 					//--- HUD HEADER (Draggable) ---
 					+ SVerticalBox::Slot()
@@ -721,11 +893,37 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						[
 							MakeCollapsibleSection(LOCTEXT("SecBuildings", "BUILDINGS"), bSectionBuildingsOpen, BuildingsContent, SectionHeaderFont)
 						]
+
+						// 6. TILED CESIUM IMPORT SECTION -- DEM worlds only, same gate as GEOTIFF / RASTER LAYERS
+						+ SScrollBox::Slot().Padding(0, 1)
+						[
+							SNew(SBox)
+							.Visibility(this, &STerraDynePanel::GetGeoTIFFSectionVisibility)
+							[
+								MakeCollapsibleSection(LOCTEXT("SecTiledCesium", "TILED CESIUM IMPORT (LOCAL)"), bSectionTiledCesiumOpen, TiledCesiumContent, SectionHeaderFont)
+							]
+						]
 					]
+				]
+			]
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f)
+			[
+				SNew(SBox)
+				.WidthOverride(5.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+					.BorderBackgroundColor(FLinearColor(0.2f, 0.6f, 1.0f, 0.25f))
+					.ToolTipText(LOCTEXT("ResizeGripTip", "Drag to resize panel width"))
 				]
 			]
 		]
 	];
+
+	RefreshDynamicLayersList();
 }
 
 TSharedRef<SWidget> STerraDynePanel::MakeCollapsibleSection(
@@ -855,26 +1053,45 @@ void STerraDynePanel::Tick(const FGeometry& AllottedGeometry, const double InCur
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 }
 
+FCursorReply STerraDynePanel::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
+{
+	FVector2D LocalMouse = MyGeometry.AbsoluteToLocal(CursorEvent.GetScreenSpacePosition());
+	FVector2D RelativeMouse = LocalMouse - WindowPosition;
+
+	// Check if cursor is over the resize handle on the right edge
+	if (RelativeMouse.X >= PanelWidth - 8.0f && RelativeMouse.X <= PanelWidth + 14.0f && RelativeMouse.Y >= 0.0f)
+	{
+		return FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
+	}
+
+	return FCursorReply::Unhandled();
+}
+
 FReply STerraDynePanel::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
-		// Simple hit test: if within top 50px relative to window position
 		FVector2D LocalMouse = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
 		FVector2D RelativeMouse = LocalMouse - WindowPosition;
 
-		if (RelativeMouse.X >= 0 && RelativeMouse.X <= 300 && RelativeMouse.Y >= 0 && RelativeMouse.Y <= 50)
+		// 1. Resize hit test on the right edge grab bar (within 12px of right edge)
+		if (RelativeMouse.X >= PanelWidth - 8.0f && RelativeMouse.X <= PanelWidth + 14.0f && RelativeMouse.Y >= 0.0f)
+		{
+			bIsResizing = true;
+			ResizeStartMouse = LocalMouse;
+			InitialPanelWidth = PanelWidth;
+			return FReply::Handled().CaptureMouse(SharedThis(this));
+		}
+
+		// 2. Drag hit test: top header (within top 50px of panel)
+		if (RelativeMouse.X >= 0.0f && RelativeMouse.X <= PanelWidth - 8.0f && RelativeMouse.Y >= 0.0f && RelativeMouse.Y <= 50.0f)
 		{
 			bIsDragging = true;
 			DragOffset = RelativeMouse;
 			return FReply::Handled().CaptureMouse(SharedThis(this));
 		}
 
-		// Absorb anything else that lands on the panel. This handler only runs when no child
-		// widget took the click, i.e. the gaps between buttons and the border around them —
-		// returning Unhandled there let the click fall straight through to the world, so clicking
-		// panel background sculpted the terrain behind it, and with the building tools armed it
-		// would drop a building behind the panel.
+		// 3. Absorb anything else that lands on the panel so clicks don't sculpt terrain behind it
 		if (PanelBox.IsValid() &&
 			PanelBox->GetTickSpaceGeometry().IsUnderLocation(MouseEvent.GetScreenSpacePosition()))
 		{
@@ -886,16 +1103,28 @@ FReply STerraDynePanel::OnMouseButtonDown(const FGeometry& MyGeometry, const FPo
 
 FReply STerraDynePanel::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	if (bIsDragging && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
-		bIsDragging = false;
-		return FReply::Handled().ReleaseMouseCapture();
+		if (bIsResizing || bIsDragging)
+		{
+			bIsResizing = false;
+			bIsDragging = false;
+			return FReply::Handled().ReleaseMouseCapture();
+		}
 	}
 	return FReply::Unhandled();
 }
 
 FReply STerraDynePanel::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	if (bIsResizing)
+	{
+		FVector2D LocalMouse = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		const float DeltaX = LocalMouse.X - ResizeStartMouse.X;
+		PanelWidth = FMath::Clamp(InitialPanelWidth + DeltaX, 280.0f, 900.0f);
+		return FReply::Handled();
+	}
+
 	if (bIsDragging)
 	{
 		FVector2D LocalMouse = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
@@ -903,7 +1132,7 @@ FReply STerraDynePanel::OnMouseMove(const FGeometry& MyGeometry, const FPointerE
 
 		// Clamp so the panel stays within the viewport
 		FVector2D ViewSize = MyGeometry.GetLocalSize();
-		NewPos.X = FMath::Clamp(NewPos.X, 0.0f, FMath::Max(0.0f, ViewSize.X - 300.0f));
+		NewPos.X = FMath::Clamp(NewPos.X, 0.0f, FMath::Max(0.0f, ViewSize.X - PanelWidth));
 		NewPos.Y = FMath::Clamp(NewPos.Y, 0.0f, FMath::Max(0.0f, ViewSize.Y - 50.0f));
 		WindowPosition = NewPos;
 
@@ -1055,6 +1284,27 @@ FReply STerraDynePanel::OnResetFootprintClicked()
 			else
 			{
 				Building->ResetToDefaultFootprint();
+			}
+		}
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
+}
+
+FReply STerraDynePanel::OnFocusBuildingClicked()
+{
+	if (ATerraDyneBuildingActor* Building = GetSelectedBuilding())
+	{
+		APlayerController* PC = OwnerWidget.IsValid() ? OwnerWidget->GetOwningPlayer() : nullptr;
+		if (!PC && GetManager() && GetManager()->GetWorld())
+		{
+			PC = GetManager()->GetWorld()->GetFirstPlayerController();
+		}
+		if (PC)
+		{
+			if (ATerraDyneEditPawn* Pawn = Cast<ATerraDyneEditPawn>(PC->GetPawn()))
+			{
+				Pawn->FocusOnLocation(Building->GetActorLocation(), 3500.0f);
 			}
 		}
 		return FReply::Handled();
@@ -1266,6 +1516,208 @@ FReply STerraDynePanel::OnImportGeoTIFFClicked()
 {
 	PickAndImportFileForLayer(ETerraDyneRasterLayer::Elevation);
 	return FReply::Handled();
+}
+
+namespace
+{
+	// Small persistence helper so each pyramid type remembers its own last-picked folder across
+	// editor sessions -- a plain FString member alone resets every time the panel is reconstructed.
+	const TCHAR* TiledCesiumImportConfigSection = TEXT("TerraDyne.TiledCesiumImport");
+}
+
+FReply STerraDynePanel::OnImportCesiumTerrainTilesetClicked()
+{
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform)
+	{
+		return FReply::Handled();
+	}
+
+	FString DefaultPath = LastCesiumTerrainFolder;
+	if (DefaultPath.IsEmpty())
+	{
+		GConfig->GetString(TiledCesiumImportConfigSection, TEXT("LastTerrainFolder"), DefaultPath, GEditorPerProjectIni);
+	}
+
+	FString PickedFolder;
+	const bool bPicked = DesktopPlatform->OpenDirectoryDialog(
+		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		TEXT("Select a Cesium Quantized-Mesh Tileset Folder (containing layer.json)"),
+		DefaultPath,
+		PickedFolder);
+
+	if (!bPicked)
+	{
+		return FReply::Handled();
+	}
+
+	LastCesiumTerrainFolder = PickedFolder;
+	GConfig->SetString(TiledCesiumImportConfigSection, TEXT("LastTerrainFolder"), *PickedFolder, GEditorPerProjectIni);
+
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		FString OutError;
+		FVector2D CenterLonLat;
+		double SpanDegrees = 0.0;
+		if (Mgr->ImportCesiumTerrainTileset(PickedFolder, OutError, CenterLonLat, SpanDegrees))
+		{
+			LastCesiumTiledStatusMessage = FString::Printf(TEXT("Terrain tileset loaded from %s"), *PickedFolder);
+			bLastCesiumTiledStatusIsError = false;
+			FlyCameraOverImportedFootprint(CenterLonLat, SpanDegrees);
+		}
+		else
+		{
+			LastCesiumTiledStatusMessage = OutError;
+			bLastCesiumTiledStatusIsError = true;
+		}
+	}
+#endif
+
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnImportCesiumImageryOverlayClicked()
+{
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform)
+	{
+		return FReply::Handled();
+	}
+
+	FString DefaultPath = LastCesiumOverlayFolder;
+	if (DefaultPath.IsEmpty())
+	{
+		GConfig->GetString(TiledCesiumImportConfigSection, TEXT("LastOverlayFolder"), DefaultPath, GEditorPerProjectIni);
+	}
+
+	FString PickedFolder;
+	const bool bPicked = DesktopPlatform->OpenDirectoryDialog(
+		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		TEXT("Select an XYZ Imagery Tile Pyramid Folder (containing z/x/y.png)"),
+		DefaultPath,
+		PickedFolder);
+
+	if (!bPicked)
+	{
+		return FReply::Handled();
+	}
+
+	LastCesiumOverlayFolder = PickedFolder;
+	GConfig->SetString(TiledCesiumImportConfigSection, TEXT("LastOverlayFolder"), *PickedFolder, GEditorPerProjectIni);
+
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		FString OutError;
+		FVector2D CenterLonLat;
+		double SpanDegrees = 0.0;
+		if (Mgr->ImportCesiumImageryOverlay(PickedFolder, OutError, CenterLonLat, SpanDegrees))
+		{
+			LastCesiumTiledStatusMessage = FString::Printf(TEXT("Imagery overlay loaded from %s"), *PickedFolder);
+			bLastCesiumTiledStatusIsError = false;
+			FlyCameraOverImportedFootprint(CenterLonLat, SpanDegrees);
+		}
+		else
+		{
+			LastCesiumTiledStatusMessage = OutError;
+			bLastCesiumTiledStatusIsError = true;
+		}
+	}
+#endif
+
+	return FReply::Handled();
+}
+
+void STerraDynePanel::FlyCameraOverImportedFootprint(FVector2D CenterLonLat, double SpanDegrees)
+{
+	if (SpanDegrees <= 0.0)
+	{
+		// The importer couldn't determine a footprint (e.g. an empty pyramid) -- nowhere sensible to
+		// fly to, so leave the camera where it is rather than flying to (0,0) off the coast of Africa.
+		return;
+	}
+
+	APlayerController* PC = OwnerWidget.IsValid() ? OwnerWidget->GetOwningPlayer() : nullptr;
+	if (!PC && GetManager() && GetManager()->GetWorld())
+	{
+		PC = GetManager()->GetWorld()->GetFirstPlayerController();
+	}
+
+	ATerraDyneEditPawn* Pawn = PC ? Cast<ATerraDyneEditPawn>(PC->GetPawn()) : nullptr;
+	if (!Pawn)
+	{
+		return;
+	}
+
+	// Degrees -> metres via the standard ~111.32 km/degree, then framed with headroom so the whole
+	// footprint sits comfortably in view rather than filling the frame edge-to-edge, and floored so a
+	// single-tile (near-zero span) import still gets a sensible aerial altitude rather than a
+	// ground-level swoop into the terrain.
+	const double SpanMeters = SpanDegrees * 111320.0;
+	const double Altitude = FMath::Max(3000.0, SpanMeters * 0.9);
+
+	// Same Yaw/Pitch convention as ATerraDyneEditPawn::FocusOnMap's existing "Top View" framing.
+	Pawn->FlyToCoordinates(CenterLonLat.X, CenterLonLat.Y, Altitude, /*Yaw=*/90.0, /*Pitch=*/-80.0);
+}
+
+ECheckBoxState STerraDynePanel::IsCutOutBackdropChecked() const
+{
+	const ATerraDyneManager* Mgr = GetManager();
+	return (Mgr && Mgr->GetCutOutBackdropForTiledImport()) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void STerraDynePanel::OnCutOutBackdropCheckedChanged(ECheckBoxState NewState)
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		Mgr->SetCutOutBackdropForTiledImport(NewState == ECheckBoxState::Checked);
+	}
+}
+
+float STerraDynePanel::GetTiledCesiumHeightOffsetSliderValue() const
+{
+	const ATerraDyneManager* Mgr = GetManager();
+	const double OffsetMeters = Mgr ? Mgr->GetTiledCesiumHeightOffset() : 0.0;
+	return (float)FMath::GetMappedRangeValueClamped(FVector2D(-500.0, 500.0), FVector2D(0.0, 1.0), OffsetMeters);
+}
+
+void STerraDynePanel::OnTiledCesiumHeightOffsetSliderChanged(float NewValue)
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		const double OffsetMeters = FMath::GetMappedRangeValueClamped(FVector2D(0.0, 1.0), FVector2D(-500.0, 500.0), (double)NewValue);
+		Mgr->SetTiledCesiumHeightOffset(OffsetMeters);
+	}
+}
+
+FText STerraDynePanel::GetTiledCesiumHeightOffsetText() const
+{
+	const ATerraDyneManager* Mgr = GetManager();
+	const double OffsetMeters = Mgr ? Mgr->GetTiledCesiumHeightOffset() : 0.0;
+	return FText::Format(LOCTEXT("TiledHeightOffsetValue", "{0}m"), FText::AsNumber(FMath::RoundToInt(OffsetMeters)));
+}
+
+FText STerraDynePanel::GetCesiumTiledStatusText() const
+{
+	if (!LastCesiumTiledStatusMessage.IsEmpty())
+	{
+		return FText::FromString(LastCesiumTiledStatusMessage);
+	}
+	return LOCTEXT("TiledCesiumInitialStatus", "No tileset or overlay loaded yet.");
+}
+
+FSlateColor STerraDynePanel::GetCesiumTiledStatusColor() const
+{
+	if (bLastCesiumTiledStatusIsError)
+	{
+		return FLinearColor(1.0f, 0.35f, 0.35f); // Red
+	}
+	if (!LastCesiumTiledStatusMessage.IsEmpty())
+	{
+		return FLinearColor(0.3f, 0.9f, 0.4f); // Green
+	}
+	return FLinearColor(0.7f, 0.7f, 0.7f); // Subtle grey
 }
 
 FReply STerraDynePanel::OnImportRasterLayerClicked(ETerraDyneRasterLayer Layer)
@@ -1615,6 +2067,13 @@ FText STerraDynePanel::GetGeoTIFFProgressText() const
 {
 	if (ATerraDyneManager* Mgr = GetManager())
 	{
+		if (Mgr->HasActiveVisualOverlay())
+		{
+			return FText::Format(LOCTEXT("OverlayActiveFmt", "Active Visual: {0} ({1} chunks)"),
+				FText::FromString(Mgr->GetActiveVisualOverlayName()),
+				FText::AsNumber(Mgr->GetActiveChunkCount()));
+		}
+
 		int32 Loaded = 0;
 		int32 Total = 0;
 		const float Fraction = Mgr->GetGeoTIFFLoadProgress(Loaded, Total);
@@ -1633,11 +2092,47 @@ FText STerraDynePanel::GetGeoTIFFProgressText() const
 	return FText::GetEmpty();
 }
 
+FSlateColor STerraDynePanel::GetGeoTIFFProgressTextColor() const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		if (Mgr->HasActiveVisualOverlay())
+		{
+			return FLinearColor(0.2f, 0.95f, 0.45f); // Emerald Green for active overlay
+		}
+
+		int32 Loaded = 0;
+		int32 Total = 0;
+		Mgr->GetGeoTIFFLoadProgress(Loaded, Total);
+		if (Total > 0 && Loaded >= Total)
+		{
+			return FLinearColor(0.2f, 0.9f, 0.4f); // Green when 100% complete
+		}
+	}
+	return FLinearColor(0.2f, 0.7f, 1.0f); // Blue while actively loading
+}
+
 EVisibility STerraDynePanel::GetGeoTIFFProgressVisibility() const
 {
 	if (ATerraDyneManager* Mgr = GetManager())
 	{
 		if (Mgr->GetImportedChunkCoords().Num() > 0)
+		{
+			return EVisibility::Visible;
+		}
+	}
+	return EVisibility::Collapsed;
+}
+
+EVisibility STerraDynePanel::GetGeoTIFFProgressBarVisibility() const
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		int32 Loaded = 0;
+		int32 Total = 0;
+		Mgr->GetGeoTIFFLoadProgress(Loaded, Total);
+		// Collapse the animated bar once 100% is reached so the marquee animation stops
+		if (Total > 0 && Loaded < Total)
 		{
 			return EVisibility::Visible;
 		}
@@ -1704,6 +2199,280 @@ void STerraDynePanel::PickAndImportFileForLayer(ETerraDyneRasterLayer Layer)
 	if (OwnerWidget.IsValid())
 	{
 		OwnerWidget->OpenRasterLayerImportPicker(Layer);
+	}
+}
+
+void STerraDynePanel::ShowNotificationModal(const FText& Title, const FText& Message, bool bIsError)
+{
+#if WITH_EDITOR
+	FMessageDialog::Open(
+		EAppMsgType::Ok,
+		Message,
+		Title);
+#else
+	LastRasterStatusMessage = Message.ToString();
+	bLastRasterStatusIsError = bIsError;
+#endif
+}
+
+FReply STerraDynePanel::OnAddDynamicLayerClicked()
+{
+	ATerraDyneManager* Mgr = GetManager();
+	if (!Mgr)
+	{
+		ShowNotificationModal(LOCTEXT("ErrorTitle", "Error"), LOCTEXT("NoManagerErr", "TerraDyne Manager is unavailable."), true);
+		return FReply::Handled();
+	}
+
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			TEXT("Add Overlay Layer (Auto-Detect)"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("GeoTIFF & Raster Archives (*.tif;*.tiff;*.tar.gz;*.tgz;*.zip)|*.tif;*.tiff;*.tar.gz;*.tgz;*.zip|GeoTIFF (*.tif;*.tiff)|*.tif;*.tiff|Archives (*.tar.gz;*.tgz;*.zip)|*.tar.gz;*.tgz;*.zip|All Files (*.*)|*.*"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			FString ResolvedPath;
+			FString ExtractError;
+			if (!FTerraDyneArchiveHelper::ResolveOrExtractRaster(OutFiles[0], ETerraDyneRasterLayer::Satellite, ResolvedPath, ExtractError))
+			{
+				ShowNotificationModal(
+					LOCTEXT("ExtractErrorTitle", "Archive Extraction Error"),
+					FText::FromString(ExtractError),
+					true);
+				return FReply::Handled();
+			}
+
+			FTerraDyneDynamicRasterLayer AddedLayer;
+			FString OutError;
+			if (Mgr->AddDynamicRasterLayer(ResolvedPath, AddedLayer, OutError))
+			{
+				LastRasterStatusMessage = FString::Printf(TEXT("Added [%s]: %s"),
+					*AddedLayer.DisplayName, *FPaths::GetCleanFilename(ResolvedPath));
+				bLastRasterStatusIsError = false;
+				RefreshDynamicLayersList();
+			}
+			else
+			{
+				ShowNotificationModal(
+					LOCTEXT("LayerImportErrorTitle", "Layer Import / Duplicate Warning"),
+					FText::FromString(OutError),
+					true);
+				LastRasterStatusMessage = OutError;
+				bLastRasterStatusIsError = true;
+			}
+		}
+	}
+#endif
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnRemoveDynamicLayerClicked(int32 Index)
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		Mgr->RemoveDynamicRasterLayer(Index);
+		RefreshDynamicLayersList();
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnClearAllDynamicLayersClicked()
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		Mgr->ClearAllDynamicRasterLayers();
+		RefreshDynamicLayersList();
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnToggleDynamicLayerLoadClicked(int32 Index)
+{
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		if (Mgr->DynamicRasterLayers.IsValidIndex(Index))
+		{
+			if (Mgr->DynamicRasterLayers[Index].bIsActiveInScene)
+			{
+				Mgr->UnloadDynamicRasterLayer(Index);
+				LastRasterStatusMessage = FString::Printf(TEXT("Unloaded %s."), *Mgr->DynamicRasterLayers[Index].DisplayName);
+				bLastRasterStatusIsError = false;
+			}
+			else
+			{
+				FString OutError;
+				if (Mgr->LoadDynamicRasterLayer(Index, OutError))
+				{
+					LastRasterStatusMessage = FString::Printf(TEXT("Loaded %s into scene."), *Mgr->DynamicRasterLayers[Index].DisplayName);
+					bLastRasterStatusIsError = false;
+				}
+				else
+				{
+					ShowNotificationModal(
+						LOCTEXT("LoadErrorTitle", "Layer Load Error"),
+						FText::FromString(OutError),
+						true);
+					LastRasterStatusMessage = OutError;
+					bLastRasterStatusIsError = true;
+				}
+			}
+			RefreshDynamicLayersList();
+		}
+	}
+	return FReply::Handled();
+}
+
+TSharedRef<SWidget> STerraDynePanel::MakeDynamicLayerRow(int32 Index, const FTerraDyneDynamicRasterLayer& Layer)
+{
+	const FSlateFontInfo SubHeaderFont = FCoreStyle::GetDefaultFontStyle("Bold", 9);
+	const FSlateFontInfo StatusFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+
+	const FSlateColor RowBG = Layer.bIsActiveInScene
+		? FSlateColor(FLinearColor(0.06f, 0.22f, 0.16f, 0.75f))
+		: FSlateColor(FLinearColor(0.12f, 0.12f, 0.14f, 0.5f));
+
+	FLinearColor BadgeColor = FLinearColor(0.2f, 0.6f, 1.0f); // Default Blue
+	switch (Layer.LayerType)
+	{
+	case ETerraDyneRasterLayer::Satellite:
+		BadgeColor = FLinearColor(0.2f, 0.85f, 0.7f); // Cyan/Teal
+		break;
+	case ETerraDyneRasterLayer::Slope:
+		BadgeColor = FLinearColor(0.9f, 0.6f, 0.1f); // Orange
+		break;
+	case ETerraDyneRasterLayer::Aspect:
+		BadgeColor = FLinearColor(0.7f, 0.35f, 0.9f); // Purple
+		break;
+	case ETerraDyneRasterLayer::Roughness:
+		BadgeColor = FLinearColor(0.85f, 0.4f, 0.4f); // Coral
+		break;
+	case ETerraDyneRasterLayer::Hillshade:
+		BadgeColor = FLinearColor(0.6f, 0.7f, 0.8f); // Slate
+		break;
+	case ETerraDyneRasterLayer::ColorRelief:
+	case ETerraDyneRasterLayer::ColorHillshade:
+		BadgeColor = FLinearColor(0.3f, 0.85f, 0.3f); // Emerald Green
+		break;
+	default:
+		break;
+	}
+
+	const FString SpecsText = FString::Printf(TEXT("%s (%dx%d, %d band%s)"),
+		*FPaths::GetCleanFilename(Layer.SourceFilePath),
+		Layer.Width, Layer.Height,
+		Layer.BandCount, Layer.BandCount > 1 ? TEXT("s") : TEXT(""));
+
+	return SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+		.BorderBackgroundColor(RowBG)
+		.Padding(FMargin(6.0f, 5.0f))
+		[
+			SNew(SVerticalBox)
+			// Row 1: Header (Badge + ACTIVE status + Delete button)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						SNew(SBorder)
+						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+						.BorderBackgroundColor(BadgeColor * 0.35f)
+						.Padding(FMargin(5, 2))
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(Layer.DisplayName))
+							.Font(SubHeaderFont)
+							.ColorAndOpacity(BadgeColor)
+						]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ActiveBadge", "● ACTIVE"))
+						.Font(StatusFont)
+						.ColorAndOpacity(FLinearColor(0.2f, 0.95f, 0.4f))
+						.Visibility(Layer.bIsActiveInScene ? EVisibility::Visible : EVisibility::Collapsed)
+					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(2, 0, 0, 0)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
+					.HAlign(HAlign_Center)
+					.Text(FText::FromString(TEXT(" ✕ ")))
+					.ToolTipText(LOCTEXT("BtnRemoveDynLayerTip", "Delete this layer from stack"))
+					.OnClicked(this, &STerraDynePanel::OnRemoveDynamicLayerClicked, Index)
+				]
+			]
+			// Row 2: Specs text
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 4)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(SpecsText))
+				.ColorAndOpacity(Layer.bIsActiveInScene ? FLinearColor(0.2f, 0.85f, 0.3f) : FLinearColor(0.7f, 0.7f, 0.7f))
+				.Font(StatusFont)
+				.AutoWrapText(true)
+			]
+			// Row 3: Action Button (Load / Unload)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.ButtonColorAndOpacity(Layer.bIsActiveInScene ? FLinearColor(0.9f, 0.45f, 0.1f) : FLinearColor(0.2f, 0.8f, 0.3f))
+				.HAlign(HAlign_Center)
+				.Text(Layer.bIsActiveInScene ? LOCTEXT("BtnUnload", "Unload from Scene") : LOCTEXT("BtnLoad", "Load into Scene"))
+				.ToolTipText(LOCTEXT("BtnToggleLoadTip", "Load or Unload this layer into/from the active scene"))
+				.OnClicked(this, &STerraDynePanel::OnToggleDynamicLayerLoadClicked, Index)
+			]
+		];
+}
+
+void STerraDynePanel::RefreshDynamicLayersList()
+{
+	if (!DynamicLayersListBox.IsValid())
+	{
+		return;
+	}
+
+	DynamicLayersListBox->ClearChildren();
+
+	ATerraDyneManager* Mgr = GetManager();
+	if (!Mgr || Mgr->DynamicRasterLayers.Num() == 0)
+	{
+		const FSlateFontInfo InfoFont = FCoreStyle::GetDefaultFontStyle("Italic", 8);
+		DynamicLayersListBox->AddSlot()
+			.AutoHeight()
+			.Padding(2, 4)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("NoDynamicLayers", "No overlay layers added yet. Click '+ Add Overlay Layer…' to auto-detect and import satellite, slope, hillshade, or color relief rasters."))
+				.Font(InfoFont)
+				.ColorAndOpacity(FLinearColor(0.5f, 0.5f, 0.5f))
+				.AutoWrapText(true)
+			];
+		return;
+	}
+
+	for (int32 i = 0; i < Mgr->DynamicRasterLayers.Num(); ++i)
+	{
+		DynamicLayersListBox->AddSlot()
+			.AutoHeight()
+			.Padding(0, 1)
+			[
+				MakeDynamicLayerRow(i, Mgr->DynamicRasterLayers[i])
+			];
 	}
 }
 
@@ -1820,22 +2589,24 @@ void STerraDynePanel::OnBrushStrengthChanged(float NewValue)
 
 FReply STerraDynePanel::OnAddRoadPointClicked()
 {
-	RoadPointCount++;
-	return FReply::Handled();
+	return SetToolMode(ETerraDyneToolMode::DrawPavedRoad);
 }
 
 FReply STerraDynePanel::OnRemoveRoadPointClicked()
 {
-	if (RoadPointCount > 0)
-	{
-		RoadPointCount--;
-	}
-	return FReply::Handled();
+	return DeleteRoadPoint();
 }
 
 FReply STerraDynePanel::OnResetRoadPointsClicked()
 {
 	RoadPointCount = 0;
+	if (OwnerWidget.IsValid())
+	{
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			PC->ClearRoadSelection();
+		}
+	}
 	return FReply::Handled();
 }
 

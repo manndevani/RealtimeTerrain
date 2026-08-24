@@ -70,6 +70,12 @@ public:
 	 */
 	bool TrySampleWorldXY(double WorldX, double WorldY, float& OutNormalized01) const;
 
+	/**
+	 * Converts Unreal world XY (cm) to exact georeferenced raster pixel coordinates [0, Width-1] and [0, Height-1].
+	 * Returns false if WorldX/WorldY falls outside the raster footprint.
+	 */
+	bool TrySampleRasterPixel(double WorldX, double WorldY, double& OutPixelX, double& OutPixelY) const;
+
 private:
 	FTerraDyneGeoTIFFRaster Raster;
 	TWeakObjectPtr<ACesiumGeoreference> Georeference;

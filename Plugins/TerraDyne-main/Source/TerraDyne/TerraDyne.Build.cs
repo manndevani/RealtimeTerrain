@@ -43,7 +43,9 @@ public class TerraDyne : ModuleRules
             "DaySequence",
             "CesiumRuntime",
             "GDAL",
-            "Projects"
+            "Projects",
+            "Json",
+            "JsonUtilities"
 		});
 
 		if (Target.bBuildEditor)

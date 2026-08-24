@@ -717,7 +717,16 @@ void ATerraDyneChunk::PopulateProcedural()
 	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Ready (Procedural)"), GridCoordinate.X, GridCoordinate.Y);
 }
 
-void ATerraDyneChunk::PopulateFromDEM(TArray<float>&& InHeightBuffer, float InZScale, double InWorldZOffset, bool bGenerateCollision)
+void ATerraDyneChunk::PopulateFromDEM(
+	TArray<float>&& InHeightBuffer,
+	float InZScale,
+	double InWorldZOffset,
+	bool bGenerateCollision,
+	FVector2D GlobalFootprintMin,
+	FVector2D GlobalFootprintMax,
+	const TArray<FColor>& OverlayPixels,
+	int32 OverlayWidth,
+	int32 OverlayHeight)
 {
 	const int32 NumVerts = Resolution * Resolution;
 	if (InHeightBuffer.Num() != NumVerts)
@@ -728,7 +737,8 @@ void ATerraDyneChunk::PopulateFromDEM(TArray<float>&& InHeightBuffer, float InZS
 	}
 
 	const FVector CurrentLocation = GetActorLocation();
-	SetActorLocation(FVector(CurrentLocation.X, CurrentLocation.Y, InWorldZOffset));
+	const FVector NewLocation(CurrentLocation.X, CurrentLocation.Y, InWorldZOffset);
+	SetActorLocation(NewLocation);
 	ZScale = InZScale;
 
 	BaseBuffer = MoveTemp(InHeightBuffer);
@@ -740,18 +750,87 @@ void ATerraDyneChunk::PopulateFromDEM(TArray<float>&& InHeightBuffer, float InZS
 
 	RecomputeHeightFromLayers();
 
-	// High-speed DEM mesh building (bypasses procedural noise & texture uploads)
+	// High-speed DEM mesh building with continuous geographic UV coordinates and vertex colors across the entire dataset footprint
 	FTerraDyneDEMMeshBuilder::UpdateComponentMesh(
 		DynamicMeshComp,
 		HeightBuffer,
 		Resolution,
 		WorldSize,
 		ZScale,
-		bGenerateCollision
+		bGenerateCollision,
+		NewLocation,
+		GlobalFootprintMin,
+		GlobalFootprintMax,
+		OverlayPixels,
+		OverlayWidth,
+		OverlayHeight
 	);
 
 	bInitialized = true;
 	UE_LOG(LogTemp, Log, TEXT("Chunk [%d,%d]: Ready (DEM Fast Mesh)"), GridCoordinate.X, GridCoordinate.Y);
+}
+
+void ATerraDyneChunk::ApplyVisualOverlay(
+	const TArray<FColor>& OverlayPixels,
+	int32 OverlayWidth,
+	int32 OverlayHeight,
+	FVector2D FootprintMin,
+	FVector2D FootprintMax)
+{
+	if (!DynamicMeshComp || !DynamicMeshComp->GetDynamicMesh())
+	{
+		return;
+	}
+
+	DynamicMeshComp->GetDynamicMesh()->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
+	{
+		FTerraDyneDEMMeshBuilder::UpdateDEMVertexColors(
+			Mesh,
+			HeightBuffer,
+			Resolution,
+			WorldSize,
+			GetActorLocation(),
+			FootprintMin,
+			FootprintMax,
+			OverlayPixels,
+			OverlayWidth,
+			OverlayHeight);
+	});
+
+	DynamicMeshComp->SetColorOverrideMode(EDynamicMeshComponentColorOverrideMode::VertexColors);
+	DynamicMeshComp->NotifyMeshVertexAttributesModified(false, true);
+}
+
+void ATerraDyneChunk::SetOverlayTexture(UTexture2D* InTexture)
+{
+	if (!DynamicMeshComp)
+	{
+		return;
+	}
+
+	if (InTexture)
+	{
+		UMaterialInterface* CurrentMat = DynamicMeshComp->GetMaterial(0);
+		UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(CurrentMat);
+		if (!MID)
+		{
+			UMaterialInterface* BaseMat = CurrentMat ? CurrentMat : LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+			if (BaseMat)
+			{
+				MID = UMaterialInstanceDynamic::Create(BaseMat, this);
+				DynamicMeshComp->SetMaterial(0, MID);
+			}
+		}
+
+		if (MID)
+		{
+			MID->SetTextureParameterValue(TEXT("Texture"), InTexture);
+			MID->SetTextureParameterValue(TEXT("BaseColor"), InTexture);
+			MID->SetTextureParameterValue(TEXT("Color"), InTexture);
+			MID->SetTextureParameterValue(TEXT("GrassTexture"), InTexture);
+			MID->SetTextureParameterValue(TEXT("WeightMap"), InTexture);
+		}
+	}
 }
 
 bool ATerraDyneChunk::SetupGPU()
@@ -1181,9 +1260,35 @@ void ATerraDyneChunk::RebuildMesh()
 			UE::Geometry::FMeshNormals::InitializeOverlayToPerVertexNormals(NormalOverlay, true);
 		}
 
-		// Bake the layer split into vertex colors now that the normals it depends on exist.
-		ApplyLayerWeightsToMesh(Mesh, HeightBuffer, Resolution);
+		UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
+		ATerraDyneManager* Manager = Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+		if (Manager && Manager->GeoTIFFImportState.bWasImportedFromGeoTIFF)
+		{
+			FTerraDyneDEMMeshBuilder::UpdateDEMVertexColors(
+				Mesh,
+				HeightBuffer,
+				Resolution,
+				WorldSize,
+				ChunkWorldOrigin,
+				Manager->GeoTIFFImportState.WorldFootprintMin,
+				Manager->GeoTIFFImportState.WorldFootprintMax,
+				Manager->ActiveGeoTIFFVisualOverlayPixels,
+				Manager->ActiveGeoTIFFVisualOverlayWidth,
+				Manager->ActiveGeoTIFFVisualOverlayHeight);
+		}
+		else
+		{
+			// Bake the layer split into vertex colors now that the normals it depends on exist.
+			ApplyLayerWeightsToMesh(Mesh, HeightBuffer, Resolution);
+		}
 	});
+
+	UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
+	ATerraDyneManager* Manager = Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+	if (Manager && Manager->GeoTIFFImportState.bWasImportedFromGeoTIFF)
+	{
+		DynamicMeshComp->SetColorOverrideMode(EDynamicMeshComponentColorOverrideMode::VertexColors);
+	}
 
 	if (HeightRT)
 	{
@@ -1289,8 +1394,35 @@ void ATerraDyneChunk::RebakeLayerWeights()
 		{
 			return;
 		}
-		ApplyLayerWeightsToMesh(Mesh, HeightBuffer, Resolution);
+		UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
+		ATerraDyneManager* Manager = Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+		if (Manager && Manager->GeoTIFFImportState.bWasImportedFromGeoTIFF)
+		{
+			FTerraDyneDEMMeshBuilder::UpdateDEMVertexColors(
+				Mesh,
+				HeightBuffer,
+				Resolution,
+				WorldSize,
+				GetActorLocation(),
+				Manager->GeoTIFFImportState.WorldFootprintMin,
+				Manager->GeoTIFFImportState.WorldFootprintMax,
+				Manager->ActiveGeoTIFFVisualOverlayPixels,
+				Manager->ActiveGeoTIFFVisualOverlayWidth,
+				Manager->ActiveGeoTIFFVisualOverlayHeight);
+		}
+		else
+		{
+			ApplyLayerWeightsToMesh(Mesh, HeightBuffer, Resolution);
+		}
 	});
+
+	UTerraDyneSubsystem* Subsystem = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneSubsystem>() : nullptr;
+	ATerraDyneManager* Manager = Subsystem ? Subsystem->GetTerrainManager() : nullptr;
+	if (Manager && Manager->GeoTIFFImportState.bWasImportedFromGeoTIFF)
+	{
+		DynamicMeshComp->SetColorOverrideMode(EDynamicMeshComponentColorOverrideMode::VertexColors);
+		DynamicMeshComp->NotifyMeshVertexAttributesModified(false, true);
+	}
 }
 
 void ATerraDyneChunk::UpdateCollision()
@@ -1449,7 +1581,8 @@ void ATerraDyneChunk::StampBuildingPad(
 		ClearBuildingPad();
 	}
 
-	const float SafeFalloff = FMath::Max(Falloff, 1.0f);
+	const float Step = WorldSize / (Resolution - 1);
+	const float EffectiveFalloff = FMath::Max(Falloff, Step * 1.5f);
 	const float TargetNorm = TargetLocalZ / ZScale;
 
 	// Only walk the grid the footprint plus its skirt can actually reach.
@@ -1458,10 +1591,9 @@ void ATerraDyneChunk::StampBuildingPad(
 	{
 		Area += P;
 	}
-	Area = Area.ExpandBy(SafeFalloff);
+	Area = Area.ExpandBy(EffectiveFalloff);
 
 	const float Half = WorldSize * 0.5f;
-	const float Step = WorldSize / (Resolution - 1);
 
 	const int32 MinX = FMath::Clamp(FMath::FloorToInt((Area.Min.X + Half) / Step), 0, Resolution - 1);
 	const int32 MaxX = FMath::Clamp(FMath::CeilToInt((Area.Max.X + Half) / Step), 0, Resolution - 1);
@@ -1480,14 +1612,14 @@ void ATerraDyneChunk::StampBuildingPad(
 			{
 				Weight = 1.0f;               // inside the footprint: fully flat
 			}
-			else if (Dist >= SafeFalloff)
+			else if (Dist >= EffectiveFalloff)
 			{
 				continue;                    // past the skirt: untouched ground
 			}
 			else
 			{
 				// Same smoothstep the sculpt brushes use, so a pad edge reads like a brush edge.
-				const float T = 1.0f - (Dist / SafeFalloff);
+				const float T = 1.0f - (Dist / EffectiveFalloff);
 				Weight = T * T * (3.0f - 2.0f * T);
 			}
 
