@@ -141,4 +141,22 @@ public:
 	 * elevation check BandCount themselves.
 	 */
 	static bool ProbeMetadata(const FString& FilePath, FTerraDyneRasterInfo& OutInfo, FString& OutError);
+
+	/**
+	 * Decodes 1-band greyscale, 3-band RGB, or 4-band RGBA imagery into a GPU-ready UTexture2D.
+	 * Automatically downsamples large rasters to MaxDimension (default 4096) for fast GPU upload.
+	 */
+	static class UTexture2D* DecodeRasterToTexture(const FString& FilePath, int32 MaxDimension, FString& OutError);
+
+	/**
+	 * Decodes raster imagery (Byte RGB/Greyscale or Float32 Slope/Aspect/Roughness) into an FColor buffer.
+	 * Applies scientific GIS colormaps for Float32 analysis layers.
+	 */
+	static bool DecodeRasterPixels(
+		const FString& FilePath,
+		int32 MaxDimension,
+		TArray<FColor>& OutPixels,
+		int32& OutWidth,
+		int32& OutHeight,
+		FString& OutError);
 };

@@ -5,6 +5,7 @@
 #include "Misc/ScopeExit.h"
 #include "Misc/Paths.h"
 #include "Interfaces/IPluginManager.h"
+#include "Engine/Texture2D.h"
 
 // GDAL's C API. Plain C, safe to include from C++ directly -- no wrapper header needed.
 #include "gdal.h"
@@ -423,4 +424,367 @@ bool FTerraDyneGeoTIFFReader::LoadFromFile(const FString& FilePath, FTerraDyneGe
 			: (OutRaster.bIsUTM ? *FString::Printf(TEXT("UTM zone %d%s"), OutRaster.UTMZone, OutRaster.bUTMNorth ? TEXT("N") : TEXT("S")) : TEXT("unknown CRS")));
 
 	return true;
+}
+
+namespace
+{
+	// Slope colormap (degrees: 0 - 90)
+	FColor EvaluateSlopeColor(float Degrees)
+	{
+		Degrees = FMath::Clamp(Degrees, 0.0f, 90.0f);
+		if (Degrees < 5.0f) // 0-5 deg: Dark Forest Green (Gentle / Flat)
+		{
+			const float T = Degrees / 5.0f;
+			return FColor(FMath::RoundToInt(FMath::Lerp(15.0f, 40.0f, T)), FMath::RoundToInt(FMath::Lerp(140.0f, 210.0f, T)), 25, 255);
+		}
+		else if (Degrees < 15.0f) // 5-15 deg: Lime Green / Yellow-Green (Low slope)
+		{
+			const float T = (Degrees - 5.0f) / 10.0f;
+			return FColor(FMath::RoundToInt(FMath::Lerp(40.0f, 190.0f, T)), FMath::RoundToInt(FMath::Lerp(210.0f, 235.0f, T)), 20, 255);
+		}
+		else if (Degrees < 25.0f) // 15-25 deg: Bright Yellow (Moderate slope)
+		{
+			const float T = (Degrees - 15.0f) / 10.0f;
+			return FColor(FMath::RoundToInt(FMath::Lerp(190.0f, 255.0f, T)), FMath::RoundToInt(FMath::Lerp(235.0f, 180.0f, T)), 15, 255);
+		}
+		else if (Degrees < 35.0f) // 25-35 deg: Rich Orange (Steep slope)
+		{
+			const float T = (Degrees - 25.0f) / 10.0f;
+			return FColor(255, FMath::RoundToInt(FMath::Lerp(180.0f, 70.0f, T)), 10, 255);
+		}
+		else // > 35 deg: Crimson Red to Deep Maroon (Cliffs / Precipice)
+		{
+			const float T = FMath::Clamp((Degrees - 35.0f) / 25.0f, 0.0f, 1.0f);
+			return FColor(FMath::RoundToInt(FMath::Lerp(255.0f, 160.0f, T)), FMath::RoundToInt(FMath::Lerp(70.0f, 0.0f, T)), FMath::RoundToInt(FMath::Lerp(10.0f, 20.0f, T)), 255);
+		}
+	}
+
+	// Aspect colormap (degrees: 0 - 360)
+	FColor EvaluateAspectColor(float Degrees)
+	{
+		const float Normalized = FMath::Fmod(FMath::Max(0.0f, Degrees) + 360.0f, 360.0f);
+		const float H = Normalized / 60.0f;
+		const int32 Sector = FMath::FloorToInt(H) % 6;
+		const float F = H - FMath::FloorToInt(H);
+		const float Sat = 0.95f;
+		const float Val = 0.95f;
+		const float P = Val * (1.0f - Sat);
+		const float Q = Val * (1.0f - Sat * F);
+		const float T = Val * (1.0f - Sat * (1.0f - F));
+
+		float R = 0.f, G = 0.f, B = 0.f;
+		switch (Sector)
+		{
+		case 0: R = Val; G = T;   B = P;   break;
+		case 1: R = Q;   G = Val; B = P;   break;
+		case 2: R = P;   G = Val; B = T;   break;
+		case 3: R = P;   G = Q;   B = Val; break;
+		case 4: R = T;   G = P;   B = Val; break;
+		default: R = Val; G = P;   B = Q;   break;
+		}
+
+		return FColor(FMath::RoundToInt(R * 255.f), FMath::RoundToInt(G * 255.f), FMath::RoundToInt(B * 255.f), 255);
+	}
+
+	// Roughness colormap (normalized 0-1) - Magma/Inferno scientific palette
+	FColor EvaluateRoughnessColor(float NormVal)
+	{
+		NormVal = FMath::Clamp(NormVal, 0.0f, 1.0f);
+		if (NormVal < 0.25f) // Smooth: Deep Navy Indigo -> Cyan
+		{
+			const float T = NormVal / 0.25f;
+			return FColor(
+				FMath::RoundToInt(FMath::Lerp(10.0f, 15.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(20.0f, 160.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(120.0f, 210.0f, T)),
+				255);
+		}
+		else if (NormVal < 0.50f) // Low-Medium: Cyan -> Lime Green
+		{
+			const float T = (NormVal - 0.25f) / 0.25f;
+			return FColor(
+				FMath::RoundToInt(FMath::Lerp(15.0f, 90.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(160.0f, 225.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(210.0f, 35.0f, T)),
+				255);
+		}
+		else if (NormVal < 0.75f) // Medium-High: Lime -> Bright Amber
+		{
+			const float T = (NormVal - 0.50f) / 0.25f;
+			return FColor(
+				FMath::RoundToInt(FMath::Lerp(90.0f, 255.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(225.0f, 140.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(35.0f, 10.0f, T)),
+				255);
+		}
+		else // High-Extreme: Amber -> Hot Magenta
+		{
+			const float T = (NormVal - 0.75f) / 0.25f;
+			return FColor(
+				255,
+				FMath::RoundToInt(FMath::Lerp(140.0f, 20.0f, T)),
+				FMath::RoundToInt(FMath::Lerp(10.0f, 160.0f, T)),
+				255);
+		}
+	}
+}
+
+bool FTerraDyneGeoTIFFReader::DecodeRasterPixels(
+	const FString& FilePath,
+	int32 MaxDimension,
+	TArray<FColor>& OutPixels,
+	int32& OutWidth,
+	int32& OutHeight,
+	FString& OutError)
+{
+	OutError.Reset();
+	OutPixels.Reset();
+	OutWidth = 0;
+	OutHeight = 0;
+
+	EnsureGdalRegistered();
+
+	GDALDatasetH Dataset = GDALOpen(TCHAR_TO_UTF8(*FilePath), GA_ReadOnly);
+	if (!Dataset)
+	{
+		OutError = FString::Printf(TEXT("GDAL could not open '%s'."), *FilePath);
+		return false;
+	}
+	ON_SCOPE_EXIT{ GDALClose(Dataset); };
+
+	const int32 SrcWidth = GDALGetRasterXSize(Dataset);
+	const int32 SrcHeight = GDALGetRasterYSize(Dataset);
+	const int32 BandCount = GDALGetRasterCount(Dataset);
+
+	if (SrcWidth <= 0 || SrcHeight <= 0 || BandCount <= 0)
+	{
+		OutError = TEXT("Invalid raster dimensions or band count.");
+		return false;
+	}
+
+	// Calculate target dimensions maintaining aspect ratio
+	OutWidth = SrcWidth;
+	OutHeight = SrcHeight;
+	if (MaxDimension > 0 && (OutWidth > MaxDimension || OutHeight > MaxDimension))
+	{
+		if (OutWidth >= OutHeight)
+		{
+			OutHeight = FMath::Max(1, FMath::RoundToInt((float)SrcHeight * ((float)MaxDimension / (float)SrcWidth)));
+			OutWidth = MaxDimension;
+		}
+		else
+		{
+			OutWidth = FMath::Max(1, FMath::RoundToInt((float)SrcWidth * ((float)MaxDimension / (float)SrcHeight)));
+			OutHeight = MaxDimension;
+		}
+	}
+
+	const int32 TotalPixels = OutWidth * OutHeight;
+	OutPixels.SetNumUninitialized(TotalPixels);
+
+	GDALRasterBandH Band1 = GDALGetRasterBand(Dataset, 1);
+	if (!Band1)
+	{
+		OutError = TEXT("Failed to acquire raster band 1.");
+		return false;
+	}
+
+	const GDALDataType DataType = GDALGetRasterDataType(Band1);
+
+	if (BandCount >= 3)
+	{
+		// 3, 4, or multi-spectral bands (RGB / RGBA / Satellite True-Color & False-Color)
+		TArray<float> RedBand, GreenBand, BlueBand, AlphaBand;
+		RedBand.SetNumUninitialized(TotalPixels);
+		GreenBand.SetNumUninitialized(TotalPixels);
+		BlueBand.SetNumUninitialized(TotalPixels);
+
+		GDALRasterBandH Band2 = GDALGetRasterBand(Dataset, 2);
+		GDALRasterBandH Band3 = GDALGetRasterBand(Dataset, 3);
+
+		if (!Band2 || !Band3)
+		{
+			OutError = TEXT("Failed to acquire RGB bands from GeoTIFF.");
+			return false;
+		}
+
+		if (GDALRasterIO(Band1, GF_Read, 0, 0, SrcWidth, SrcHeight, RedBand.GetData(), OutWidth, OutHeight, GDT_Float32, 0, 0) != CE_None ||
+			GDALRasterIO(Band2, GF_Read, 0, 0, SrcWidth, SrcHeight, GreenBand.GetData(), OutWidth, OutHeight, GDT_Float32, 0, 0) != CE_None ||
+			GDALRasterIO(Band3, GF_Read, 0, 0, SrcWidth, SrcHeight, BlueBand.GetData(), OutWidth, OutHeight, GDT_Float32, 0, 0) != CE_None)
+		{
+			OutError = TEXT("GDALRasterIO failed to read RGB bands.");
+			return false;
+		}
+
+		bool bHasAlpha = false;
+		if (BandCount >= 4)
+		{
+			GDALRasterBandH Band4 = GDALGetRasterBand(Dataset, 4);
+			if (Band4)
+			{
+				AlphaBand.SetNumUninitialized(TotalPixels);
+				if (GDALRasterIO(Band4, GF_Read, 0, 0, SrcWidth, SrcHeight, AlphaBand.GetData(), OutWidth, OutHeight, GDT_Float32, 0, 0) == CE_None)
+				{
+					bHasAlpha = true;
+				}
+			}
+		}
+
+		// Detect if this is 16-bit satellite reflectance (e.g. Sentinel-2 / Landsat L2A) or HDR data requiring auto-contrast
+		float MaxR = 0.0f, MaxG = 0.0f, MaxB = 0.0f;
+		for (int32 i = 0; i < TotalPixels; ++i)
+		{
+			if (FMath::IsFinite(RedBand[i])) MaxR = FMath::Max(MaxR, RedBand[i]);
+			if (FMath::IsFinite(GreenBand[i])) MaxG = FMath::Max(MaxG, GreenBand[i]);
+			if (FMath::IsFinite(BlueBand[i])) MaxB = FMath::Max(MaxB, BlueBand[i]);
+		}
+
+		const float GlobalMax = FMath::Max3(MaxR, MaxG, MaxB);
+		const bool bNeedsSatelliteStretch = (GlobalMax > 255.0f);
+		const float ScaleFactor = bNeedsSatelliteStretch ? (255.0f / FMath::Max(GlobalMax, 1.0f)) : 1.0f;
+
+		for (int32 i = 0; i < TotalPixels; ++i)
+		{
+			float R = RedBand[i];
+			float G = GreenBand[i];
+			float B = BlueBand[i];
+
+			if (!FMath::IsFinite(R)) R = 0.0f;
+			if (!FMath::IsFinite(G)) G = 0.0f;
+			if (!FMath::IsFinite(B)) B = 0.0f;
+
+			if (bNeedsSatelliteStretch)
+			{
+				R *= ScaleFactor;
+				G *= ScaleFactor;
+				B *= ScaleFactor;
+			}
+
+			const uint8 OutR = (uint8)FMath::Clamp(FMath::RoundToInt(R), 0, 255);
+			const uint8 OutG = (uint8)FMath::Clamp(FMath::RoundToInt(G), 0, 255);
+			const uint8 OutB = (uint8)FMath::Clamp(FMath::RoundToInt(B), 0, 255);
+			uint8 OutA = 255;
+			if (bHasAlpha)
+			{
+				float A = AlphaBand[i];
+				if (bNeedsSatelliteStretch) A *= ScaleFactor;
+				OutA = (uint8)FMath::Clamp(FMath::RoundToInt(A), 0, 255);
+			}
+
+			OutPixels[i] = FColor(OutR, OutG, OutB, OutA);
+		}
+	}
+	else if (DataType == GDT_Byte)
+	{
+		// 1 band Byte (Hillshade)
+		TArray<uint8> GreyBand;
+		GreyBand.SetNumUninitialized(TotalPixels);
+
+		if (GDALRasterIO(Band1, GF_Read, 0, 0, SrcWidth, SrcHeight, GreyBand.GetData(), OutWidth, OutHeight, GDT_Byte, 0, 0) != CE_None)
+		{
+			OutError = TEXT("GDALRasterIO failed to read greyscale byte band.");
+			return false;
+		}
+
+		for (int32 i = 0; i < TotalPixels; ++i)
+		{
+			const uint8 Val = GreyBand[i];
+			OutPixels[i] = FColor(Val, Val, Val, 255);
+		}
+	}
+	else
+	{
+		// 1 band Float32 (Slope, Aspect, Roughness, Elevation)
+		TArray<float> FloatBand;
+		FloatBand.SetNumUninitialized(TotalPixels);
+
+		if (GDALRasterIO(Band1, GF_Read, 0, 0, SrcWidth, SrcHeight, FloatBand.GetData(), OutWidth, OutHeight, GDT_Float32, 0, 0) != CE_None)
+		{
+			OutError = TEXT("GDALRasterIO failed to read float raster band.");
+			return false;
+		}
+
+		// Check layer characteristics: slope (0-90), aspect (0-360), roughness
+		float MinVal = TNumericLimits<float>::Max();
+		float MaxVal = -TNumericLimits<float>::Max();
+		int32 HasNoData = 0;
+		const double NoDataVal = GDALGetRasterNoDataValue(Band1, &HasNoData);
+
+		for (int32 i = 0; i < TotalPixels; ++i)
+		{
+			const float V = FloatBand[i];
+			if (!FMath::IsFinite(V) || (HasNoData && FMath::IsNearlyEqual(V, (float)NoDataVal, 1.0f)))
+			{
+				continue;
+			}
+			MinVal = FMath::Min(MinVal, V);
+			MaxVal = FMath::Max(MaxVal, V);
+		}
+
+		const FString LowerName = FilePath.ToLower();
+		const bool bIsAspect = LowerName.Contains(TEXT("aspect")) || (MaxVal > 90.0f && MaxVal <= 360.0f);
+		const bool bIsSlope = LowerName.Contains(TEXT("slope")) || (MinVal >= 0.0f && MaxVal <= 90.0f && !bIsAspect);
+
+		const float ValRange = FMath::Max(0.0001f, MaxVal - MinVal);
+
+		for (int32 i = 0; i < TotalPixels; ++i)
+		{
+			const float V = FloatBand[i];
+			if (!FMath::IsFinite(V) || (HasNoData && FMath::IsNearlyEqual(V, (float)NoDataVal, 1.0f)))
+			{
+				OutPixels[i] = FColor(0, 0, 0, 0);
+				continue;
+			}
+
+			if (bIsAspect)
+			{
+				OutPixels[i] = EvaluateAspectColor(V);
+			}
+			else if (bIsSlope)
+			{
+				OutPixels[i] = EvaluateSlopeColor(V);
+			}
+			else
+			{
+				const float NormVal = FMath::Clamp((V - MinVal) / ValRange, 0.0f, 1.0f);
+				OutPixels[i] = EvaluateRoughnessColor(NormVal);
+			}
+		}
+	}
+
+	return true;
+}
+
+UTexture2D* FTerraDyneGeoTIFFReader::DecodeRasterToTexture(const FString& FilePath, int32 MaxDimension, FString& OutError)
+{
+	TArray<FColor> Pixels;
+	int32 OutWidth = 0, OutHeight = 0;
+
+	if (!DecodeRasterPixels(FilePath, MaxDimension, Pixels, OutWidth, OutHeight, OutError))
+	{
+		return nullptr;
+	}
+
+	const int32 TotalPixels = OutWidth * OutHeight;
+	UTexture2D* OutTexture = UTexture2D::CreateTransient(OutWidth, OutHeight, PF_B8G8R8A8);
+	if (!OutTexture)
+	{
+		OutError = TEXT("Failed to create transient UTexture2D.");
+		return nullptr;
+	}
+
+	OutTexture->SRGB = true;
+	OutTexture->CompressionSettings = TextureCompressionSettings::TC_Default;
+	OutTexture->Filter = TextureFilter::TF_Bilinear;
+
+	void* TextureData = OutTexture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(TextureData, Pixels.GetData(), TotalPixels * sizeof(FColor));
+	OutTexture->GetPlatformData()->Mips[0].BulkData.Unlock();
+
+	OutTexture->UpdateResource();
+
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: Decoded GeoTIFF texture '%s' -> %dx%d"),
+		*FilePath, OutWidth, OutHeight);
+
+	return OutTexture;
 }
