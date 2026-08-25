@@ -7,6 +7,7 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "CollisionQueryParams.h"
 #include "Kismet/GameplayStatics.h"
 #include "Net/UnrealNetwork.h"
 #include "TerraDyneModule.h"
@@ -257,7 +258,15 @@ float ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const
 	for (const FVector2D& P : SamplePoints)
 	{
 		float GroundZ = 0.0f;
-		if (Manager->GetNaturalTerrainHeightAtXY(P, GroundZ))
+		bool bSampled = Manager->GetNaturalTerrainHeightAtXY(P, GroundZ);
+		if (!bSampled)
+		{
+			// No TerraDyne chunk streamed at this XY -- e.g. the footprint sits over a locally
+			// imported Cesium tile instead of TerraDyne's own terrain. Fall back to a raycast against
+			// whatever collidable ground is actually there.
+			bSampled = TraceGroundHeightAtXY(P, GroundZ);
+		}
+		if (bSampled)
 		{
 			MaxGroundZ = FMath::Max(MaxGroundZ, GroundZ);
 			Sum += GroundZ;
@@ -265,7 +274,8 @@ float ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const
 		}
 	}
 
-	// No loaded chunk under any sample — the terrain is streamed out.
+	// Neither the chunk buffer nor a raycast found ground under any sample -- no TerraDyne terrain
+	// streamed in and nothing collidable underneath either (mid-air, or Cesium tiles not loaded yet).
 	if (Samples == 0)
 	{
 		return GetActorLocation().Z;
@@ -277,6 +287,29 @@ float ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const
 	bPadTargetCached = true;
 	const_cast<ATerraDyneBuildingActor*>(this)->PadTargetWorldZ = CachedPadTargetWorldZ;
 	return CachedPadTargetWorldZ;
+}
+
+bool ATerraDyneBuildingActor::TraceGroundHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const FVector Start(WorldXY.X, WorldXY.Y, 20000000.0); // 200 km
+	const FVector End(WorldXY.X, WorldXY.Y, -20000000.0);
+
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BuildingPadGroundSample), false, this);
+	Params.AddIgnoredActor(this);
+	if (World->LineTraceSingleByChannel(Hit, Start, End, ECC_WorldStatic, Params))
+	{
+		OutHeightZ = static_cast<float>(Hit.Location.Z);
+		return true;
+	}
+
+	return false;
 }
 
 void ATerraDyneBuildingActor::SnapToPadHeight()

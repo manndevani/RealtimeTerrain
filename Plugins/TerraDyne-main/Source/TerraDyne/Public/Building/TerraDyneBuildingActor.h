@@ -226,6 +226,15 @@ private:
 
 	class ATerraDyneManager* FindManager() const;
 
+	/**
+	 * Vertical line trace fallback for ResolvePadTargetWorldZ's footprint samples, for whatever
+	 * ground has no TerraDyne chunk under it -- a locally-imported Cesium tile terrain, most notably
+	 * (see ATerraDyneManager::ImportCesiumTerrainTileset), which renders real collidable geometry on
+	 * ECC_WorldStatic but is invisible to Manager->GetNaturalTerrainHeightAtXY's chunk-buffer lookup.
+	 * Mirrors RoadMesh::SampleGroundHeight's same fallback for the same reason.
+	 */
+	bool TraceGroundHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const;
+
 	/** Falls back to the class defaults (the SD_Art Industrial set) when no kit is assigned. */
 	const UTerraDyneBuildingKit* ResolveKit() const;
 	UInstancedStaticMeshComponent* GetOrCreateInstancer(UStaticMesh* Mesh);

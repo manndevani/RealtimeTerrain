@@ -78,11 +78,16 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * Automated N-way road intersection/junction detection and topological solving.
 * Real-time road width scaling with automatic curb extrusion.
 * Ground raytrace bounds expanded to $\pm 200\text{ km}$ to support extreme high-altitude Himalayan terrain ($3000\text{–}7000\text{ m}$).
+* **Placeable on Tiled Cesium Import terrain**: TerraDyne's own chunk heightfield doesn't cover a locally-imported Cesium tile (see §9), so height sampling (`RoadMesh::SampleGroundHeight`) falls back to a $\pm 200\text{ km}$ line trace against the tile's real collision geometry whenever no TerraDyne chunk is under a station — same mechanism the ground raytrace above already used, just now able to tell TerraDyne terrain and "some other collidable ground" apart.
+* **Gentle cross-slope banking over Cesium tile terrain**: rough roads have always banked to the terrain's lateral slope; paved roads stayed deliberately flat, since a flat road reads as correctly engineered on Sandbox/GDAL-imported terrain. Over a locally-imported Cesium tile specifically — real-world terrain that can be steep enough for a rigidly flat road to look wrong — a paved road now banks gently too (`MaxPavedCrossSlopeDegrees`, default $8°$), gated on the same fallback signal above so Sandbox/GDAL paved roads are completely unaffected.
+* **Focus button**: frames the camera on the currently selected road (or road point) from the Roads panel section.
 
 ### 6. Modular Spline Buildings & Dynamic Terraforming
 * Arbitrary polygon footprint definition using spline nodes.
 * Live floor count stepper controls.
 * Macro chunk step-scaled pad terraforming (`EffectiveFalloff = Max(Falloff, Step * 1.5)`) ensuring smooth foundations on all grid resolutions.
+* **Pad leveling on Tiled Cesium Import terrain**: `ResolvePadTargetWorldZ`'s footprint samples fall back to the same line-trace-against-collision approach as roads (above) wherever no TerraDyne chunk covers a sample point, so a building's pad still levels correctly when placed on a locally-imported Cesium tile instead of TerraDyne's own terrain.
+* **Focus button**: frames the camera on the currently selected building from the Buildings panel section.
 
 ### 7. World Persistence & Transaction History
 * Complete disk serialization format for terrain state, building transforms, and road splines.

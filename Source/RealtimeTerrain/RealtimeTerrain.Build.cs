@@ -23,6 +23,14 @@ public class RealtimeTerrain : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
+		if (Target.bBuildEditor)
+		{
+			// FAutomationEditorCommonUtils::CreateNewMap(), used by the editor-only automation tests
+			// under Private/Tests/ (guarded by WITH_EDITOR) to spin up a throwaway world to spawn
+			// actors into.
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
+
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		

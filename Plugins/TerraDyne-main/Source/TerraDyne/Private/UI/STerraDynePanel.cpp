@@ -558,6 +558,16 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				.OnClicked(this, &STerraDynePanel::OnResetRoadPointsClicked)
 				.HAlign(HAlign_Center)
 			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnFocusRoad", "Focus"))
+				.ToolTipText(LOCTEXT("BtnFocusRoadTip", "Fly the camera to frame the selected road"))
+				.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
+				.OnClicked(this, &STerraDynePanel::OnFocusRoadClicked)
+				.HAlign(HAlign_Center)
+			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 		[
@@ -2797,6 +2807,40 @@ bool STerraDynePanel::HasRoadPointSelected() const
 		}
 	}
 	return false;
+}
+
+FReply STerraDynePanel::OnFocusRoadClicked()
+{
+	if (!OwnerWidget.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer());
+	AActor* RoadActor = PC ? PC->GetSelectedRoadActor() : nullptr;
+	if (!PC || !RoadActor)
+	{
+		return FReply::Unhandled();
+	}
+
+	if (ATerraDyneEditPawn* Pawn = Cast<ATerraDyneEditPawn>(PC->GetPawn()))
+	{
+		const FBox Bounds = RoadActor->GetComponentsBoundingBox(true);
+		if (Bounds.IsValid)
+		{
+			// A road can run for kilometres, so frame it by its actual extent rather than the
+			// building Focus button's fixed distance -- a single fixed distance would either fly
+			// absurdly far back from a short road or sit too close to see a long one end to end.
+			const float Distance = FMath::Max(3500.0f, Bounds.GetExtent().Size() * 1.5f);
+			Pawn->FocusOnLocation(Bounds.GetCenter(), Distance);
+		}
+		else
+		{
+			Pawn->FocusOnLocation(RoadActor->GetActorLocation(), 3500.0f);
+		}
+	}
+
+	return FReply::Handled();
 }
 
 FText STerraDynePanel::GetRoadStatusText() const

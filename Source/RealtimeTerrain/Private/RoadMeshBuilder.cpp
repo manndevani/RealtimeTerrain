@@ -622,8 +622,14 @@ bool SampleGroundHeight(
 	const AActor* Context,
 	TWeakObjectPtr<ATerraDyneManager>& ManagerCache,
 	const FVector2D& WorldXY,
-	float& OutHeightZ)
+	float& OutHeightZ,
+	bool* OutWasFallback)
 {
+	if (OutWasFallback)
+	{
+		*OutWasFallback = false;
+	}
+
 	if (!Context)
 	{
 		return false;
@@ -658,6 +664,10 @@ bool SampleGroundHeight(
 	if (World->LineTraceSingleByChannel(Hit, Start, End, ECC_WorldStatic, Params))
 	{
 		OutHeightZ = static_cast<float>(Hit.Location.Z);
+		if (OutWasFallback)
+		{
+			*OutWasFallback = true;
+		}
 		return true;
 	}
 

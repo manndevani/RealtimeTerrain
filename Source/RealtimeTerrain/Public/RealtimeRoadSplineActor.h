@@ -85,7 +85,12 @@ public:
 
 	/**
 	 * Let a rough road roll with the terrain's lateral slope. Paved roads keep their section level
-	 * across the width, which is what makes them read as engineered rather than draped.
+	 * across the width over TerraDyne's own terrain (a GDAL-imported DEM or Sandbox procedural
+	 * ground), which is what makes them read as engineered rather than draped -- this toggle and
+	 * MaxCrossSlopeDegrees don't touch that. See MaxPavedCrossSlopeDegrees for the one deliberate
+	 * exception: a paved road does get a small amount of tilt where it crosses a locally-imported
+	 * Cesium tile terrain specifically, since real Cesium mountain relief can be steep enough that a
+	 * perfectly rigid road section looks obviously wrong against it.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain", meta = (EditCondition = "RoadType == ERoadType::RoughRoad"))
 	bool bRoughRoadFollowsCrossSlope = true;
@@ -93,6 +98,18 @@ public:
 	/** Ceiling on terrain-driven cross slope, in degrees. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain", meta = (ClampMin = "0.0", ClampMax = "60.0", EditCondition = "bRoughRoadFollowsCrossSlope"))
 	float MaxCrossSlopeDegrees = 22.0f;
+
+	/**
+	 * Ceiling on cross slope for a PAVED road, applied only where it crosses ground with no
+	 * TerraDyne chunk under it (in practice, a locally-imported Cesium tile terrain -- see
+	 * ATerraDyneManager::ImportCesiumTerrainTileset). Always on, unlike rough roads' toggle: this
+	 * is a narrow, automatically-scoped exception to "paved roads stay level," not a general paved-
+	 * road banking feature, so there is nothing for the exception itself to need turning off. Left
+	 * noticeably smaller than MaxCrossSlopeDegrees by default -- an engineered road banks far less
+	 * aggressively than a dirt trail even where it does bank at all.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Terrain", meta = (ClampMin = "0.0", ClampMax = "30.0", EditCondition = "RoadType == ERoadType::PavedRoad"))
+	float MaxPavedCrossSlopeDegrees = 8.0f;
 
 	//--- TERRAIN REBASE ---
 
@@ -331,8 +348,17 @@ protected:
 	/** Splits the stations into the runs between junction cuts and pins each run's exposed ends. */
 	void BuildRuns(const TArray<FVector>& Points, const TArray<double>& Distances, TArray<FRoadRun>& OutRuns) const;
 
-	/** Per-station roll for rough roads following the terrain's lateral slope. */
+	/** Per-station roll for rough roads (and paved roads over Cesium tile terrain) following the terrain's lateral slope. */
 	void ComputeCrossSlopeRoll(const TArray<RoadMesh::FFrame>& Frames, TArray<double>& OutRoll) const;
+
+	/**
+	 * As SampleTerrainHeightAtXY, but also reports whether the sample came from TerraDyne's own
+	 * heightfield or the raycast fallback (i.e. a locally-imported Cesium tile terrain, or anything
+	 * else with no TerraDyne chunk under it). Kept separate from the public, Blueprint-callable
+	 * SampleTerrainHeightAtXY rather than adding a parameter there -- a raw bool* out-param is not a
+	 * pattern UHT reflects cleanly for Blueprint.
+	 */
+	bool SampleTerrainHeightAtXYWithSource(const FVector2D& WorldXY, float& OutHeightZ, bool& OutWasNonTerraDyneGround) const;
 
 	/** Pins a run's ends to their leg sockets, blended over several stations so they do not kink. */
 	void PinRunEnds(FRoadRun& Run) const;

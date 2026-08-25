@@ -519,6 +519,11 @@ bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXY(const FVector2D& WorldXY,
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ);
 }
 
+bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXYWithSource(const FVector2D& WorldXY, float& OutHeightZ, bool& OutWasNonTerraDyneGround) const
+{
+	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ, &OutWasNonTerraDyneGround);
+}
+
 void ARealtimeRoadSplineActor::PinRunEnds(FRoadRun& Run) const
 {
 	if (Run.Points.Num() < 2) return;
@@ -684,13 +689,31 @@ void ARealtimeRoadSplineActor::ComputeCrossSlopeRoll(const TArray<RoadMesh::FFra
 	OutRoll.Reset();
 	OutRoll.SetNumZeroed(Frames.Num());
 
-	if (RoadType != ERoadType::RoughRoad || !bConformToTerrainInRealtime || !bRoughRoadFollowsCrossSlope)
+	if (!bConformToTerrainInRealtime)
+	{
+		return;
+	}
+
+	// Two distinct policies share this function, both expressed as "which stations are even allowed
+	// a nonzero roll, and how far can it go":
+	//  - Rough roads bank everywhere (their own toggle/ceiling), full stop -- unchanged from before.
+	//  - Paved roads stay level over TerraDyne's own terrain by design (see bRoughRoadFollowsCrossSlope's
+	//    comment), but get a small, separately-ceilinged tilt specifically where BOTH lateral samples
+	//    land on ground with no TerraDyne chunk under it -- in practice, a locally-imported Cesium
+	//    tile terrain, whose real relief can be steeper than anything TerraDyne's own terrain
+	//    produces. One sample on TerraDyne ground and the other on Cesium ground (straddling the
+	//    cutout seam) is treated as "not banking" -- tilting toward whichever side happened to be
+	//    Cesium would be an artifact of where that seam sits, not a real cross-slope.
+	const bool bRoughBanking = (RoadType == ERoadType::RoughRoad) && bRoughRoadFollowsCrossSlope;
+	const bool bPavedCesiumBanking = (RoadType == ERoadType::PavedRoad);
+	if (!bRoughBanking && !bPavedCesiumBanking)
 	{
 		return;
 	}
 
 	const double HalfWidth = FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
-	const double MaxRoll = FMath::DegreesToRadians(FMath::Clamp(MaxCrossSlopeDegrees, 0.0f, 60.0f));
+	const double MaxRoll = FMath::DegreesToRadians(FMath::Clamp(
+		bRoughBanking ? MaxCrossSlopeDegrees : MaxPavedCrossSlopeDegrees, 0.0f, 60.0f));
 
 	for (int32 i = 0; i < Frames.Num(); ++i)
 	{
@@ -699,14 +722,24 @@ void ARealtimeRoadSplineActor::ComputeCrossSlopeRoll(const TArray<RoadMesh::FFra
 
 		float LeftZ = 0.0f;
 		float RightZ = 0.0f;
-		if (SampleTerrainHeightAtXY(FVector2D(Left.X, Left.Y), LeftZ) &&
-			SampleTerrainHeightAtXY(FVector2D(Right.X, Right.Y), RightZ))
+		bool bLeftIsNonTerraDyne = false;
+		bool bRightIsNonTerraDyne = false;
+		const bool bGotLeft = SampleTerrainHeightAtXYWithSource(FVector2D(Left.X, Left.Y), LeftZ, bLeftIsNonTerraDyne);
+		const bool bGotRight = SampleTerrainHeightAtXYWithSource(FVector2D(Right.X, Right.Y), RightZ, bRightIsNonTerraDyne);
+		if (!bGotLeft || !bGotRight)
 		{
-			// A positive rotation about the tangent lifts the +Right edge, so the sign follows the
-			// height difference directly.
-			const double Roll = FMath::Atan2(static_cast<double>(RightZ - LeftZ), 2.0 * HalfWidth);
-			OutRoll[i] = FMath::Clamp(Roll, -MaxRoll, MaxRoll);
+			continue;
 		}
+
+		if (bPavedCesiumBanking && !(bLeftIsNonTerraDyne && bRightIsNonTerraDyne))
+		{
+			continue;
+		}
+
+		// A positive rotation about the tangent lifts the +Right edge, so the sign follows the
+		// height difference directly.
+		const double Roll = FMath::Atan2(static_cast<double>(RightZ - LeftZ), 2.0 * HalfWidth);
+		OutRoll[i] = FMath::Clamp(Roll, -MaxRoll, MaxRoll);
 	}
 
 	// Lateral samples are as noisy as the centreline ones; without this the track visibly shimmies.

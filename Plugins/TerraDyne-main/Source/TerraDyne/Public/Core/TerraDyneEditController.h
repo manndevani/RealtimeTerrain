@@ -231,6 +231,14 @@ public:
 	 */
 	virtual void ClearRoadSelection() {}
 
+	/**
+	 * The currently selected road actor, or null. Typed as the generic AActor rather than the
+	 * concrete road class for the same reason DeleteSelectedRoadPoint is virtual -- road actors live
+	 * in the game module, invisible from here -- but a caller only needing base AActor API (location,
+	 * bounds, for a "focus camera on selected road" button) can use this directly.
+	 */
+	AActor* GetSelectedRoadActor() const { return SelectedRoadActor.Get(); }
+
 protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AActor> SelectedRoadActor;

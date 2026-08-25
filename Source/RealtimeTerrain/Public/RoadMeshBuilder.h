@@ -199,12 +199,21 @@ namespace RoadMesh
 	 * ManagerCache holds the resolved manager between calls. Road generation samples terrain once
 	 * per station, so re-finding the manager per sample would mean sweeping every actor in the
 	 * level hundreds of times per rebuild.
+	 *
+	 * OutWasFallback, if given, is set to true when the height came from the line trace rather than
+	 * TerraDyne's own heightfield -- i.e. this spot has no TerraDyne chunk under it at all, which in
+	 * practice means a locally-imported Cesium tile terrain (see
+	 * ATerraDyneManager::ImportCesiumTerrainTileset) rather than a GDAL-imported DEM or Sandbox
+	 * procedural terrain. Callers that want to treat those two grounds differently (paved-road cross-
+	 * slope banking, notably) use this to tell them apart without needing to know anything about
+	 * Cesium themselves.
 	 */
 	bool SampleGroundHeight(
 		const AActor* Context,
 		TWeakObjectPtr<ATerraDyneManager>& ManagerCache,
 		const FVector2D& WorldXY,
-		float& OutHeightZ);
+		float& OutHeightZ,
+		bool* OutWasFallback = nullptr);
 
 	/** Total length of a polyline. Zero for fewer than two points. */
 	double PolylineLength(const TArray<FVector>& Points);
