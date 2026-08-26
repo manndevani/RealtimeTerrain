@@ -38,7 +38,7 @@ this section tracks current state only, not a running journal.
 - Tests: 9 in `RoadNetworkSolver`'s suite + 1 live integration test. **Full regression sweep across
   every touched suite at Phase 2 completion: 25 tests, 0 regressions.**
 
-### Phase 3 — IN PROGRESS (elevation profile + automatic flyover + pier instancing)
+### Phase 3 — COMPLETE ✅ (elevation profile + automatic flyover + pier instancing)
 - `RoadElevationProfile.h`/`.cpp`: `FRoadHeightKey` + `EvaluateHeight` — cubic-Hermite height-vs-
   distance profile, ported from RoadBuilder's `FHeightPoint`/`FHeightSegment` (`RoadActor.h`).
   Reuses `RoadCurveGraph::FindElementIndex`'s binary search rather than duplicating it. Test:
@@ -60,16 +60,28 @@ this section tracks current state only, not a running journal.
   `BlueprintType` struct at compile time.
   Test: `TerraDyne.RoadSplineActor.ApplyElevationProfile` (sawtooth auto-bridges to 454.40 at
   station 10; two bracketing user keys override the same stretch to exactly 5000.0).
-- Remaining: pier instancing via the existing `ScatterHISMComponent`/`FRoadScatterSettings`.
-- **Full regression sweep after this increment: 29 tests, 0 regressions.**
+- `RoadPierPlacement.h`/`.cpp`: `RoadPierPlacement::PlacePiers` — pure placement math (no HISM/mesh
+  dependency, same testable-in-isolation pattern as `DetectFlyoverBridges`), walking a run's
+  stations at `SpacingAlongRoad` intervals and placing a pier wherever the final road height clears
+  `MinGap` above the raw terrain sample. New behavior; RoadBuilder has no pier geometry at all —
+  its "Elevated" style is visual only.
+- `FRoadPierSettings` (`RoadTypes.h`, mirrors `FRoadScatterSettings`'s shape) + a dedicated
+  `PierHISMComponent` on `ARealtimeRoadSplineActor` (a separate component from `ScatterHISMComponent`
+  since piers and rough-road debris need different meshes/scaling, not one shared instance buffer).
+  `GeneratePiers` builds per-station distance/XY/road-underside-height/ground-height arrays straight
+  from the already-computed `RunFrames` (reusing `SampleTerrainHeightAtXY`, the same call
+  `GenerateScatter` already makes) and feeds them to `PlacePiers` — no extra data needed through
+  `BuildConformedCentreline`. Piers regenerate only on the settle pass, same as scatter and the
+  terrain pad.
+  Test: `TerraDyne.RoadPierPlacement.ElevatedStretchOnly` (piers land only within a synthetic
+  500–1500cm elevated stretch, each spanning the full 500cm deck height; a flat road gets none).
+- **Full regression sweep after this increment: 30 tests, 0 regressions.**
 ### Phase 4 — NOT STARTED (spiral/clothoid centreline smoothing)
 ### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
 
-**Next step**: Finish Phase 3 — pier instancing wherever post-elevation-profile road height
-meaningfully exceeds raw sampled terrain height (reuse `ScatterHISMComponent`; needs the raw
-terrain sample retained alongside the final road height, since `ApplyElevationProfile` currently
-overwrites it in place). Then Phase 4 (port `Spiral.h` Euler-spiral math for settle-pass centreline
-smoothing) and Phase 5 (OpenDrive/.xodr export). See plan file for full detail.
+**Next step**: Phase 4 — port `Spiral.h`'s Euler-spiral math for settle-pass centreline smoothing
+(live-drag preview keeps the cheap polyline). Then Phase 5 (OpenDrive/.xodr export). See plan file
+for full detail.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

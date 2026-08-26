@@ -7,6 +7,7 @@
 #include "Engine/TimerHandle.h"
 #include "RoadTypes.h"
 #include "RoadElevationProfile.h"
+#include "RoadPierPlacement.h"
 #include "RealtimeRoadSplineActor.generated.h"
 
 class USplineComponent;
@@ -51,6 +52,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Road")
 	TObjectPtr<UHierarchicalInstancedStaticMeshComponent> ScatterHISMComponent;
+
+	/** Instanced support piers under elevated stretches (see PierSettings, RoadPierPlacement.h). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Road")
+	TObjectPtr<UHierarchicalInstancedStaticMeshComponent> PierHISMComponent;
 
 	//--- CONFIGURATION ---
 
@@ -110,6 +115,10 @@ public:
 	/** Minimum length a too-steep run has to span before it's worth bridging rather than just following it. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Elevation", meta = (EditCondition = "bAutoFlyover", ClampMin = "100.0"))
 	float MinFlyoverRunLength = 2000.0f;
+
+	/** Support piers instanced under any stretch this road's final height clears above raw terrain. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Elevation")
+	FRoadPierSettings PierSettings;
 
 	//--- TERRAIN CONFORMING ---
 
@@ -406,6 +415,14 @@ protected:
 	void RebuildInternal(bool bUpdateCollision);
 	void GenerateRoadMesh(bool bUpdateCollision);
 	void GenerateScatter(const TArray<TArray<RoadMesh::FFrame>>& RunFrames);
+
+	/**
+	 * Instances support piers (see PierSettings) under any run station where the final (post
+	 * elevation-profile) road height clears PierSettings.MinClearance above the raw terrain sample
+	 * at that station. Delegates the actual placement decision to RoadPierPlacement::PlacePiers so
+	 * the math stays testable independent of HISM/mesh loading.
+	 */
+	void GeneratePiers(const TArray<TArray<RoadMesh::FFrame>>& RunFrames);
 
 	/** Pushes this road's pad footprint to the terrain manager and refreshes affected chunks. */
 	void UpdateTerrainPad(const TArray<TArray<RoadMesh::FFrame>>& RunFrames);

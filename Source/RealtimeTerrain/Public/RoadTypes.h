@@ -133,6 +133,43 @@ struct FRoadScatterSettings
 };
 
 /**
+ * Support piers instanced under a stretch of road that ApplyElevationProfile (see
+ * RoadElevationProfile.h) has lifted meaningfully above raw sampled terrain. RoadBuilder has no
+ * pier geometry at all -- its "Elevated" road style is visual only -- this closes the "does it
+ * actually read as an elevated road" gap that leaves open. See RoadPierPlacement.h for the pure
+ * placement math this settings struct feeds.
+ */
+USTRUCT(BlueprintType)
+struct FRoadPierSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Piers")
+	bool bEnablePiers = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Piers")
+	TSoftObjectPtr<UStaticMesh> PierMesh;
+
+	/** Height (cm) the pier mesh asset is authored at before scaling to fill the ground-to-deck gap. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Piers", meta = (ClampMin = "1.0"))
+	float PierMeshUnitHeight = 100.0f;
+
+	/**
+	 * Minimum ground clearance under the road before a pier is placed -- keeps piers off stretches
+	 * that are only lightly conforming/smoothing, not genuinely flying over.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Piers", meta = (ClampMin = "0.0"))
+	float MinClearance = 150.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Piers", meta = (ClampMin = "100.0"))
+	float SpacingAlongRoad = 800.0f;
+
+	/** Uniform XY scale applied to the pier mesh's authored footprint (its height scales separately, to span the gap). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Piers", meta = (ClampMin = "0.01"))
+	float ThicknessScale = 1.0f;
+};
+
+/**
  * A stretch of a road that a junction occupies.
  *
  * A road keeps one continuous spline through a junction and simply omits these stations when it

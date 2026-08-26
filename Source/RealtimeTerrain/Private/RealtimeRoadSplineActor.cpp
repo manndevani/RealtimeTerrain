@@ -40,6 +40,10 @@ ARealtimeRoadSplineActor::ARealtimeRoadSplineActor()
 	ScatterHISMComponent->SetupAttachment(SplineComponent);
 	ScatterHISMComponent->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 
+	PierHISMComponent = CreateDefaultSubobject<UHierarchicalInstancedStaticMeshComponent>(TEXT("PierHISMComponent"));
+	PierHISMComponent->SetupAttachment(SplineComponent);
+	PierHISMComponent->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+
 	// Defaults to the CitySample-styled road materials (Content/UnrealDrive_CitySample) rather than
 	// the flat Proto placeholders, since RoadMeshBuilder's UVs are world-scaled and these tile
 	// cleanly at that density. Still EditAnywhere, so any road can override back to Proto or
@@ -71,6 +75,7 @@ void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ScatterSettings);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, StylePreset);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, HeightKeys);
+	DOREPLIFETIME(ARealtimeRoadSplineActor, PierSettings);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ReplicatedWorldPoints);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, JunctionCuts);
 }
@@ -200,6 +205,7 @@ void ARealtimeRoadSplineActor::SetIsHolographicPreview(bool bHolographic)
 	{
 		RoadMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		ScatterHISMComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		PierHISMComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
 		// A ghost is a local visualisation. Replicating it would push half-drawn roads to every
 		// other client while the player is still deciding where the road goes.
@@ -212,6 +218,7 @@ void ARealtimeRoadSplineActor::SetIsHolographicPreview(bool bHolographic)
 	{
 		RoadMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		ScatterHISMComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		PierHISMComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 
 		if (HasAuthority())
 		{
@@ -285,6 +292,10 @@ void ARealtimeRoadSplineActor::ClearPointsRealtime()
 	if (ScatterHISMComponent)
 	{
 		ScatterHISMComponent->ClearInstances();
+	}
+	if (PierHISMComponent)
+	{
+		PierHISMComponent->ClearInstances();
 	}
 }
 
@@ -492,6 +503,7 @@ ARealtimeRoadSplineActor* ARealtimeRoadSplineActor::BranchRoadFromPoint(int32 Po
 	BranchRoad->RoadType = RoadType;
 	BranchRoad->CrossSectionSettings = CrossSectionSettings;
 	BranchRoad->ScatterSettings = ScatterSettings;
+	BranchRoad->PierSettings = PierSettings;
 	BranchRoad->bConformToTerrainInRealtime = bConformToTerrainInRealtime;
 	BranchRoad->TerrainSurfaceOffset = TerrainSurfaceOffset;
 	BranchRoad->TerrainSmoothingSamples = TerrainSmoothingSamples;
@@ -936,6 +948,10 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 		{
 			ScatterHISMComponent->ClearInstances();
 		}
+		if (PierHISMComponent)
+		{
+			PierHISMComponent->ClearInstances();
+		}
 		return;
 	}
 
@@ -1034,10 +1050,18 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	if (bUpdateCollision)
 	{
 		GenerateScatter(RunFrames);
+		GeneratePiers(RunFrames);
 	}
-	else if (ScatterHISMComponent && ScatterHISMComponent->GetInstanceCount() > 0)
+	else
 	{
-		ScatterHISMComponent->ClearInstances();
+		if (ScatterHISMComponent && ScatterHISMComponent->GetInstanceCount() > 0)
+		{
+			ScatterHISMComponent->ClearInstances();
+		}
+		if (PierHISMComponent && PierHISMComponent->GetInstanceCount() > 0)
+		{
+			PierHISMComponent->ClearInstances();
+		}
 	}
 
 	// Rebasing rasterises into every chunk the road touches and rebuilds their meshes, so it waits
@@ -1317,6 +1341,73 @@ void ARealtimeRoadSplineActor::GenerateScatter(const TArray<TArray<RoadMesh::FFr
 
 				ScatterHISMComponent->AddInstance(FTransform(Rotation, Location, ScaleVector), /*bWorldSpace*/ true);
 			}
+		}
+	}
+}
+
+void ARealtimeRoadSplineActor::GeneratePiers(const TArray<TArray<RoadMesh::FFrame>>& RunFrames)
+{
+	if (!PierHISMComponent) return;
+
+	const bool bWantPiers =
+		PierSettings.bEnablePiers &&
+		!PierSettings.PierMesh.IsNull() &&
+		!bIsHolographicPreview;
+
+	UStaticMesh* MeshAsset = bWantPiers ? PierSettings.PierMesh.LoadSynchronous() : nullptr;
+	if (!MeshAsset)
+	{
+		PierHISMComponent->ClearInstances();
+		return;
+	}
+
+	// Assigning a mesh drops existing instances, so it has to happen before the deliberate clear
+	// rather than after it (same ordering GenerateScatter relies on above).
+	if (PierHISMComponent->GetStaticMesh() != MeshAsset)
+	{
+		PierHISMComponent->SetStaticMesh(MeshAsset);
+	}
+	PierHISMComponent->ClearInstances();
+
+	const double UnitHeight = FMath::Max(1.0f, PierSettings.PierMeshUnitHeight);
+
+	for (const TArray<RoadMesh::FFrame>& Frames : RunFrames)
+	{
+		if (Frames.Num() < 2) continue;
+
+		TArray<double> RunDistances;
+		TArray<FVector2D> StationXY;
+		TArray<double> RoadUndersideZ;
+		TArray<double> GroundZ;
+		RunDistances.Reserve(Frames.Num());
+		StationXY.Reserve(Frames.Num());
+		RoadUndersideZ.Reserve(Frames.Num());
+		GroundZ.Reserve(Frames.Num());
+
+		for (const RoadMesh::FFrame& Frame : Frames)
+		{
+			RunDistances.Add(Frame.DistanceAlong);
+			StationXY.Add(FVector2D(Frame.Origin.X, Frame.Origin.Y));
+			RoadUndersideZ.Add(Frame.Origin.Z - CrossSectionSettings.RoadThickness);
+
+			// Defaulting to the road's own height (rather than 0) means a failed terrain sample
+			// reads as "no gap here" instead of manufacturing a phantom pier down to world origin.
+			float GroundHeight = Frame.Origin.Z;
+			SampleTerrainHeightAtXY(FVector2D(Frame.Origin.X, Frame.Origin.Y), GroundHeight);
+			GroundZ.Add(GroundHeight);
+		}
+
+		TArray<RoadPierPlacement::FPierPlacement> Placements;
+		RoadPierPlacement::PlacePiers(
+			RunDistances, StationXY, RoadUndersideZ, GroundZ,
+			PierSettings.MinClearance, PierSettings.SpacingAlongRoad, Placements);
+
+		for (const RoadPierPlacement::FPierPlacement& Placement : Placements)
+		{
+			const FVector Location(Placement.LocationXY.X, Placement.LocationXY.Y, Placement.GroundZ);
+			const float ScaleZ = static_cast<float>(Placement.Height / UnitHeight);
+			const FVector Scale(PierSettings.ThicknessScale, PierSettings.ThicknessScale, ScaleZ);
+			PierHISMComponent->AddInstance(FTransform(FRotator::ZeroRotator, Location, Scale), /*bWorldSpace*/ true);
 		}
 	}
 }
