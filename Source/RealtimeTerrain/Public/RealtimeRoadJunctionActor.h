@@ -225,6 +225,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Junction|Realtime")
 	int32 GetRampCornerCount() const;
 
+	/** How many per-lane connectors this junction solved across all its corners on the last successful solve-from-nearby-roads (see RoadNetworkSolver::BuildLaneConnectorCentreline). */
+	UFUNCTION(BlueprintCallable, Category = "Junction|Realtime")
+	int32 GetConnectorCount() const;
+
 protected:
 	void ApplyMaterials();
 
@@ -286,6 +290,16 @@ private:
 	 * space including height, at corners SolvedIsRampCorner flags true. Undefined elsewhere.
 	 */
 	TArray<FVector> SolvedGoreApex;
+
+	/** One per-lane connector across a junction corner (RoadNetworkSolver::BuildLaneConnectorCentreline). */
+	struct FSolvedLaneConnector
+	{
+		TArray<FVector> Centreline;
+		double Width = 350.0;
+	};
+
+	/** Every lane-to-lane connector this junction solved across all its corners, flattened -- each one sweeps independently, so no per-corner grouping is needed for meshing. */
+	TArray<FSolvedLaneConnector> SolvedConnectors;
 
 	/** Surface height at each leg's socket, so a connecting road pins to its own arm, not a plane. */
 	TArray<float> SolvedLegHeights;

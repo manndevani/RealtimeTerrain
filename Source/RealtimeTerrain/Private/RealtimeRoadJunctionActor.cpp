@@ -278,6 +278,11 @@ int32 ARealtimeRoadJunctionActor::GetRampCornerCount() const
 	return Count;
 }
 
+int32 ARealtimeRoadJunctionActor::GetConnectorCount() const
+{
+	return SolvedConnectors.Num();
+}
+
 bool ARealtimeRoadJunctionActor::SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const
 {
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ);
@@ -561,6 +566,7 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 	SolvedCornerRadii.Reset();
 	SolvedIsRampCorner.Reset();
 	SolvedGoreApex.Reset();
+	SolvedConnectors.Reset();
 
 	UWorld* World = GetWorld();
 	if (!World) return false;
@@ -787,6 +793,61 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 		}
 	}
 
+	// Per-lane connectors across every corner, ramp or not -- a through-connection at an ordinary
+	// crossing needs lane continuity just as much as a ramp merge does.
+	constexpr int32 ConnectorSegments = 8;
+	SolvedConnectors.Reset();
+	for (int32 i = 0; i < Arms.Num(); ++i)
+	{
+		const int32 Next = (i + 1) % Arms.Num();
+		const RoadNetworkSolver::FArm& ArmA = Arms[i];
+		const RoadNetworkSolver::FArm& ArmB = Arms[Next];
+		if (ArmA.DrivingLaneCount <= 0 || ArmB.DrivingLaneCount <= 0)
+		{
+			continue;
+		}
+
+		TArray<int32> LaneMap;
+		RoadNetworkSolver::MapLaneConnections(ArmA.DrivingLaneCount, ArmB.DrivingLaneCount, LaneMap);
+
+		const double LaneWidthA = (ArmA.DrivingHalfWidth * 2.0) / ArmA.DrivingLaneCount;
+		const double LaneWidthB = (ArmB.DrivingHalfWidth * 2.0) / ArmB.DrivingLaneCount;
+
+		for (int32 LaneIndexA = 0; LaneIndexA < LaneMap.Num(); ++LaneIndexA)
+		{
+			const int32 LaneIndexB = LaneMap[LaneIndexA];
+			if (LaneIndexB == INDEX_NONE)
+			{
+				continue;
+			}
+
+			TArray<FVector2D> Centreline2D;
+			if (!RoadNetworkSolver::BuildLaneConnectorCentreline(ArmA, LaneIndexA, ArmB, LaneIndexB, ConnectorSegments, Centreline2D))
+			{
+				continue;
+			}
+
+			FSolvedLaneConnector& Connector = SolvedConnectors.AddDefaulted_GetRef();
+			Connector.Width = (LaneWidthA + LaneWidthB) * 0.5;
+			Connector.Centreline.Reserve(Centreline2D.Num());
+			for (int32 k = 0; k < Centreline2D.Num(); ++k)
+			{
+				// Height blended along the connector's own parameter, not fixed at either end's
+				// height outright, so a connector between two roads at different heights slopes
+				// smoothly across the corner instead of stepping at one end.
+				const float Alpha = static_cast<float>(k) / static_cast<float>(Centreline2D.Num() - 1);
+				// The same small lift RoadBuilder's own TerrainSurfaceOffset pattern uses elsewhere
+				// in this codebase: the connector's height comes from the identical arm-height
+				// blend the slab's own cap vertices already use, so without a lift the two would
+				// sit exactly coincident and z-fight rather than the connector reading as the
+				// slightly-raised, distinct driving strip it's meant to be.
+				constexpr float ConnectorLift = 1.0f;
+				const float Height = FMath::Lerp(ArmHeights[i], ArmHeights[Next], Alpha) + ConnectorLift;
+				Connector.Centreline.Add(FVector(Centreline2D[k].X, Centreline2D[k].Y, Height));
+			}
+		}
+	}
+
 	// Rebuild Legs from the solved arms. Roads still pin themselves to leg sockets, so the legs
 	// have to agree with what the solver decided rather than with whatever was authored before.
 	JunctionType = ERoadJunctionType::Custom_N_Way;
@@ -985,6 +1046,35 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 				RoadMesh::AppendGoreFill(
 					Mesh, SolvedGoreApex[ChainIndex], CornerChains[ChainIndex],
 					RoadMesh::Slots::Curb, WorldToLocal, UVScale);
+			}
+
+			// Per-lane connectors: a flat single-lane strip swept along each solved connector
+			// centreline, giving real lane-to-lane continuity across the junction instead of an
+			// undifferentiated slab -- the piece that makes this a routed intersection rather than
+			// just a correctly-shaped one.
+			RoadMesh::FSweepOptions ConnectorOptions;
+			ConnectorOptions.UVScale = UVScale;
+			ConnectorOptions.bSectionIsClosed = false;
+			ConnectorOptions.bCapStart = false;
+			ConnectorOptions.bCapEnd = false;
+
+			for (const FSolvedLaneConnector& Connector : SolvedConnectors)
+			{
+				if (Connector.Centreline.Num() < 2)
+				{
+					continue;
+				}
+
+				RoadMesh::FSection LaneSection;
+				const double HalfWidth = FMath::Max(1.0, Connector.Width) * 0.5;
+				LaneSection.Emplace(-HalfWidth, 0.0, RoadMesh::Slots::Surface);
+				LaneSection.Emplace(HalfWidth, 0.0, RoadMesh::Slots::Surface);
+
+				TArray<RoadMesh::FFrame> ConnectorFrames;
+				if (RoadMesh::BuildFramesFromPolyline(Connector.Centreline, ConnectorFrames))
+				{
+					RoadMesh::SweepSection(Mesh, LaneSection, ConnectorFrames, WorldToLocal, ConnectorOptions);
+				}
 			}
 		}
 

@@ -4,145 +4,48 @@
 
 **Goal**: Port RoadBuilder plugin's boundary/lane/junction/elevation engineering into the runtime
 road system (`ARealtimeRoadSplineActor`/`ARealtimeRoadJunctionActor`), keeping it replicated and
-usable in-game. Full plan: `C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
+usable in-game. Full plan + phase breakdown: `C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
+Detailed history of how each phase was built is in git log (`road-system-rewrite` branch) —
+this section tracks current state only, not a running journal.
 
-**Done**: Phase 1 boundary/lane object graph, in `Source/RealtimeTerrain/Public/RoadCurveGraph.h`
-+ `.cpp` — `URealtimeRoadCurve` (cubic-Hermite offset-key math + `Cut`/`Join`, ported from
-RoadBuilder's `FCurveOffset`/`URoadCurve`), `URealtimeRoadLane` and `URealtimeRoadBoundary`
-(ported from `URoadBuilderLane`/`URoadBoundary`, including their distinct Cut/Join semantics — a
-lane's own curve offsets are unused/vestigial, matching RoadBuilder, since a lane's shape comes
-from its two boundaries). Tests: `TerraDyne.RoadCurveGraph.{OffsetMath,Cut,Join,LaneSegments,BoundarySegments}` — all passing.
+### Phase 1 — COMPLETE ✅ (boundary/lane graph, style presets, replication, actor wiring)
+- `RoadCurveGraph.h`/`.cpp`: `URealtimeRoadCurve`/`URealtimeRoadLane`/`URealtimeRoadBoundary`
+  (cubic-Hermite offset math, Cut/Join) + `SerializeGraph`/`DeserializeGraph` replication.
+- `RoadStylePresets.h`/`.cpp`: `URoadLaneMarkStyle`/`URoadLaneShape`/`URoadStylePreset` (`UDataAsset`).
+- `RoadMeshBuilder::BuildRoadSectionFromStyle`: composite section from a style's lane list.
+- `ARealtimeRoadSplineActor::StylePreset`: optional, replicated; drives `GenerateRoadMesh` when set,
+  fully backward-compatible when unset. `CrossSectionSettings.RoadWidth` still independently
+  drives terrain-pad/junction width even with a style set — no auto-derivation yet.
+- Tests: 8 across `RoadCurveGraph`/`RoadStylePresets`/`RoadMeshBuilder`/`RoadSplineActor`.
 
-**Done**: Style presets, in `Source/RealtimeTerrain/Public/RoadStylePresets.h` + `.cpp` —
-`URoadLaneMarkStyle`, `URoadLaneShape`, `URoadStylePreset` (all `UDataAsset`, Content-Browser-
-ready with no custom factory needed), mirroring RoadBuilder's `ULaneMarkStyle`/`ULaneShape`/
-`URoadStyle`. `URoadLaneShape`'s points use the same (Lateral, Vertical, MaterialSlot) convention
-`RoadMeshBuilder::FSectionVertex` already uses, so they'll feed the existing sweep pipeline
-directly once wired in. Tests: `TerraDyne.RoadStylePresets.{LaneCount,LaneShapeMaterialSlot}` —
-passing.
+### Phase 2 — COMPLETE ✅ (junction lane routing + gore markings)
+- `RoadNetworkSolver`: `IsRampConnection` (shallow angle + lane-count mismatch = ramp, classified
+  on both `SolveNode` corner paths — the bevel path was initially missed, since generous
+  curb+footpath width is exactly what triggers it for a realistic ramp), `RampCornerRadiusMultiplier`
+  (wider fillet at ramp corners), `FindGoreApex` (driving-surface convergence point),
+  `MapLaneConnections` + `BuildLaneConnectorCentreline` (per-lane connectivity across a corner).
+- `RoadMesh::AppendGoreFill`: raised gore-island triangle fan, self-correcting winding (verified
+  against real `FDynamicMesh3::GetTriNormal`, not just "doesn't crash").
+- `ARealtimeRoadJunctionActor`: wires all of the above into `RebuildJunction`'s mesh —
+  `SolvedIsRampCorner`/`SolvedGoreApex`/`SolvedConnectors`, `GetRampCornerCount()`/`GetConnectorCount()`.
+- Verified with a live 3-actor integration test (2-lane through-road + 1-lane ramp at 20°, the real
+  highway on/off-ramp shape): exactly 1 ramp corner, exactly 4 per-lane connectors, hand-derived
+  and matched exactly.
+- Deferred, not blocking: `URealtimeRoadBoundary`/`URealtimeRoadLane` (Phase 1's graph classes)
+  aren't consumed here — connector geometry comes from arm-level driving-width/lane-count data
+  instead, which was sufficient for correct, tested connectivity. Wiring the graph in for
+  asymmetric/tapered lanes is a real future enhancement, not required for what Phase 2 set out to do.
+- Tests: 9 in `RoadNetworkSolver`'s suite + 1 live integration test. **Full regression sweep across
+  every touched suite at Phase 2 completion: 25 tests, 0 regressions.**
 
-**Done**: Replication wire format — `FReplicatedBoundaryState`/`FReplicatedLaneState` (flat
-structs of authored keys/segments plus index-based cross-references) and
-`RoadCurveGraph::SerializeGraph`/`DeserializeGraph` in `RoadCurveGraph.h`/`.cpp`. Network cost
-scales with boundary/lane/key counts, never with mesh resolution. Test:
-`TerraDyne.RoadCurveGraph.ReplicationRoundTrip` — builds a 2-boundary/1-lane graph, serializes,
-reconstructs into fresh objects, and confirms both the authored data and the Left/Right
-cross-reference wiring survive.
+### Phase 3 — NOT STARTED (elevation profile + automatic flyover + pier instancing)
+### Phase 4 — NOT STARTED (spiral/clothoid centreline smoothing)
+### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
 
-**Done**: `RoadMesh::BuildRoadSectionFromStyle` in `RoadMeshBuilder.h`/`.cpp` — builds a composite
-cross-section from a `URoadStylePreset`'s ordered lane list, generalizing the old fixed drive+
-curb+footpath layout to arbitrary typed lanes. A lane with a `Shape` assigned contributes that
-shape's own points (rescaled to the lane's actual width, heights left absolute); one with no
-shape falls back to a flat span. Purely additive — `BuildRoadSection` (the existing
-`FRoadCrossSectionSettings`-driven path) is untouched, confirmed by re-running the full
-`TerraDyne.RoadMesh*` suite (5/5 passing, no regressions). Tests:
-`TerraDyne.RoadMeshBuilder.{StyleFlatTwoLane,StyleShapeRescale}`.
-
-**Phase 1 complete.** `ARealtimeRoadSplineActor` now has an optional, replicated `StylePreset`
-property (`RealtimeRoadSplineActor.h`/`.cpp`); when set, `GenerateRoadMesh` calls
-`RoadMesh::BuildRoadSectionFromStyle` instead of the `CrossSectionSettings`-driven path, otherwise
-every existing road behaves exactly as before (confirmed by re-running the full `TerraDyne.RoadMesh*`
-suite with no regressions). A style-preset road's `CrossSectionSettings.RoadWidth` still
-independently drives terrain-pad width, junction half-width, and crossing-merge radius — set it to
-roughly the style's total width until that's auto-derived as a follow-on. Test (spawns a real
-actor in a test world): `TerraDyne.RoadSplineActor.StylePresetDrivesWidth` — confirms the mesh is
-actually as wide as the style (600cm), not the un-styled default (800cm).
-
-Note: `URealtimeRoadBoundary`/`URealtimeRoadLane` (the object graph) and their replication scheme
-aren't wired into the actor yet — `BuildRoadSectionFromStyle` only needs the `StylePreset` asset
-reference itself (which replicates fine on its own, being a stable asset reference) for this flat,
-non-tapering case. The graph becomes load-bearing once Phase 2 needs per-instance lane data (a
-ramp's taper, a junction-driven cut) that can't just live on the shared style asset.
-
-**Phase 2 started.** Ramp/fork classification: `RoadNetworkSolver::FArm::DrivingLaneCount` +
-`RoadNetworkSolver::IsRampConnection` (`RoadNetworkSolver.h`/`.cpp`) — adapted from RoadBuilder's
-`FJunctionGate::IsRampOf` idea (shallow angle + lane-count mismatch = ramp), since this system
-pins roads to a junction via `FRoadJunctionCut` rather than RoadBuilder's `ConnectedParents`
-lineage graph, so no lineage walk is needed. `ARealtimeRoadSplineActor::GetDrivingLaneCount()`
-feeds it (style's own count when set, else the old implicit 2/1 for paved/rough), wired into
-`ARealtimeRoadJunctionActor`'s arm-building code. Tests:
-`TerraDyne.RoadNetwork.RampClassification`, `TerraDyne.RoadSplineActor.DrivingLaneCount`. Full
-`TerraDyne.RoadNetwork.*` suite re-verified (`NWayBattery`, `PavedRoadBanksOverNonTerraDyneGround`,
-`TightCornerClampsRadius`) — no regressions from the new `FArm` field.
-
-**Lane-aware corner trim done.** `RoadNetworkSolver::SolveNode` now uses `IsRampConnection` on
-each pair of adjacent arms (comparing their `AngleRad` gap and `DrivingLaneCount`) and, when a
-corner classifies as a ramp, fillets it with `FNodeOptions::RampCornerRadiusMultiplier × CornerRadius`
-instead of the plain `CornerRadius` — a long, gentle merge taper instead of the same tight kerb-
-return radius an ordinary street corner gets, still clamped against available edge length like any
-other corner. Test: `TerraDyne.RoadNetwork.RampCornerGetsWiderRadius` (a shallow-angle fork with
-matching lane counts resolves to the base radius; the same angle with differing lane counts
-resolves noticeably wider). Full `TerraDyne.RoadNetwork.*` suite re-verified — no regressions.
-
-**Gore-apex geometry done, not yet wired into the mesh.** `RoadNetworkSolver::FindGoreApex` finds
-where two ramp-connected arms' *driving* surfaces (as opposed to the full corner-fillet width)
-converge — the tip of the gore triangle — reusing the exact same offset-and-converge technique
-`SolveNode`'s own corner collision already uses (bounded intersect, falling back to an unbounded
-ray cast), just at a narrower offset. Fed by `FArm::DrivingHalfWidth`, populated from
-`URoadStylePreset::DrivingSurfaceWidth()` (Driving+Shoulder lanes only, excluding sidewalk/median)
-via `ARealtimeRoadSplineActor::GetDrivingSurfaceHalfWidth()`. Test:
-`TerraDyne.RoadNetwork.GoreApexNarrowsWithDrivingWidth` (150cm driving half-width converges at
-864cm; 300cm converges at 1728cm — confirms the geometry, not just that it runs). Full regression
-across `RoadNetwork`/`RoadStylePresets`/`RoadSplineActor` suites (10 tests) — no breaks.
-
-**Gore-fill mesh primitive built and winding-verified.** `RoadMesh::AppendGoreFill`
-(`RoadMeshBuilder.h`/`.cpp`) appends a raised gore-island triangle fan from an apex to a chain of
-points — a real highway ramp gore is often a physically curbed island, not just a painted region,
-so this reuses the `Curb` material slot rather than inventing a new one. Every triangle's winding
-is corrected independently via signed-area check before appending, so it can never render inside-
-out regardless of which direction the caller's chain happens to run — verified directly against
-`FDynamicMesh3::GetTriNormal` (not just "doesn't crash") for both a forward and a reversed input
-chain; both produced a clean `(0, 0, 1)` normal on every triangle. Test:
-`TerraDyne.RoadMeshBuilder.GoreFillAlwaysFacesUp`. Full `TerraDyne.RoadMesh*` suite re-verified (6
-tests) — no regressions.
-
-**Phase 2's gore-fill wiring is complete and verified end-to-end.** `RoadNetworkSolver::FNodeSolution`
-now exposes `IsRampCorner` (parallel to `RoadsideChains`/`CornerRadii`), classified consistently on
-*both* of `SolveNode`'s corner paths — the arc-fillet path and the separate "bevel" path used when
-a corner's true mitre point falls beyond either arm's sampled length. That second path was
-initially missed and is, in practice, the *common* case for a realistic ramp: generous curb+
-footpath width is exactly what pushes the mitre point out of range. Caught by the integration test
-below, not assumed — see `TerraDyne.RoadNetwork.BevelPathStillClassifiesRamp`.
-`ARealtimeRoadJunctionActor` now carries `SolvedIsRampCorner`/`SolvedGoreApex` (populated in
-`SolveIntersection` via `FindGoreApex`, height-blended like every other boundary vertex) and calls
-`RoadMesh::AppendGoreFill` in `RebuildJunction`'s mesh lambda for each ramp corner on the solved-
-from-real-roads path. New public `GetRampCornerCount()` accessor for debug/UI use.
-
-Verified at three levels: isolated math (`FindGoreApex`, `IsRampConnection`), isolated mesh winding
-(`AppendGoreFill` against real `FDynamicMesh3::GetTriNormal` output), and a full end-to-end
-integration test spawning three real road actors (a 2-lane through-road plus a 1-lane ramp at 20°
-— the actual highway on/off-ramp shape) and a real junction actor in a test world:
-`TerraDyne.RoadJunctionActor.RampTopologyDetectsGoreCorner` confirms the junction genuinely detects
-the ramp and produces a non-empty mesh. Full regression across all touched suites — 16 tests, 0
-regressions.
-
-**Per-lane connector routing started.** `RoadNetworkSolver::MapLaneConnections` — the foundational
-connectivity decision: given two arms' lane counts, which lane on the near-corner side continues
-into which lane on the far side (1:1 up to the smaller count; the wider side's excess near-corner
-lanes are unmapped, since those are exactly the ones ending at the gore point rather than crossing
-the corner). Ported from the idea behind RoadBuilder's per-lane marking-mask logic in `BuildLink`,
-expressed as an explicit index map since this system doesn't spawn per-connector objects to carry
-a marking bitmask on. Test: `TerraDyne.RoadNetwork.LaneConnectionMap` (equal-count, merge-down,
-merge-up, and zero-lane edge cases).
-
-**Connector centreline geometry done and tested.** `RoadNetworkSolver::BuildLaneConnectorCentreline`
-builds a cubic-Hermite path between two mapped lanes across a corner, cap to cap. Verified against
-a hand-derived expectation for both endpoint *positions* and *tangent directions* (not just "did it
-run") — a sign error in the tangent convention (a vehicle approaches ArmA's cap moving toward the
-node, opposite ArmA's own Centreline direction, then continues past ArmB's cap moving away from
-the node matching ArmB's direction) was caught and corrected mid-implementation by manual
-derivation before it ever reached a test. Test: `TerraDyne.RoadNetwork.LaneConnectorCentreline`.
-
-**Remaining**: wire this into `ARealtimeRoadJunctionActor`'s mesh-building — per corner, use
-`MapLaneConnections` on both arms' `DrivingLaneCount`, build a connector centreline per mapped lane
-pair, add height (blended the same way gore-apex height already is), convert to a
-`RoadMesh::FFrame` list via the existing `BuildFramesFromPolyline`, and sweep a flat single-lane
-section into the junction's mesh alongside the gore-fill. This is what makes "real per-lane
-connector routing" true rather than just the corner gore-fill. Then Phase 3 (elevation profile +
-automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
-export). See plan file for detail on each.
-
-**Next step**: Wire `BuildLaneConnectorCentreline` into `RebuildJunction`'s mesh lambda.
+**Next step**: Start Phase 3 — port `FHeightPoint`/`FHeightSegment`'s cubic-Hermite height-profile
+math from RoadBuilder's `RoadActor.h` as a small, pure, testable module, then hook automatic
+flyover detection into `BuildConformedCentreline` and pier instancing into the existing
+`ScatterHISMComponent`. See plan file for full detail.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

@@ -64,13 +64,19 @@ bool FRealtimeRoadJunctionActorGoreTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("Ramp corners detected: %d"), Junction->GetRampCornerCount()));
 	TestTrue(TEXT("Junction should detect at least one ramp corner from the 20-degree/lane-mismatch topology"), Junction->GetRampCornerCount() >= 1);
 
+	// Three arms sorted by angle -- MainContinuing(0deg,2 lanes), Ramp(20deg,1 lane),
+	// MainIncoming(180deg,2 lanes) -- give three corners: (Continuing,Ramp) maps 1 lane,
+	// (Ramp,Incoming) maps 1 lane, (Incoming,Continuing) maps 2 lanes. 4 connectors total.
+	AddInfo(FString::Printf(TEXT("Connectors solved: %d"), Junction->GetConnectorCount()));
+	TestEqual(TEXT("Junction should solve exactly 4 per-lane connectors across its 3 corners"), Junction->GetConnectorCount(), 4);
+
 	UDynamicMeshComponent* JunctionMeshComp = Junction->JunctionMeshComponent;
 	TestNotNull(TEXT("Junction mesh component should exist"), JunctionMeshComp);
 	if (!JunctionMeshComp) return false;
 
 	const UE::Geometry::FDynamicMesh3* Mesh = JunctionMeshComp->GetMesh();
 	TestNotNull(TEXT("Junction should have generated mesh geometry"), Mesh);
-	TestTrue(TEXT("Junction mesh should be non-empty (gore-fill code path ran without leaving it empty)"), Mesh && Mesh->TriangleCount() > 0);
+	TestTrue(TEXT("Junction mesh should be non-empty (gore-fill/connector code paths ran without leaving it empty)"), Mesh && Mesh->TriangleCount() > 0);
 
 	return true;
 }
