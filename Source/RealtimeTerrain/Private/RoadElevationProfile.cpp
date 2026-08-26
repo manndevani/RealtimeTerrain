@@ -19,4 +19,60 @@ namespace RoadElevationProfile
 		const double S = Dist - Start.Dist;
 		return FMath::CubicInterp(Start.Height, Start.Slope * SegmentLength, End.Height, End.Slope * SegmentLength, S / SegmentLength);
 	}
+
+	void DetectFlyoverBridges(
+		const TArray<double>& Distances,
+		const TArray<double>& Heights,
+		double MaxGradeRadians,
+		double MinRunLength,
+		TArray<FRoadHeightKey>& OutBridgeKeys)
+	{
+		OutBridgeKeys.Reset();
+		const int32 Num = Distances.Num();
+		if (Num < 2 || Heights.Num() != Num)
+		{
+			return;
+		}
+
+		auto GradeAt = [&Distances, &Heights](int32 i) -> double
+		{
+			return FMath::Atan2(Heights[i + 1] - Heights[i], Distances[i + 1] - Distances[i]);
+		};
+
+		int32 i = 0;
+		while (i < Num - 1)
+		{
+			if (FMath::Abs(GradeAt(i)) <= MaxGradeRadians)
+			{
+				i++;
+				continue;
+			}
+
+			// A rough run starts here -- extend it forward while the grade stays over threshold.
+			const int32 RunStart = i;
+			int32 RunEnd = i + 1;
+			while (RunEnd < Num - 1 && FMath::Abs(GradeAt(RunEnd)) > MaxGradeRadians)
+			{
+				RunEnd++;
+			}
+
+			if (Distances[RunEnd] - Distances[RunStart] >= MinRunLength)
+			{
+				FRoadHeightKey StartKey;
+				StartKey.Dist = Distances[RunStart];
+				StartKey.Height = Heights[RunStart];
+				StartKey.Slope = 0.0;
+
+				FRoadHeightKey EndKey;
+				EndKey.Dist = Distances[RunEnd];
+				EndKey.Height = Heights[RunEnd];
+				EndKey.Slope = 0.0;
+
+				OutBridgeKeys.Add(StartKey);
+				OutBridgeKeys.Add(EndKey);
+			}
+
+			i = RunEnd + 1;
+		}
+	}
 }

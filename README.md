@@ -43,10 +43,16 @@ this section tracks current state only, not a running journal.
   distance profile, ported from RoadBuilder's `FHeightPoint`/`FHeightSegment` (`RoadActor.h`).
   Reuses `RoadCurveGraph::FindElementIndex`'s binary search rather than duplicating it. Test:
   `TerraDyne.RoadElevationProfile.HeightMath` (flat, S-curve climb, 3-key climb-hold-descend).
+- `RoadElevationProfile::DetectFlyoverBridges`: scans a terrain height sequence for stretches
+  whose local grade exceeds a threshold for a long-enough run and returns zero-slope bridging key
+  pairs (a comfortable departure/return grade). New behavior, not a RoadBuilder port — RoadBuilder's
+  own height keys are always hand-authored. Test: `TerraDyne.RoadElevationProfile.AutoFlyoverDetection`
+  (sawtooth stretch correctly bridged at its exact boundaries; flat sequence produces no bridge;
+  a too-short steep step is gated out by the minimum-run-length check).
 - Remaining: authored elevation channel on `ARealtimeRoadSplineActor` (optional, backward-
-  compatible like `StylePreset`), automatic flyover detection in `BuildConformedCentreline` (grade/
-  roughness threshold triggers auto-inserted height keys, manual keys always win), pier instancing
-  via the existing `ScatterHISMComponent`.
+  compatible like `StylePreset`), wiring `DetectFlyoverBridges` into `BuildConformedCentreline`
+  (manual keys always win over an auto bridge covering the same stretch), pier instancing via the
+  existing `ScatterHISMComponent`.
 ### Phase 4 — NOT STARTED (spiral/clothoid centreline smoothing)
 ### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
 

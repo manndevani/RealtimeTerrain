@@ -48,3 +48,61 @@ bool FRoadElevationProfileMathTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+// Verifies RoadElevationProfile::DetectFlyoverBridges -- the automatic flyover trigger. Builds a
+// synthetic height sequence that is perfectly flat (0-degree grade) for the first few stations,
+// then a steep sawtooth (~83-degree grade every step, an artificially extreme case chosen so
+// there's no ambiguity about which stations count as "rough") for a stretch long enough to
+// qualify, then flat again -- and confirms a bridge is detected spanning exactly the rough
+// stretch's boundary distances/heights, not some other interval.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadElevationProfileFlyoverDetectionTest, "TerraDyne.RoadElevationProfile.AutoFlyoverDetection", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadElevationProfileFlyoverDetectionTest::RunTest(const FString& Parameters)
+{
+	const double MaxGradeRadians = FMath::DegreesToRadians(45.0);
+	const double MinRunLength = 500.0;
+
+	{
+		// Flat 0-4 (dist 0-400), sawtooth 5-15 (dist 500-1500, alternating 0/800 -- ~83deg grade
+		// every step), flat again at 800 from 16-20 (dist 1600-2000).
+		TArray<double> Distances;
+		TArray<double> Heights;
+		for (int32 i = 0; i <= 20; ++i)
+		{
+			Distances.Add(i * 100.0);
+			if (i <= 4) Heights.Add(0.0);
+			else if (i <= 15) Heights.Add((i % 2 == 1) ? 800.0 : 0.0);
+			else Heights.Add(800.0);
+		}
+
+		TArray<FRoadHeightKey> Bridges;
+		RoadElevationProfile::DetectFlyoverBridges(Distances, Heights, MaxGradeRadians, MinRunLength, Bridges);
+
+		TestEqual(TEXT("Exactly one bridge (2 keys) detected"), Bridges.Num(), 2);
+		if (Bridges.Num() == 2)
+		{
+			TestEqual(TEXT("Bridge starts where the flat run ends (dist 400)"), Bridges[0].Dist, 400.0, 0.01);
+			TestEqual(TEXT("Bridge start height matches the flat ground there"), Bridges[0].Height, 0.0, 0.01);
+			TestEqual(TEXT("Bridge ends where the sawtooth settles back to flat (dist 1500)"), Bridges[1].Dist, 1500.0, 0.01);
+			TestEqual(TEXT("Bridge end height matches the settled height there"), Bridges[1].Height, 800.0, 0.01);
+			TestEqual(TEXT("Bridge keys have zero slope (smooth departure/return grade)"), Bridges[0].Slope, 0.0, 0.001);
+		}
+	}
+	{
+		// Perfectly flat throughout -- no grade ever exceeds the threshold, so no bridge at all.
+		TArray<double> Distances = { 0.0, 500.0, 1000.0, 1500.0, 2000.0 };
+		TArray<double> Heights = { 100.0, 100.0, 100.0, 100.0, 100.0 };
+		TArray<FRoadHeightKey> Bridges;
+		RoadElevationProfile::DetectFlyoverBridges(Distances, Heights, MaxGradeRadians, MinRunLength, Bridges);
+		TestEqual(TEXT("Flat sequence produces no bridges"), Bridges.Num(), 0);
+	}
+	{
+		// A single steep step (one station pair) that's too SHORT to qualify as a genuine flyover
+		// stretch -- MinRunLength should gate it out rather than bridging every single bump.
+		TArray<double> Distances = { 0.0, 100.0, 200.0, 300.0 };
+		TArray<double> Heights = { 0.0, 800.0, 800.0, 800.0 };
+		TArray<FRoadHeightKey> Bridges;
+		RoadElevationProfile::DetectFlyoverBridges(Distances, Heights, MaxGradeRadians, MinRunLength, Bridges);
+		TestEqual(TEXT("A single too-short steep step does not trigger a bridge"), Bridges.Num(), 0);
+	}
+	return true;
+}
