@@ -54,12 +54,26 @@ reference itself (which replicates fine on its own, being a stable asset referen
 non-tapering case. The graph becomes load-bearing once Phase 2 needs per-instance lane data (a
 ramp's taper, a junction-driven cut) that can't just live on the shared style asset.
 
-**Remaining**: Phase 2 (junction lane routing + gore markings — where the boundary/lane graph
-actually gets used), Phase 3 (elevation profile + automatic flyover + pier instancing), Phase 4
-(spiral centreline smoothing), Phase 5 (OpenDrive export). See plan file for detail on each.
+**Phase 2 started.** Ramp/fork classification: `RoadNetworkSolver::FArm::DrivingLaneCount` +
+`RoadNetworkSolver::IsRampConnection` (`RoadNetworkSolver.h`/`.cpp`) — adapted from RoadBuilder's
+`FJunctionGate::IsRampOf` idea (shallow angle + lane-count mismatch = ramp), since this system
+pins roads to a junction via `FRoadJunctionCut` rather than RoadBuilder's `ConnectedParents`
+lineage graph, so no lineage walk is needed. `ARealtimeRoadSplineActor::GetDrivingLaneCount()`
+feeds it (style's own count when set, else the old implicit 2/1 for paved/rough), wired into
+`ARealtimeRoadJunctionActor`'s arm-building code. Tests:
+`TerraDyne.RoadNetwork.RampClassification`, `TerraDyne.RoadSplineActor.DrivingLaneCount`. Full
+`TerraDyne.RoadNetwork.*` suite re-verified (`NWayBattery`, `PavedRoadBanksOverNonTerraDyneGround`,
+`TightCornerClampsRadius`) — no regressions from the new `FArm` field.
 
-**Next step**: Start Phase 2 — port `FJunctionGate`/`IsRampOf` ramp classification and extend
-`RoadNetworkSolver::FArm` with a lane list for lane-count-aware corner trim.
+**Remaining**: rest of Phase 2 — lane-count-aware corner trim in `SolveNode` (currently
+`DrivingLaneCount` is classified but not yet consumed by the trim math itself), then the actual
+per-lane connector routing through a junction and gore-fill geometry where a ramp/fork is
+detected. Then Phase 3 (elevation profile + automatic flyover + pier instancing), Phase 4 (spiral
+centreline smoothing), Phase 5 (OpenDrive export). See plan file for detail on each.
+
+**Next step**: Use `IsRampConnection`'s classification in `ARealtimeRoadJunctionActor`'s corner-
+building to actually change the corner geometry at a detected ramp/fork (today it only trims by
+width, identically whether or not a corner is a ramp).
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

@@ -541,6 +541,8 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 	}
 	TGuardValue<bool> SolveGuard(bAnySolveInProgress, true);
 
+	bLastSolveWasOrphaned = false;
+
 	SolvedBoundary.Reset();
 	SolvedRoadsideChains.Reset();
 	SolvedCornerRadii.Reset();
@@ -605,6 +607,7 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 
 			RoadNetworkSolver::FArm Arm;
 			Arm.HalfWidth = HalfWidth;
+			Arm.DrivingLaneCount = Road->GetDrivingLaneCount();
 			Arm.UserData = Sources.Num();
 
 			// Every arm has to start at the node itself.
@@ -646,6 +649,33 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 
 	if (Arms.Num() < 2)
 	{
+		bLastSolveWasOrphaned = true;
+
+		// Fewer than two roads means there's nothing left to solve an intersection between -- most
+		// often because a connected road (or enough of them) just got deleted out from under this
+		// junction. If exactly one road is still nearby, it's now stuck pinned to a junction that
+		// no longer has anything to be a junction between, so un-pin it back to a normal, uncut
+		// road rather than leaving it artificially cut short at this node. RebuildJunction (the
+		// caller) is the one that actually removes this junction actor -- see bLastSolveWasOrphaned
+		// there -- since a freshly-placed junction with no roads near it yet must NOT be destroyed
+		// the moment it's created, only one that had already solved successfully before and has now
+		// lost its connections.
+		if (Sources.Num() == 1 && Sources[0].Road)
+		{
+			ARealtimeRoadSplineActor* Survivor = Sources[0].Road;
+			Survivor->RemoveJunctionCutsFor(this);
+			if (Survivor->StartJunction == this)
+			{
+				Survivor->StartJunction = nullptr;
+				Survivor->StartJunctionLegIndex = INDEX_NONE;
+			}
+			if (Survivor->EndJunction == this)
+			{
+				Survivor->EndJunction = nullptr;
+				Survivor->EndJunctionLegIndex = INDEX_NONE;
+			}
+			Survivor->RebuildRoad();
+		}
 		return false;
 	}
 
@@ -859,6 +889,19 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 			MaxBandWidth = FMath::Min(MaxBandWidth, CornerRadius / RoadMesh::BandRadiusSafetyFactor);
 		}
 		bHaveGeometry = true;
+	}
+
+	// This junction had solved successfully from real roads at some point before (JunctionType
+	// only ever becomes Custom_N_Way as a side effect of that), and this call found fewer than two
+	// of them left connected -- it is now an orphan, not a placeholder waiting for roads to be
+	// drawn to it (that case never sets bLastSolveWasOrphaned to begin with, since Custom_N_Way
+	// stays whatever preset it was spawned with until a solve actually succeeds once). Falling
+	// through to BuildBoundary's authored-Legs fallback below would just keep showing whatever
+	// shape the last successful solve left behind, disconnected from any real road.
+	if (!bHaveGeometry && bLastSolveWasOrphaned && JunctionType == ERoadJunctionType::Custom_N_Way)
+	{
+		Destroy();
+		return;
 	}
 
 	if (!bHaveGeometry && !BuildBoundary(Boundary, CornerChains, MaxBandWidth))

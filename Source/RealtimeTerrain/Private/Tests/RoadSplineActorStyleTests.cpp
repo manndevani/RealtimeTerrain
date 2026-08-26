@@ -76,4 +76,35 @@ bool FRoadSplineActorStyleWidthTest::RunTest(const FString& Parameters)
 		FMath::Abs(MeasuredWidth - 600.0) < 50.0);
 	return true;
 }
+
+// Verifies GetDrivingLaneCount, the input RoadNetworkSolver::IsRampConnection classifies a
+// junction connection on: a style with a mix of driving/sidewalk lanes counts only the driving
+// ones, and an un-styled road falls back to what CrossSectionSettings has always implied (two
+// lanes for paved, one for rough) rather than reading as laneless.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadSplineActorDrivingLaneCountTest, "TerraDyne.RoadSplineActor.DrivingLaneCount", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadSplineActorDrivingLaneCountTest::RunTest(const FString& Parameters)
+{
+	ARealtimeRoadSplineActor* PavedNoStyle = NewObject<ARealtimeRoadSplineActor>();
+	PavedNoStyle->RoadType = ERoadType::PavedRoad;
+	TestEqual(TEXT("Un-styled paved road defaults to 2 driving lanes"), PavedNoStyle->GetDrivingLaneCount(), 2);
+
+	ARealtimeRoadSplineActor* RoughNoStyle = NewObject<ARealtimeRoadSplineActor>();
+	RoughNoStyle->RoadType = ERoadType::RoughRoad;
+	TestEqual(TEXT("Un-styled rough road defaults to 1 driving lane"), RoughNoStyle->GetDrivingLaneCount(), 1);
+
+	URoadStylePreset* Style = NewObject<URoadStylePreset>();
+	FRoadStyleLaneEntry Driving;
+	Driving.LaneType = ERealtimeLaneType::Driving;
+	Style->LeftLanes.Add(Driving);
+	Style->RightLanes.Add(Driving);
+	Style->RightLanes.Add(Driving);
+	FRoadStyleLaneEntry Sidewalk;
+	Sidewalk.LaneType = ERealtimeLaneType::Sidewalk;
+	Style->RightLanes.Add(Sidewalk);
+
+	ARealtimeRoadSplineActor* Styled = NewObject<ARealtimeRoadSplineActor>();
+	Styled->StylePreset = Style;
+	TestEqual(TEXT("Styled road counts only driving lanes, ignoring the sidewalk"), Styled->GetDrivingLaneCount(), 3);
+	return true;
+}
 #endif // WITH_EDITOR

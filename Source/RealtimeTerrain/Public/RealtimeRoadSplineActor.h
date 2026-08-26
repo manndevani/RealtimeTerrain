@@ -325,6 +325,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	bool SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const;
 
+	/**
+	 * Driving lanes this road carries, for junction ramp/fork classification
+	 * (RoadNetworkSolver::IsRampConnection). StylePreset's own count when one is set; otherwise a
+	 * fallback matching what CrossSectionSettings has always implied -- two lanes (one each
+	 * direction) for a paved road, one for a rough trail.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
+	int32 GetDrivingLaneCount() const;
+
 	/** True when this instance may edit its own points: the authority, or a local-only preview. */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	bool CanEditPoints() const;

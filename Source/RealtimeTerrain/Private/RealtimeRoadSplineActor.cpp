@@ -520,6 +520,15 @@ bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXY(const FVector2D& WorldXY,
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ);
 }
 
+int32 ARealtimeRoadSplineActor::GetDrivingLaneCount() const
+{
+	if (StylePreset)
+	{
+		return FMath::Max(1, StylePreset->NumDrivingLanes());
+	}
+	return RoadType == ERoadType::PavedRoad ? 2 : 1;
+}
+
 bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXYWithSource(const FVector2D& WorldXY, float& OutHeightZ, bool& OutWasNonTerraDyneGround) const
 {
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ, &OutWasNonTerraDyneGround);

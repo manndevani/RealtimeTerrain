@@ -37,6 +37,13 @@ namespace RoadNetworkSolver
 		/** Half the full surface width of this road, including anything the surface must cover. */
 		double HalfWidth = 400.0;
 
+		/**
+		 * Driving lanes this road carries into the node. Used only for ramp/fork classification
+		 * (see IsRampConnection below) -- SolveNode's own boundary/trim math is width-based and
+		 * does not read this.
+		 */
+		int32 DrivingLaneCount = 1;
+
 		/** Opaque caller handle, carried through so the result can be mapped back to a road. */
 		int32 UserData = INDEX_NONE;
 
@@ -168,4 +175,20 @@ namespace RoadNetworkSolver
 		const FVector2D& NodeLocation,
 		TArray<FArm>& Arms,
 		const FNodeOptions& Options = FNodeOptions());
+
+	/** Below this angular gap between two arms, they read as a shallow merge/diverge rather than a crossing. */
+	constexpr double RampAngleThresholdRadians = 0.6981317008; // 40 degrees
+
+	/**
+	 * True when a pair of adjacent arms should be classified as a ramp/fork connection -- a
+	 * shallow-angle join between roads whose driving-lane counts differ -- rather than a plain
+	 * crossing where roads of matching lane count meet closer to perpendicular.
+	 *
+	 * Ported from the idea behind RoadBuilder's FJunctionGate::IsRampOf (RoadScene.h), adapted:
+	 * that method additionally walks a ConnectedParents lineage graph RoadBuilder's own road
+	 * actors maintain, which this system has no equivalent of -- here, a junction already knows
+	 * which roads meet it via FRoadJunctionCut, so classification uses angle and lane-count delta
+	 * directly rather than parentage.
+	 */
+	bool IsRampConnection(double AngleGapRadians, int32 ArmDrivingLanes, int32 OtherDrivingLanes);
 }

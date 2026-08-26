@@ -740,4 +740,9 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 	Solution.bValid = Solution.Boundary.Num() >= 3;
 	return Solution;
 }
+
+bool IsRampConnection(double AngleGapRadians, int32 ArmDrivingLanes, int32 OtherDrivingLanes)
+{
+	return FMath::Abs(AngleGapRadians) < RampAngleThresholdRadians && ArmDrivingLanes != OtherDrivingLanes;
+}
 }
