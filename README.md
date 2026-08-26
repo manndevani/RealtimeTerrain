@@ -85,16 +85,33 @@ via `ARealtimeRoadSplineActor::GetDrivingSurfaceHalfWidth()`. Test:
 864cm; 300cm converges at 1728cm — confirms the geometry, not just that it runs). Full regression
 across `RoadNetwork`/`RoadStylePresets`/`RoadSplineActor` suites (10 tests) — no breaks.
 
-**Remaining**: wire this into the junction's actual mesh — at a corner `IsRampConnection` flags,
-build a gore-fill triangle fan from the apex to the outer corner arc instead of leaving it a plain
-filleted slab, and start the real per-lane connector routing through a junction (mirroring
-RoadBuilder's `BuildLink`). This is where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in
-Phase 1 but not yet consumed anywhere) finally becomes load-bearing. Then Phase 3 (elevation
-profile + automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5
-(OpenDrive export). See plan file for detail on each.
+**Gore-fill mesh primitive built and winding-verified.** `RoadMesh::AppendGoreFill`
+(`RoadMeshBuilder.h`/`.cpp`) appends a raised gore-island triangle fan from an apex to a chain of
+points — a real highway ramp gore is often a physically curbed island, not just a painted region,
+so this reuses the `Curb` material slot rather than inventing a new one. Every triangle's winding
+is corrected independently via signed-area check before appending, so it can never render inside-
+out regardless of which direction the caller's chain happens to run — verified directly against
+`FDynamicMesh3::GetTriNormal` (not just "doesn't crash") for both a forward and a reversed input
+chain; both produced a clean `(0, 0, 1)` normal on every triangle. Test:
+`TerraDyne.RoadMeshBuilder.GoreFillAlwaysFacesUp`. Full `TerraDyne.RoadMesh*` suite re-verified (6
+tests) — no regressions.
 
-**Next step**: In `ARealtimeRoadJunctionActor`'s mesh-building code, use `FindGoreApex` at each
-`IsRampConnection`-flagged corner to add a gore-fill triangle to the junction's `DynamicMeshComponent`.
+**Remaining**: wire `AppendGoreFill` into `ARealtimeRoadJunctionActor::RebuildJunction` — at each
+`IsRampConnection`-flagged corner (needs `SolveIntersection`/`FNodeSolution` to expose which
+`RoadsideChains`/`CornerRadii` entries are ramp corners, since that's currently computed internally
+but not surfaced), call `FindGoreApex` and append the fill using that corner's own `CornerChains`
+entry, with a height interpolated the same way `HeightAt` already blends other boundary vertices.
+Known scope limit carried from the corner-radius work: only corners that hit `SolveNode`'s bounded-
+intersect path get ramp treatment today: very shallow angles whose true mitre point falls beyond
+either arm's own length take the separate bevel path instead, which isn't ramp-aware yet.
+Then the real per-lane connector routing through a junction (mirroring RoadBuilder's `BuildLink`)
+is the big remaining piece — where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in Phase 1
+but not yet consumed anywhere) finally becomes load-bearing. Then Phase 3 (elevation profile +
+automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
+export). See plan file for detail on each.
+
+**Next step**: Expose ramp-corner classification from `SolveIntersection` and wire `AppendGoreFill`
+into `RebuildJunction`'s mesh-building lambda.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

@@ -217,6 +217,26 @@ namespace RoadMesh
 		float UVScale);
 
 	/**
+	 * Appends a gore-fill triangle fan from Apex to a chain of points -- the small raised island a
+	 * highway ramp split or merge leaves behind, closing the wedge between two roads whose driving
+	 * surfaces converge there (see RoadNetworkSolver::FindGoreApex). A flat top patch only, no
+	 * underside or skirt: it's a thin island sitting on top of the junction's own slab, which
+	 * already provides those.
+	 *
+	 * ChainPoints need not be wound any particular way -- each (Apex, ChainPoints[i],
+	 * ChainPoints[i+1]) triangle is wound counter-clockwise in world XY independently before being
+	 * appended (matching AppendPrism's own "CCW faces +Z" convention), so this can never silently
+	 * render inside-out regardless of which direction the caller's chain happens to run.
+	 */
+	void AppendGoreFill(
+		UE::Geometry::FDynamicMesh3& Mesh,
+		const FVector& Apex,
+		const TArray<FVector>& ChainPoints,
+		int32 MaterialID,
+		const FTransform& WorldToLocal,
+		float UVScale);
+
+	/**
 	 * Terrain height at a world XY: TerraDyne's heightfield where a chunk covers the spot, and a
 	 * downward line trace otherwise.
 	 *

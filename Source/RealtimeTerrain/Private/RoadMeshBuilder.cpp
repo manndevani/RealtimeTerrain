@@ -698,6 +698,54 @@ void AppendPrism(
 	}
 }
 
+void AppendGoreFill(
+	FDynamicMesh3& Mesh,
+	const FVector& Apex,
+	const TArray<FVector>& ChainPoints,
+	int32 MaterialID,
+	const FTransform& WorldToLocal,
+	float UVScale)
+{
+	if (ChainPoints.Num() < 2)
+	{
+		return;
+	}
+
+	PrepareMesh(Mesh);
+
+	auto PlanarUV = [UVScale](const FVector& P)
+	{
+		return FVector2f(static_cast<float>(P.X * UVScale), static_cast<float>(P.Y * UVScale));
+	};
+
+	const int32 ApexVert = Mesh.AppendVertex(WorldToLocal.TransformPosition(Apex));
+	const FVector2f ApexUV = PlanarUV(Apex);
+
+	for (int32 i = 0; i < ChainPoints.Num() - 1; ++i)
+	{
+		const FVector& P0 = ChainPoints[i];
+		const FVector& P1 = ChainPoints[i + 1];
+
+		const int32 V0 = Mesh.AppendVertex(WorldToLocal.TransformPosition(P0));
+		const int32 V1 = Mesh.AppendVertex(WorldToLocal.TransformPosition(P1));
+		const FVector2f UV0 = PlanarUV(P0);
+		const FVector2f UV1 = PlanarUV(P1);
+
+		// Signed area of (Apex, P0, P1) in world XY: positive means already counter-clockwise.
+		// Swapping P0/P1 when it isn't is what makes this immune to the caller's chain direction --
+		// there is no "wrong way round" input that silently produces an inside-out fill.
+		const double SignedArea = (P0.X - Apex.X) * (P1.Y - Apex.Y) - (P0.Y - Apex.Y) * (P1.X - Apex.X);
+		if (SignedArea >= 0.0)
+		{
+			AppendTri(Mesh, ApexVert, V0, V1, MaterialID, ApexUV, UV0, UV1);
+		}
+		else
+		{
+			AppendTri(Mesh, ApexVert, V1, V0, MaterialID, ApexUV, UV1, UV0);
+		}
+	}
+}
+
 bool SampleGroundHeight(
 	const AActor* Context,
 	TWeakObjectPtr<ATerraDyneManager>& ManagerCache,
