@@ -251,3 +251,68 @@ public:
 	/** Trims the curve and Segments to [Start, End] and re-bases distances. Ported from URoadBoundary::Cut. */
 	void Cut(double Start, double End);
 };
+
+/**
+ * Flat, replicable snapshot of one URealtimeRoadBoundary. Cross-references to the lanes on
+ * either side are indices into a sibling FReplicatedLaneState array rather than object
+ * pointers, since UObject pointers don't replicate as struct fields.
+ */
+USTRUCT()
+struct FReplicatedBoundaryState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FRoadCurveOffsetKey> LocalOffsets;
+
+	UPROPERTY()
+	TArray<FRealtimeBoundarySegment> Segments;
+
+	UPROPERTY()
+	int32 LeftLaneIndex = INDEX_NONE;
+
+	UPROPERTY()
+	int32 RightLaneIndex = INDEX_NONE;
+};
+
+/** Flat, replicable snapshot of one URealtimeRoadLane. See FReplicatedBoundaryState. */
+USTRUCT()
+struct FReplicatedLaneState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FRealtimeLaneSegment> Segments;
+
+	UPROPERTY()
+	int32 LeftBoundaryIndex = INDEX_NONE;
+
+	UPROPERTY()
+	int32 RightBoundaryIndex = INDEX_NONE;
+};
+
+namespace RoadCurveGraph
+{
+	/**
+	 * Flattens a boundary/lane object graph into replicable structs. Network cost scales with the
+	 * number of boundaries/lanes and their authored key counts, not with mesh resolution -- this
+	 * is what actually goes over the wire, never the derived geometry.
+	 */
+	REALTIMETERRAIN_API void SerializeGraph(
+		const TArray<URealtimeRoadBoundary*>& Boundaries,
+		const TArray<URealtimeRoadLane*>& Lanes,
+		TArray<FReplicatedBoundaryState>& OutBoundaryStates,
+		TArray<FReplicatedLaneState>& OutLaneStates);
+
+	/**
+	 * Reconstructs a live boundary/lane object graph from replicated state, called from a
+	 * replicated actor's OnRep handler. New objects are created with Outer as their outer so they
+	 * are garbage-collected along with it.
+	 */
+	REALTIMETERRAIN_API void DeserializeGraph(
+		UObject* Outer,
+		const TArray<FReplicatedBoundaryState>& BoundaryStates,
+		const TArray<FReplicatedLaneState>& LaneStates,
+		TArray<URealtimeRoadBoundary*>& OutBoundaries,
+		TArray<URealtimeRoadLane*>& OutLanes);
+}

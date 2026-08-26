@@ -226,3 +226,85 @@ void URealtimeRoadBoundary::Cut(double Start, double End)
 		Segment.Dist -= Start;
 	}
 }
+
+namespace RoadCurveGraph
+{
+	void SerializeGraph(
+		const TArray<URealtimeRoadBoundary*>& Boundaries,
+		const TArray<URealtimeRoadLane*>& Lanes,
+		TArray<FReplicatedBoundaryState>& OutBoundaryStates,
+		TArray<FReplicatedLaneState>& OutLaneStates)
+	{
+		OutBoundaryStates.Reset(Boundaries.Num());
+		OutLaneStates.Reset(Lanes.Num());
+
+		for (URealtimeRoadBoundary* Boundary : Boundaries)
+		{
+			FReplicatedBoundaryState& State = OutBoundaryStates.AddDefaulted_GetRef();
+			if (!Boundary)
+			{
+				continue;
+			}
+			State.LocalOffsets = Boundary->LocalOffsets;
+			State.Segments = Boundary->Segments;
+			State.LeftLaneIndex = Lanes.Find(Boundary->LeftLane);
+			State.RightLaneIndex = Lanes.Find(Boundary->RightLane);
+		}
+
+		for (URealtimeRoadLane* Lane : Lanes)
+		{
+			FReplicatedLaneState& State = OutLaneStates.AddDefaulted_GetRef();
+			if (!Lane)
+			{
+				continue;
+			}
+			State.Segments = Lane->Segments;
+			State.LeftBoundaryIndex = Boundaries.Find(Lane->LeftBoundary);
+			State.RightBoundaryIndex = Boundaries.Find(Lane->RightBoundary);
+		}
+	}
+
+	void DeserializeGraph(
+		UObject* Outer,
+		const TArray<FReplicatedBoundaryState>& BoundaryStates,
+		const TArray<FReplicatedLaneState>& LaneStates,
+		TArray<URealtimeRoadBoundary*>& OutBoundaries,
+		TArray<URealtimeRoadLane*>& OutLanes)
+	{
+		OutBoundaries.Reset(BoundaryStates.Num());
+		OutLanes.Reset(LaneStates.Num());
+
+		// First pass: create every object and copy its own data, before any cross-references are
+		// wired up -- both arrays must exist in full before an index into either can resolve.
+		for (const FReplicatedBoundaryState& State : BoundaryStates)
+		{
+			URealtimeRoadBoundary* Boundary = NewObject<URealtimeRoadBoundary>(Outer);
+			Boundary->LocalOffsets = State.LocalOffsets;
+			Boundary->Segments = State.Segments;
+			Boundary->RecomputeEffectiveOffsets();
+			OutBoundaries.Add(Boundary);
+		}
+		for (const FReplicatedLaneState& State : LaneStates)
+		{
+			URealtimeRoadLane* Lane = NewObject<URealtimeRoadLane>(Outer);
+			Lane->Segments = State.Segments;
+			OutLanes.Add(Lane);
+		}
+
+		// Second pass: resolve the index-based cross-references into real object pointers.
+		for (int32 i = 0; i < BoundaryStates.Num(); i++)
+		{
+			const int32 LeftIndex = BoundaryStates[i].LeftLaneIndex;
+			const int32 RightIndex = BoundaryStates[i].RightLaneIndex;
+			OutBoundaries[i]->LeftLane = OutLanes.IsValidIndex(LeftIndex) ? OutLanes[LeftIndex] : nullptr;
+			OutBoundaries[i]->RightLane = OutLanes.IsValidIndex(RightIndex) ? OutLanes[RightIndex] : nullptr;
+		}
+		for (int32 i = 0; i < LaneStates.Num(); i++)
+		{
+			const int32 LeftIndex = LaneStates[i].LeftBoundaryIndex;
+			const int32 RightIndex = LaneStates[i].RightBoundaryIndex;
+			OutLanes[i]->LeftBoundary = OutBoundaries.IsValidIndex(LeftIndex) ? OutBoundaries[LeftIndex] : nullptr;
+			OutLanes[i]->RightBoundary = OutBoundaries.IsValidIndex(RightIndex) ? OutBoundaries[RightIndex] : nullptr;
+		}
+	}
+}

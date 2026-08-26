@@ -21,16 +21,25 @@ ready with no custom factory needed), mirroring RoadBuilder's `ULaneMarkStyle`/`
 directly once wired in. Tests: `TerraDyne.RoadStylePresets.{LaneCount,LaneShapeMaterialSlot}` —
 passing.
 
-**Current work**: Phase 1 continues — the replicated flat-struct wire format (`FReplicatedBoundaryState`/
-`FReplicatedLaneState`), then wiring the boundary/lane graph + style presets into
-`ARealtimeRoadSplineActor` and `RoadMeshBuilder::BuildRoadSection`.
+**Done**: Replication wire format — `FReplicatedBoundaryState`/`FReplicatedLaneState` (flat
+structs of authored keys/segments plus index-based cross-references) and
+`RoadCurveGraph::SerializeGraph`/`DeserializeGraph` in `RoadCurveGraph.h`/`.cpp`. Network cost
+scales with boundary/lane/key counts, never with mesh resolution. Test:
+`TerraDyne.RoadCurveGraph.ReplicationRoundTrip` — builds a 2-boundary/1-lane graph, serializes,
+reconstructs into fresh objects, and confirms both the authored data and the Left/Right
+cross-reference wiring survive.
+
+**Current work**: Phase 1's final step — wiring the boundary/lane graph + style presets into
+`ARealtimeRoadSplineActor` (owning the graph + replicated state + `OnRep` reconstruction) and
+`RoadMeshBuilder::BuildRoadSection` (walking the graph to build the composite section instead of
+the old fixed curb/footpath layout).
 
 **Remaining**: Phase 2 (junction lane routing + gore markings), Phase 3 (elevation profile +
 automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
 export). See plan file for detail on each.
 
-**Next step**: Design and implement the replicated flat-struct wire format for the boundary/lane
-graph, then wire `ARealtimeRoadSplineActor` to build a graph from a chosen `URoadStylePreset`.
+**Next step**: Wire `ARealtimeRoadSplineActor` to build/replicate a boundary/lane graph from a
+chosen `URoadStylePreset`, then update `RoadMeshBuilder::BuildRoadSection` to consume it.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

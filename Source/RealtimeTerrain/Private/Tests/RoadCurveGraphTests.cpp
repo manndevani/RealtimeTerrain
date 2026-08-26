@@ -153,3 +153,59 @@ bool FRoadCurveGraphBoundarySegmentTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Cut boundary second segment still solid"), Boundary->Segments[1].bSolidMarking);
 	return true;
 }
+
+// Verifies SerializeGraph/DeserializeGraph round-trips a boundary/lane graph exactly -- the
+// replication scheme the plan calls for: replicate compact flat structs, not live UObjects, and
+// reconstruct an identical graph in OnRep. Builds a 2-boundary, 1-lane graph (a single driving
+// lane between a left and right edge), serializes it, deserializes into a fresh set of objects,
+// and checks both the authored data and the cross-reference wiring survive.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadCurveGraphReplicationRoundTripTest, "TerraDyne.RoadCurveGraph.ReplicationRoundTrip", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadCurveGraphReplicationRoundTripTest::RunTest(const FString& Parameters)
+{
+	URealtimeRoadBoundary* LeftEdge = NewObject<URealtimeRoadBoundary>();
+	LeftEdge->LocalOffsets.Add({ 0.0, -175.0, 0.0 });
+	LeftEdge->LocalOffsets.Add({ 1000.0, -175.0, 0.0 });
+	LeftEdge->RecomputeEffectiveOffsets();
+	LeftEdge->Segments.Add({ 0.0, true });
+
+	URealtimeRoadBoundary* RightEdge = NewObject<URealtimeRoadBoundary>();
+	RightEdge->LocalOffsets.Add({ 0.0, 175.0, 0.0 });
+	RightEdge->LocalOffsets.Add({ 1000.0, 175.0, 0.0 });
+	RightEdge->RecomputeEffectiveOffsets();
+	RightEdge->Segments.Add({ 0.0, true });
+
+	URealtimeRoadLane* Lane = NewObject<URealtimeRoadLane>();
+	Lane->Segments.Add({ 0.0, ERealtimeLaneType::Driving });
+	Lane->LeftBoundary = LeftEdge;
+	Lane->RightBoundary = RightEdge;
+	LeftEdge->RightLane = Lane;
+	RightEdge->LeftLane = Lane;
+
+	TArray<URealtimeRoadBoundary*> Boundaries = { LeftEdge, RightEdge };
+	TArray<URealtimeRoadLane*> Lanes = { Lane };
+
+	TArray<FReplicatedBoundaryState> BoundaryStates;
+	TArray<FReplicatedLaneState> LaneStates;
+	RoadCurveGraph::SerializeGraph(Boundaries, Lanes, BoundaryStates, LaneStates);
+
+	TestEqual(TEXT("Serialized boundary count"), BoundaryStates.Num(), 2);
+	TestEqual(TEXT("Serialized lane count"), LaneStates.Num(), 1);
+	TestEqual(TEXT("Left boundary's right-lane index resolves to the lane"), BoundaryStates[0].RightLaneIndex, 0);
+	TestEqual(TEXT("Right boundary's left-lane index resolves to the lane"), BoundaryStates[1].LeftLaneIndex, 0);
+	TestEqual(TEXT("Lane's left-boundary index resolves to the left edge"), LaneStates[0].LeftBoundaryIndex, 0);
+	TestEqual(TEXT("Lane's right-boundary index resolves to the right edge"), LaneStates[0].RightBoundaryIndex, 1);
+
+	TArray<URealtimeRoadBoundary*> RebuiltBoundaries;
+	TArray<URealtimeRoadLane*> RebuiltLanes;
+	RoadCurveGraph::DeserializeGraph(GetTransientPackage(), BoundaryStates, LaneStates, RebuiltBoundaries, RebuiltLanes);
+
+	TestEqual(TEXT("Rebuilt boundary count"), RebuiltBoundaries.Num(), 2);
+	TestEqual(TEXT("Rebuilt lane count"), RebuiltLanes.Num(), 1);
+	TestEqual(TEXT("Rebuilt left edge offset preserved"), RebuiltBoundaries[0]->GetOffset(500.0), -175.0, 0.01);
+	TestEqual(TEXT("Rebuilt right edge offset preserved"), RebuiltBoundaries[1]->GetOffset(500.0), 175.0, 0.01);
+	TestTrue(TEXT("Rebuilt lane's LeftBoundary points at the rebuilt left edge"), RebuiltLanes[0]->LeftBoundary == RebuiltBoundaries[0]);
+	TestTrue(TEXT("Rebuilt lane's RightBoundary points at the rebuilt right edge"), RebuiltLanes[0]->RightBoundary == RebuiltBoundaries[1]);
+	TestTrue(TEXT("Rebuilt left edge's RightLane points at the rebuilt lane"), RebuiltBoundaries[0]->RightLane == RebuiltLanes[0]);
+	TestTrue(TEXT("Rebuilt right edge's LeftLane points at the rebuilt lane"), RebuiltBoundaries[1]->LeftLane == RebuiltLanes[0]);
+	return true;
+}
