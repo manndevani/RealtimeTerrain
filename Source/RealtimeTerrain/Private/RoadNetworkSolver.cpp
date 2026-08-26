@@ -798,4 +798,16 @@ bool FindGoreApex(const FArm& ArmA, const FArm& ArmB, FVector2D& OutApex)
 	double TB = 0.0;
 	return RayIntersect(OriginA, DirA, OriginB, DirB, OutApex, TA, TB);
 }
+
+void MapLaneConnections(int32 ArmALaneCount, int32 ArmBLaneCount, TArray<int32>& OutArmAToArmB)
+{
+	OutArmAToArmB.Init(INDEX_NONE, FMath::Max(0, ArmALaneCount));
+	for (int32 i = 0; i < ArmALaneCount; ++i)
+	{
+		if (i < ArmBLaneCount)
+		{
+			OutArmAToArmB[i] = i;
+		}
+	}
+}
 }

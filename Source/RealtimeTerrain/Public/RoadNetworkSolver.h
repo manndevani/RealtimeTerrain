@@ -237,4 +237,24 @@ namespace RoadNetworkSolver
 	 * an ordinary non-ramp-shaped fork with no real gore to speak of, not a usage error.
 	 */
 	bool FindGoreApex(const FArm& ArmA, const FArm& ArmB, FVector2D& OutApex);
+
+	/**
+	 * Maps each of ArmA's driving lanes to the ArmB driving lane it continues into across a
+	 * junction corner -- the foundational connectivity decision real per-lane connector geometry
+	 * and lane-marking continuity both build on. Lanes are indexed outward from the corner: index
+	 * 0 is the lane nearest this corner (the one that would carry a merge/gore marking on a ramp),
+	 * rising toward the far side of the road.
+	 *
+	 * OutArmAToArmB[i] is ArmB's lane index that ArmA's lane i connects to, or INDEX_NONE when
+	 * ArmA has more lanes than ArmB (a ramp/fork merge) and lane i is one of the excess lanes with
+	 * nothing on the other side to continue into -- those are exactly the lanes that end at the
+	 * gore point (see FindGoreApex) rather than crossing the corner.
+	 *
+	 * Ported from the idea behind RoadBuilder's lane-marking-mask logic in BuildLink
+	 * (RoadScene.cpp), which decides per lane whether a through-connection, a ramp merge, or nothing
+	 * crosses a given gate pairing; this is the same decision expressed as an explicit index map
+	 * instead of a marking bitmask, since this system doesn't yet spawn per-connector objects to
+	 * carry that mask on.
+	 */
+	void MapLaneConnections(int32 ArmALaneCount, int32 ArmBLaneCount, TArray<int32>& OutArmAToArmB);
 }

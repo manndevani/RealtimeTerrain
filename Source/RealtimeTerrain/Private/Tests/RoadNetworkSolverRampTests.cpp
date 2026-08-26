@@ -192,3 +192,48 @@ bool FRoadNetworkSolverBevelPathRampTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Bevel-path corner with matching lane counts is not classified as a ramp"), NonRampSolution.IsRampCorner[0]);
 	return true;
 }
+
+// Verifies RoadNetworkSolver::MapLaneConnections -- the foundational per-lane connectivity
+// decision real connector geometry and lane-marking continuity both build on. A through
+// connection (matching or growing lane count) maps every source lane 1:1; a merge (fewer lanes on
+// the far side) leaves the excess near-corner-side lanes unmapped, since those are exactly the
+// ones that end at the gore point instead of crossing the corner.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadNetworkSolverLaneConnectionMapTest, "TerraDyne.RoadNetwork.LaneConnectionMap", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadNetworkSolverLaneConnectionMapTest::RunTest(const FString& Parameters)
+{
+	using namespace RoadNetworkSolver;
+
+	{
+		// Equal lane counts: a plain through connection, every lane maps 1:1.
+		TArray<int32> Map;
+		MapLaneConnections(2, 2, Map);
+		TestEqual(TEXT("Equal-count map size"), Map.Num(), 2);
+		TestEqual(TEXT("Equal-count lane 0 maps to lane 0"), Map[0], 0);
+		TestEqual(TEXT("Equal-count lane 1 maps to lane 1"), Map[1], 1);
+	}
+	{
+		// A 2-lane road merging down to a 1-lane ramp: only the near-corner lane (index 0)
+		// connects; the far lane has nothing on the ramp side and is unmapped.
+		TArray<int32> Map;
+		MapLaneConnections(2, 1, Map);
+		TestEqual(TEXT("Merge-down map size matches the wider side's lane count"), Map.Num(), 2);
+		TestEqual(TEXT("Merge-down near-corner lane 0 still connects"), Map[0], 0);
+		TestEqual(TEXT("Merge-down far lane 1 is unmapped (ends at the gore)"), Map[1], INDEX_NONE);
+	}
+	{
+		// A 1-lane ramp joining a 2-lane road: the ramp's only lane connects to the main road's
+		// near-corner lane.
+		TArray<int32> Map;
+		MapLaneConnections(1, 2, Map);
+		TestEqual(TEXT("Merge-up map size matches the narrower side's lane count"), Map.Num(), 1);
+		TestEqual(TEXT("Merge-up lane 0 connects to the near-corner lane"), Map[0], 0);
+	}
+	{
+		// Zero lanes on either side is a degenerate but real input (an unstyled/undefined arm) --
+		// must not crash and must produce an empty map rather than garbage.
+		TArray<int32> Map;
+		MapLaneConnections(0, 2, Map);
+		TestEqual(TEXT("Zero source lanes produces an empty map"), Map.Num(), 0);
+	}
+	return true;
+}
