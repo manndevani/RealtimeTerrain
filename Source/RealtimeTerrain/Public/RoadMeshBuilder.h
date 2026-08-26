@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "RoadTypes.h"
+#include "RoadStylePresets.h"
 
 namespace UE::Geometry { class FDynamicMesh3; }
 
@@ -131,6 +132,29 @@ namespace RoadMesh
 	void BuildRoadSection(
 		const FRoadCrossSectionSettings& Settings,
 		bool bIncludeKerbAndPath,
+		FSection& OutSection);
+
+	/**
+	 * Builds a composite cross-section from a URoadStylePreset's ordered lane list -- the
+	 * lane-graph equivalent of BuildRoadSection above, generalised from a fixed drive+curb+
+	 * footpath layout to an arbitrary count of typed lanes. Feeds the same SweepSection this
+	 * module already uses; no change to the sweep itself.
+	 *
+	 * A lane with a Shape assigned contributes that shape's own (Lateral, Vertical) points,
+	 * mapped into the composite section at the lane's actual position and scaled so the shape's
+	 * own authored width matches the lane's Width (a shape is authored once and reused at
+	 * whatever width a lane needs). A lane with no Shape falls back to a flat span at Vertical 0 --
+	 * raising an unshaped sidewalk, for instance, is what authoring a Shape asset for it is for,
+	 * rather than a hardcoded height baked in here.
+	 *
+	 * Every point's EdgeMaterialID currently comes from the lane's own LaneType (Sidewalk ->
+	 * Slots::Footpath, everything else -> Slots::Surface), not from the Shape's own per-point
+	 * MaterialSlot -- richer per-shape materials need the owning mesh component's material array
+	 * made dynamic first, which is a separate follow-on.
+	 */
+	void BuildRoadSectionFromStyle(
+		const URoadStylePreset& Style,
+		double SlabThickness,
 		FSection& OutSection);
 
 	/**

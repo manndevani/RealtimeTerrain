@@ -29,17 +29,25 @@ scales with boundary/lane/key counts, never with mesh resolution. Test:
 reconstructs into fresh objects, and confirms both the authored data and the Left/Right
 cross-reference wiring survive.
 
-**Current work**: Phase 1's final step — wiring the boundary/lane graph + style presets into
-`ARealtimeRoadSplineActor` (owning the graph + replicated state + `OnRep` reconstruction) and
-`RoadMeshBuilder::BuildRoadSection` (walking the graph to build the composite section instead of
-the old fixed curb/footpath layout).
+**Done**: `RoadMesh::BuildRoadSectionFromStyle` in `RoadMeshBuilder.h`/`.cpp` — builds a composite
+cross-section from a `URoadStylePreset`'s ordered lane list, generalizing the old fixed drive+
+curb+footpath layout to arbitrary typed lanes. A lane with a `Shape` assigned contributes that
+shape's own points (rescaled to the lane's actual width, heights left absolute); one with no
+shape falls back to a flat span. Purely additive — `BuildRoadSection` (the existing
+`FRoadCrossSectionSettings`-driven path) is untouched, confirmed by re-running the full
+`TerraDyne.RoadMesh*` suite (5/5 passing, no regressions). Tests:
+`TerraDyne.RoadMeshBuilder.{StyleFlatTwoLane,StyleShapeRescale}`.
+
+**Current work / next step (Phase 1's last piece)**: wire `ARealtimeRoadSplineActor` itself — add
+an optional `StylePreset` property; when set, own a boundary/lane graph built from it, replicate
+via `FReplicatedBoundaryState`/`FReplicatedLaneState` + `OnRep` reconstruction, and call
+`BuildRoadSectionFromStyle` in the mesh-rebuild path instead of the old settings-driven section.
+When `StylePreset` is unset (default), behavior is fully unchanged — existing roads/tests keep
+working exactly as before.
 
 **Remaining**: Phase 2 (junction lane routing + gore markings), Phase 3 (elevation profile +
 automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
 export). See plan file for detail on each.
-
-**Next step**: Wire `ARealtimeRoadSplineActor` to build/replicate a boundary/lane graph from a
-chosen `URoadStylePreset`, then update `RoadMeshBuilder::BuildRoadSection` to consume it.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

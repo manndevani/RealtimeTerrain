@@ -98,7 +98,11 @@ public:
 	}
 };
 
-/** One lane in a style preset's ordered left/right lists. Mirrors RoadBuilder's FRoadLaneStyle. */
+/**
+ * One lane in a style preset's ordered left/right lists. Mirrors RoadBuilder's FRoadLaneStyle.
+ * Index 0 in LeftLanes/RightLanes is the lane nearest the road centreline; increasing index moves
+ * outward -- e.g. RightLanes = [Driving, Driving, Sidewalk] places the sidewalk furthest right.
+ */
 USTRUCT(BlueprintType)
 struct FRoadStyleLaneEntry
 {

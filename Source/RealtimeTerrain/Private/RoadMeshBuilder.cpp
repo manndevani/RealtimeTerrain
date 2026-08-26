@@ -139,6 +139,86 @@ void BuildRoadSection(const FRoadCrossSectionSettings& Settings, bool bIncludeKe
 	OutSection.Emplace(-Outer, Base, Slots::Flank);
 }
 
+namespace
+{
+	/** Sidewalk lanes read as footpath; every other lane type reads as the driving surface. */
+	int32 LaneTypeToMaterialSlot(ERealtimeLaneType LaneType)
+	{
+		return LaneType == ERealtimeLaneType::Sidewalk ? Slots::Footpath : Slots::Surface;
+	}
+
+	/** Appends one lane's span, from LocalStart to LocalStart + Lane.Width, to OutSection. */
+	void AppendLaneSpan(const FRoadStyleLaneEntry& Lane, double LocalStart, FSection& OutSection)
+	{
+		const int32 MaterialID = LaneTypeToMaterialSlot(Lane.LaneType);
+		const URoadLaneShape* Shape = Lane.Shape;
+
+		if (!Shape || Shape->Points.Num() < 2)
+		{
+			OutSection.Emplace(LocalStart, 0.0, MaterialID);
+			OutSection.Emplace(LocalStart + Lane.Width, 0.0, MaterialID);
+			return;
+		}
+
+		double MinLateral = Shape->Points[0].Lateral;
+		double MaxLateral = Shape->Points[0].Lateral;
+		for (const FRoadLaneShapePoint& Point : Shape->Points)
+		{
+			MinLateral = FMath::Min(MinLateral, Point.Lateral);
+			MaxLateral = FMath::Max(MaxLateral, Point.Lateral);
+		}
+		const double ShapeSpan = MaxLateral - MinLateral;
+		if (FMath::IsNearlyZero(ShapeSpan))
+		{
+			OutSection.Emplace(LocalStart, 0.0, MaterialID);
+			OutSection.Emplace(LocalStart + Lane.Width, 0.0, MaterialID);
+			return;
+		}
+
+		// Rescale the shape's own authored span to this lane's actual width -- a shape is authored
+		// once and reused at whatever width a lane needs -- while leaving heights absolute, so a
+		// kerb riser stays the same real-world height regardless of the lane it's used on.
+		for (const FRoadLaneShapePoint& Point : Shape->Points)
+		{
+			const double Alpha = (Point.Lateral - MinLateral) / ShapeSpan;
+			OutSection.Emplace(LocalStart + Alpha * Lane.Width, Point.Vertical, MaterialID);
+		}
+	}
+}
+
+void BuildRoadSectionFromStyle(const URoadStylePreset& Style, double SlabThickness, FSection& OutSection)
+{
+	OutSection.Reset();
+
+	double LeftTotalWidth = 0.0;
+	for (const FRoadStyleLaneEntry& Lane : Style.LeftLanes)
+	{
+		LeftTotalWidth += Lane.Width;
+	}
+
+	double RunningLateral = -LeftTotalWidth;
+	// LeftLanes[0] is nearest the centreline, so walk outward-to-inward (reverse) to emit the
+	// section's top chain left-to-right, matching BuildRoadSection's own convention.
+	for (int32 i = Style.LeftLanes.Num() - 1; i >= 0; i--)
+	{
+		AppendLaneSpan(Style.LeftLanes[i], RunningLateral, OutSection);
+		RunningLateral += Style.LeftLanes[i].Width;
+	}
+	for (int32 i = 0; i < Style.RightLanes.Num(); i++)
+	{
+		AppendLaneSpan(Style.RightLanes[i], RunningLateral, OutSection);
+		RunningLateral += Style.RightLanes[i].Width;
+	}
+
+	const double Outer = RunningLateral;
+	const double Base = -FMath::Max(2.0, SlabThickness);
+
+	// Underside, right to left, closing the loop back to the first vertex -- one flat slab
+	// underside regardless of lane count, matching BuildRoadSection: the underside is never seen.
+	OutSection.Emplace(Outer, Base, Slots::Flank);
+	OutSection.Emplace(-LeftTotalWidth, Base, Slots::Flank);
+}
+
 void BuildRoadsideSection(
 	double CurbWidth,
 	double CurbHeight,
