@@ -334,6 +334,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	int32 GetDrivingLaneCount() const;
 
+	/**
+	 * Half-width of just this road's driving (+shoulder) surface, excluding any sidewalk/median
+	 * lanes -- narrower than the full corner-fillet width a junction uses, which also covers
+	 * curb/footpath. Used to find a ramp/fork's gore point (RoadNetworkSolver::FindGoreApex).
+	 * Styled: half the summed Driving+Shoulder lane widths (both sides, matching how a junction's
+	 * own HalfWidth is already a single symmetric scalar). Un-styled: the same bare drivable
+	 * width CrossSectionSettings.RoadWidth has always implied, before curb/footpath are added.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
+	double GetDrivingSurfaceHalfWidth() const;
+
 	/** True when this instance may edit its own points: the authority, or a local-only preview. */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	bool CanEditPoints() const;

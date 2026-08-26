@@ -36,3 +36,20 @@ double URoadStylePreset::TotalWidth() const
 	}
 	return Total;
 }
+
+double URoadStylePreset::DrivingSurfaceWidth() const
+{
+	auto SumDrivingSurface = [](const TArray<FRoadStyleLaneEntry>& Lanes) -> double
+	{
+		double Total = 0.0;
+		for (const FRoadStyleLaneEntry& Lane : Lanes)
+		{
+			if (Lane.LaneType == ERealtimeLaneType::Driving || Lane.LaneType == ERealtimeLaneType::Shoulder)
+			{
+				Total += Lane.Width;
+			}
+		}
+		return Total;
+	};
+	return SumDrivingSurface(LeftLanes) + SumDrivingSurface(RightLanes);
+}

@@ -74,16 +74,27 @@ other corner. Test: `TerraDyne.RoadNetwork.RampCornerGetsWiderRadius` (a shallow
 matching lane counts resolves to the base radius; the same angle with differing lane counts
 resolves noticeably wider). Full `TerraDyne.RoadNetwork.*` suite re-verified — no regressions.
 
-**Remaining**: the big piece of Phase 2 — actual per-lane connector routing through a junction
-(not just a wider corner fillet) and gore-fill geometry where a ramp/fork is detected. This is
-where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in Phase 1 but not yet consumed anywhere)
-finally becomes load-bearing. Then Phase 3 (elevation profile + automatic flyover + pier
-instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive export). See plan file for
-detail on each.
+**Gore-apex geometry done, not yet wired into the mesh.** `RoadNetworkSolver::FindGoreApex` finds
+where two ramp-connected arms' *driving* surfaces (as opposed to the full corner-fillet width)
+converge — the tip of the gore triangle — reusing the exact same offset-and-converge technique
+`SolveNode`'s own corner collision already uses (bounded intersect, falling back to an unbounded
+ray cast), just at a narrower offset. Fed by `FArm::DrivingHalfWidth`, populated from
+`URoadStylePreset::DrivingSurfaceWidth()` (Driving+Shoulder lanes only, excluding sidewalk/median)
+via `ARealtimeRoadSplineActor::GetDrivingSurfaceHalfWidth()`. Test:
+`TerraDyne.RoadNetwork.GoreApexNarrowsWithDrivingWidth` (150cm driving half-width converges at
+864cm; 300cm converges at 1728cm — confirms the geometry, not just that it runs). Full regression
+across `RoadNetwork`/`RoadStylePresets`/`RoadSplineActor` suites (10 tests) — no breaks.
 
-**Next step**: Design how a junction builds real per-lane connector paths (mirroring RoadBuilder's
-`BuildLink`) using the boundary/lane graph, feeding them through the existing
-`RoadMeshBuilder::SweepSection` into the junction's own mesh rather than a plain filleted slab.
+**Remaining**: wire this into the junction's actual mesh — at a corner `IsRampConnection` flags,
+build a gore-fill triangle fan from the apex to the outer corner arc instead of leaving it a plain
+filleted slab, and start the real per-lane connector routing through a junction (mirroring
+RoadBuilder's `BuildLink`). This is where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in
+Phase 1 but not yet consumed anywhere) finally becomes load-bearing. Then Phase 3 (elevation
+profile + automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5
+(OpenDrive export). See plan file for detail on each.
+
+**Next step**: In `ARealtimeRoadJunctionActor`'s mesh-building code, use `FindGoreApex` at each
+`IsRampConnection`-flagged corner to add a gore-fill triangle to the junction's `DynamicMeshComponent`.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

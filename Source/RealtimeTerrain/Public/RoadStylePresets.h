@@ -145,4 +145,11 @@ public:
 	int32 NumDrivingLanes() const;
 
 	double TotalWidth() const;
+
+	/**
+	 * Summed width of Driving+Shoulder lanes across both sides, excluding Sidewalk/Median/None --
+	 * the drivable surface a junction's gore-point math cares about, as opposed to TotalWidth's
+	 * everything-including-sidewalks figure.
+	 */
+	double DrivingSurfaceWidth() const;
 };

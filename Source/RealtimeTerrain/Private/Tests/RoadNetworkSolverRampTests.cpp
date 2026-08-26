@@ -96,3 +96,49 @@ bool FRoadNetworkSolverRampCornerRadiusTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Ramp corner resolves noticeably wider than the base corner radius"), RampRadius > Options.CornerRadius * 1.5);
 	return true;
 }
+
+// Verifies RoadNetworkSolver::FindGoreApex converges nearer the node for a narrower driving
+// half-width than a wider one, at the same angle -- the defining geometric property a gore point
+// has to have (a narrower offset from two converging lines meets sooner), and the same
+// offset-and-converge technique SolveNode's own corner collision already uses and is tested by
+// TerraDyne.RoadNetwork.TightCornerClampsRadius, just applied to the driving edge instead of the
+// full surface edge.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadNetworkSolverGoreApexTest, "TerraDyne.RoadNetwork.GoreApexNarrowsWithDrivingWidth", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadNetworkSolverGoreApexTest::RunTest(const FString& Parameters)
+{
+	using namespace RoadNetworkSolver;
+
+	auto BuildArms = [](double DrivingHalfWidth) -> TArray<FArm>
+	{
+		FArm ArmA;
+		ArmA.Centreline = { FVector2D(0.0, 0.0), FVector2D(5000.0, 0.0) };
+		ArmA.DrivingHalfWidth = DrivingHalfWidth;
+
+		const double AngleRad = FMath::DegreesToRadians(20.0);
+		FArm ArmB;
+		ArmB.Centreline = { FVector2D(0.0, 0.0), FVector2D(5000.0 * FMath::Cos(AngleRad), 5000.0 * FMath::Sin(AngleRad)) };
+		ArmB.DrivingHalfWidth = DrivingHalfWidth;
+
+		return { ArmA, ArmB };
+	};
+
+	TArray<FArm> NarrowArms = BuildArms(150.0);
+	FVector2D NarrowApex;
+	const bool bNarrowFound = FindGoreApex(NarrowArms[0], NarrowArms[1], NarrowApex);
+
+	TArray<FArm> WideArms = BuildArms(300.0);
+	FVector2D WideApex;
+	const bool bWideFound = FindGoreApex(WideArms[0], WideArms[1], WideApex);
+
+	TestTrue(TEXT("Gore apex found for the narrower driving width"), bNarrowFound);
+	TestTrue(TEXT("Gore apex found for the wider driving width"), bWideFound);
+	if (!bNarrowFound || !bWideFound) return false;
+
+	const double NarrowDistance = NarrowApex.Size();
+	const double WideDistance = WideApex.Size();
+	AddInfo(FString::Printf(TEXT("Narrow (150cm) apex distance: %.2f cm, wide (300cm) apex distance: %.2f cm"), NarrowDistance, WideDistance));
+
+	TestTrue(TEXT("Both apexes sit ahead of the node, within the sampled arm length"), NarrowDistance > 0.0 && NarrowDistance < 5000.0 && WideDistance > 0.0 && WideDistance < 5000.0);
+	TestTrue(TEXT("Narrower driving width converges nearer the node than a wider one"), NarrowDistance < WideDistance);
+	return true;
+}

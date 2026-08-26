@@ -529,6 +529,15 @@ int32 ARealtimeRoadSplineActor::GetDrivingLaneCount() const
 	return RoadType == ERoadType::PavedRoad ? 2 : 1;
 }
 
+double ARealtimeRoadSplineActor::GetDrivingSurfaceHalfWidth() const
+{
+	if (StylePreset)
+	{
+		return StylePreset->DrivingSurfaceWidth() * 0.5;
+	}
+	return FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
+}
+
 bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXYWithSource(const FVector2D& WorldXY, float& OutHeightZ, bool& OutWasNonTerraDyneGround) const
 {
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ, &OutWasNonTerraDyneGround);

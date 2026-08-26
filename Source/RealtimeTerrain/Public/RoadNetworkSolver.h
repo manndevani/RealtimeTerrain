@@ -38,6 +38,13 @@ namespace RoadNetworkSolver
 		double HalfWidth = 400.0;
 
 		/**
+		 * Half-width of just the driving (+shoulder) surface -- narrower than HalfWidth, which
+		 * also covers curb/footpath. Used only to find a ramp/fork's gore point (FindGoreApex
+		 * below); SolveNode's own corner trim reads HalfWidth, not this.
+		 */
+		double DrivingHalfWidth = 400.0;
+
+		/**
 		 * Driving lanes this road carries into the node. Used only for ramp/fork classification
 		 * (see IsRampConnection below) -- SolveNode's own boundary/trim math is width-based and
 		 * does not read this.
@@ -200,4 +207,25 @@ namespace RoadNetworkSolver
 	 * directly rather than parentage.
 	 */
 	bool IsRampConnection(double AngleGapRadians, int32 ArmDrivingLanes, int32 OtherDrivingLanes);
+
+	/**
+	 * For a ramp/fork corner (see IsRampConnection), the point where the two arms' DRIVING
+	 * surfaces -- as opposed to their full HalfWidth, which SolveNode's own corner fillet uses --
+	 * would converge: the tip of the gore triangle between a ramp and the road it merges with.
+	 *
+	 * Uses the same offset-and-converge technique SolveNode's own corner collision does (a bounded
+	 * intersection search, falling back to an unbounded ray cast when the true convergence lies
+	 * beyond either arm's sampled length), just at each arm's DrivingHalfWidth instead of
+	 * HalfWidth -- a gore point is about where the driving lanes' edges meet, not the outer kerb/
+	 * shoulder edge.
+	 *
+	 * Ported from the idea behind RoadBuilder's BuildGoreMarkings (RoadScene.cpp), which finds
+	 * this by intersecting its own per-lane connector boundary curves; this system doesn't yet
+	 * have per-instance connector objects to intersect, so it's computed directly from each arm's
+	 * own driving-edge offset line instead.
+	 *
+	 * Returns false when the two arms' driving edges diverge outright rather than converge --
+	 * an ordinary non-ramp-shaped fork with no real gore to speak of, not a usage error.
+	 */
+	bool FindGoreApex(const FArm& ArmA, const FArm& ArmB, FVector2D& OutApex);
 }

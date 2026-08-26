@@ -40,6 +40,9 @@ bool FRoadStylePresetLaneCountTest::RunTest(const FString& Parameters)
 
 	TestEqual(TEXT("Driving lane count ignores shoulder/sidewalk"), Style->NumDrivingLanes(), 3);
 	TestEqual(TEXT("Total width sums every lane on both sides"), Style->TotalWidth(), 350.0 + 160.0 + 350.0 + 350.0 + 200.0, 0.01);
+	// Driving surface width counts Driving+Shoulder but not the 160cm sidewalk -- the figure a
+	// junction's gore-point math needs, distinct from TotalWidth's everything-included figure.
+	TestEqual(TEXT("Driving surface width excludes sidewalk but includes shoulder"), Style->DrivingSurfaceWidth(), 350.0 + 350.0 + 350.0 + 200.0, 0.01);
 	return true;
 }
 

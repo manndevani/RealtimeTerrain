@@ -607,6 +607,7 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 
 			RoadNetworkSolver::FArm Arm;
 			Arm.HalfWidth = HalfWidth;
+			Arm.DrivingHalfWidth = Road->GetDrivingSurfaceHalfWidth();
 			Arm.DrivingLaneCount = Road->GetDrivingLaneCount();
 			Arm.UserData = Sources.Num();
 

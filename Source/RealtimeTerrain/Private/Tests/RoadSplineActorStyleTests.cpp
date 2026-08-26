@@ -87,6 +87,7 @@ bool FRoadSplineActorDrivingLaneCountTest::RunTest(const FString& Parameters)
 	ARealtimeRoadSplineActor* PavedNoStyle = NewObject<ARealtimeRoadSplineActor>();
 	PavedNoStyle->RoadType = ERoadType::PavedRoad;
 	TestEqual(TEXT("Un-styled paved road defaults to 2 driving lanes"), PavedNoStyle->GetDrivingLaneCount(), 2);
+	TestEqual(TEXT("Un-styled road's driving half-width matches half CrossSectionSettings.RoadWidth"), PavedNoStyle->GetDrivingSurfaceHalfWidth(), PavedNoStyle->CrossSectionSettings.RoadWidth * 0.5, 0.01);
 
 	ARealtimeRoadSplineActor* RoughNoStyle = NewObject<ARealtimeRoadSplineActor>();
 	RoughNoStyle->RoadType = ERoadType::RoughRoad;
@@ -95,16 +96,20 @@ bool FRoadSplineActorDrivingLaneCountTest::RunTest(const FString& Parameters)
 	URoadStylePreset* Style = NewObject<URoadStylePreset>();
 	FRoadStyleLaneEntry Driving;
 	Driving.LaneType = ERealtimeLaneType::Driving;
+	Driving.Width = 350.0;
 	Style->LeftLanes.Add(Driving);
 	Style->RightLanes.Add(Driving);
 	Style->RightLanes.Add(Driving);
 	FRoadStyleLaneEntry Sidewalk;
 	Sidewalk.LaneType = ERealtimeLaneType::Sidewalk;
+	Sidewalk.Width = 350.0;
 	Style->RightLanes.Add(Sidewalk);
 
 	ARealtimeRoadSplineActor* Styled = NewObject<ARealtimeRoadSplineActor>();
 	Styled->StylePreset = Style;
 	TestEqual(TEXT("Styled road counts only driving lanes, ignoring the sidewalk"), Styled->GetDrivingLaneCount(), 3);
+	// 3 driving lanes at 350cm each = 1050cm total driving surface (sidewalk excluded), so half is 525.
+	TestEqual(TEXT("Styled road's driving half-width excludes the sidewalk lane"), Styled->GetDrivingSurfaceHalfWidth(), 525.0, 0.01);
 	return true;
 }
 #endif // WITH_EDITOR

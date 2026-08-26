@@ -754,4 +754,38 @@ bool IsRampConnection(double AngleGapRadians, int32 ArmDrivingLanes, int32 Other
 {
 	return FMath::Abs(AngleGapRadians) < RampAngleThresholdRadians && ArmDrivingLanes != OtherDrivingLanes;
 }
+
+bool FindGoreApex(const FArm& ArmA, const FArm& ArmB, FVector2D& OutApex)
+{
+	TArray<FVector2D> DrivingEdgeA;
+	TArray<FVector2D> DrivingEdgeB;
+	OffsetPolyline(ArmA.Centreline, ArmA.DrivingHalfWidth, DrivingEdgeA);
+	OffsetPolyline(ArmB.Centreline, -ArmB.DrivingHalfWidth, DrivingEdgeB);
+
+	if (DrivingEdgeA.Num() < 2 || DrivingEdgeB.Num() < 2)
+	{
+		return false;
+	}
+
+	double AlongA = 0.0;
+	double AlongB = 0.0;
+	if (IntersectPolylines(DrivingEdgeA, DrivingEdgeB, OutApex, AlongA, AlongB))
+	{
+		return true;
+	}
+
+	// Same fallback SolveNode's own corner collision uses: the true convergence can lie beyond
+	// either arm's sampled length at a shallow enough angle, so cast unbounded rays from each
+	// edge's own end tangent rather than giving up.
+	const double LenA = PolylineLength(DrivingEdgeA);
+	const double LenB = PolylineLength(DrivingEdgeB);
+	const FVector2D OriginA = DrivingEdgeA.Last();
+	const FVector2D DirA = DirectionAtDistance(DrivingEdgeA, LenA);
+	const FVector2D OriginB = DrivingEdgeB.Last();
+	const FVector2D DirB = DirectionAtDistance(DrivingEdgeB, LenB);
+
+	double TA = 0.0;
+	double TB = 0.0;
+	return RayIntersect(OriginA, DirA, OriginB, DirB, OutApex, TA, TB);
+}
 }
