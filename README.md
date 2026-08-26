@@ -13,16 +13,24 @@ RoadBuilder's `FCurveOffset`/`URoadCurve`), `URealtimeRoadLane` and `URealtimeRo
 lane's own curve offsets are unused/vestigial, matching RoadBuilder, since a lane's shape comes
 from its two boundaries). Tests: `TerraDyne.RoadCurveGraph.{OffsetMath,Cut,Join,LaneSegments,BoundarySegments}` — all passing.
 
-**Current work**: Phase 1 continues — style presets (`URoadLaneShape`/`URoadLaneMarkStyle`/
-`URoadStylePreset`, mirroring RoadBuilder's `ULaneShape`/`ULaneMarkStyle`/`URoadStyle`), then the
-replicated flat-struct wire format, then wiring into `ARealtimeRoadSplineActor` and
-`RoadMeshBuilder::BuildRoadSection`.
+**Done**: Style presets, in `Source/RealtimeTerrain/Public/RoadStylePresets.h` + `.cpp` —
+`URoadLaneMarkStyle`, `URoadLaneShape`, `URoadStylePreset` (all `UDataAsset`, Content-Browser-
+ready with no custom factory needed), mirroring RoadBuilder's `ULaneMarkStyle`/`ULaneShape`/
+`URoadStyle`. `URoadLaneShape`'s points use the same (Lateral, Vertical, MaterialSlot) convention
+`RoadMeshBuilder::FSectionVertex` already uses, so they'll feed the existing sweep pipeline
+directly once wired in. Tests: `TerraDyne.RoadStylePresets.{LaneCount,LaneShapeMaterialSlot}` —
+passing.
+
+**Current work**: Phase 1 continues — the replicated flat-struct wire format (`FReplicatedBoundaryState`/
+`FReplicatedLaneState`), then wiring the boundary/lane graph + style presets into
+`ARealtimeRoadSplineActor` and `RoadMeshBuilder::BuildRoadSection`.
 
 **Remaining**: Phase 2 (junction lane routing + gore markings), Phase 3 (elevation profile +
 automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
 export). See plan file for detail on each.
 
-**Next step**: Implement `URoadLaneShape`/`URoadLaneMarkStyle`/`URoadStylePreset` style presets.
+**Next step**: Design and implement the replicated flat-struct wire format for the boundary/lane
+graph, then wire `ARealtimeRoadSplineActor` to build a graph from a chosen `URoadStylePreset`.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
