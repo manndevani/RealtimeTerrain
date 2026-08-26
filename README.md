@@ -38,7 +38,15 @@ this section tracks current state only, not a running journal.
 - Tests: 9 in `RoadNetworkSolver`'s suite + 1 live integration test. **Full regression sweep across
   every touched suite at Phase 2 completion: 25 tests, 0 regressions.**
 
-### Phase 3 — NOT STARTED (elevation profile + automatic flyover + pier instancing)
+### Phase 3 — IN PROGRESS (elevation profile + automatic flyover + pier instancing)
+- `RoadElevationProfile.h`/`.cpp`: `FRoadHeightKey` + `EvaluateHeight` — cubic-Hermite height-vs-
+  distance profile, ported from RoadBuilder's `FHeightPoint`/`FHeightSegment` (`RoadActor.h`).
+  Reuses `RoadCurveGraph::FindElementIndex`'s binary search rather than duplicating it. Test:
+  `TerraDyne.RoadElevationProfile.HeightMath` (flat, S-curve climb, 3-key climb-hold-descend).
+- Remaining: authored elevation channel on `ARealtimeRoadSplineActor` (optional, backward-
+  compatible like `StylePreset`), automatic flyover detection in `BuildConformedCentreline` (grade/
+  roughness threshold triggers auto-inserted height keys, manual keys always win), pier instancing
+  via the existing `ScatterHISMComponent`.
 ### Phase 4 — NOT STARTED (spiral/clothoid centreline smoothing)
 ### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
 
