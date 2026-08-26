@@ -38,16 +38,28 @@ shape falls back to a flat span. Purely additive — `BuildRoadSection` (the exi
 `TerraDyne.RoadMesh*` suite (5/5 passing, no regressions). Tests:
 `TerraDyne.RoadMeshBuilder.{StyleFlatTwoLane,StyleShapeRescale}`.
 
-**Current work / next step (Phase 1's last piece)**: wire `ARealtimeRoadSplineActor` itself — add
-an optional `StylePreset` property; when set, own a boundary/lane graph built from it, replicate
-via `FReplicatedBoundaryState`/`FReplicatedLaneState` + `OnRep` reconstruction, and call
-`BuildRoadSectionFromStyle` in the mesh-rebuild path instead of the old settings-driven section.
-When `StylePreset` is unset (default), behavior is fully unchanged — existing roads/tests keep
-working exactly as before.
+**Phase 1 complete.** `ARealtimeRoadSplineActor` now has an optional, replicated `StylePreset`
+property (`RealtimeRoadSplineActor.h`/`.cpp`); when set, `GenerateRoadMesh` calls
+`RoadMesh::BuildRoadSectionFromStyle` instead of the `CrossSectionSettings`-driven path, otherwise
+every existing road behaves exactly as before (confirmed by re-running the full `TerraDyne.RoadMesh*`
+suite with no regressions). A style-preset road's `CrossSectionSettings.RoadWidth` still
+independently drives terrain-pad width, junction half-width, and crossing-merge radius — set it to
+roughly the style's total width until that's auto-derived as a follow-on. Test (spawns a real
+actor in a test world): `TerraDyne.RoadSplineActor.StylePresetDrivesWidth` — confirms the mesh is
+actually as wide as the style (600cm), not the un-styled default (800cm).
 
-**Remaining**: Phase 2 (junction lane routing + gore markings), Phase 3 (elevation profile +
-automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
-export). See plan file for detail on each.
+Note: `URealtimeRoadBoundary`/`URealtimeRoadLane` (the object graph) and their replication scheme
+aren't wired into the actor yet — `BuildRoadSectionFromStyle` only needs the `StylePreset` asset
+reference itself (which replicates fine on its own, being a stable asset reference) for this flat,
+non-tapering case. The graph becomes load-bearing once Phase 2 needs per-instance lane data (a
+ramp's taper, a junction-driven cut) that can't just live on the shared style asset.
+
+**Remaining**: Phase 2 (junction lane routing + gore markings — where the boundary/lane graph
+actually gets used), Phase 3 (elevation profile + automatic flyover + pier instancing), Phase 4
+(spiral centreline smoothing), Phase 5 (OpenDrive export). See plan file for detail on each.
+
+**Next step**: Start Phase 2 — port `FJunctionGate`/`IsRampOf` ramp classification and extend
+`RoadNetworkSolver::FArm` with a lane list for lane-count-aware corner trim.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

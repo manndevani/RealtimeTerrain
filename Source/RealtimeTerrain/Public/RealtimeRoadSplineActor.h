@@ -14,6 +14,7 @@ class UHierarchicalInstancedStaticMeshComponent;
 class UMaterialInterface;
 class ARealtimeRoadJunctionActor;
 class ATerraDyneManager;
+class URoadStylePreset;
 
 namespace RoadMesh { struct FFrame; }
 
@@ -65,6 +66,19 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Rough Settings", meta = (EditCondition = "RoadType == ERoadType::RoughRoad"))
 	FRoadScatterSettings ScatterSettings;
+
+	/**
+	 * Optional named lane style (see RoadStylePresets.h), swept via
+	 * RoadMesh::BuildRoadSectionFromStyle instead of the CrossSectionSettings-driven section
+	 * above. Unset (the default) leaves every existing road's behavior unchanged.
+	 *
+	 * CrossSectionSettings.RoadWidth still independently drives terrain-pad width, junction half-
+	 * width and crossing-merge radius even when a style is set -- set it to roughly the style's
+	 * own total width for those to line up with what the style actually renders. Auto-deriving it
+	 * from the style is a follow-on, not yet wired.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Style")
+	TObjectPtr<URoadStylePreset> StylePreset;
 
 	//--- TERRAIN CONFORMING ---
 

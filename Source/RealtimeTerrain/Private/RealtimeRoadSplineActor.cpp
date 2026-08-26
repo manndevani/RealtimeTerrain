@@ -69,6 +69,7 @@ void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 	DOREPLIFETIME(ARealtimeRoadSplineActor, RoadType);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, CrossSectionSettings);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ScatterSettings);
+	DOREPLIFETIME(ARealtimeRoadSplineActor, StylePreset);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ReplicatedWorldPoints);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, JunctionCuts);
 }
@@ -857,25 +858,39 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	}
 
 	RoadMesh::FSection Section;
-	RoadMesh::BuildRoadSection(CrossSectionSettings, RoadType == ERoadType::PavedRoad, Section);
-
 	RoadMesh::FSweepOptions Options;
 	Options.UVScale = FMath::Max(1.0e-5f, CrossSectionSettings.UVTilingScale);
 	Options.bSectionIsClosed = true;
 	Options.bCapStart = true;
 	Options.bCapEnd = true;
 
-	// A curb+footpath band swept at a fixed Lateral independently at every station is a naive
-	// per-vertex-normal offset -- it bowties through itself on the inside of any turn tighter than
-	// the band is wide. BandInnerHalfWidth marks where the always-full-width road surface ends and
-	// the scalable band begins; the per-frame scale itself is computed below, once Frames exist for
-	// each run, from how sharply the road is actually turning at each station.
-	Options.BandInnerHalfWidth = FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
 	double RequestedBandWidth = 0.0;
-	if (RoadType == ERoadType::PavedRoad)
+	if (StylePreset)
 	{
-		if (CrossSectionSettings.bHasCurbs) RequestedBandWidth += FMath::Max(0.0f, CrossSectionSettings.CurbWidth);
-		if (CrossSectionSettings.bHasFootpaths) RequestedBandWidth += FMath::Max(0.0f, CrossSectionSettings.FootpathWidth);
+		// A style preset's lane list already describes the full cross-section explicitly, so
+		// there is no separate curb/footpath "band" to scale on tight turns the way the fixed
+		// layout below has -- every lane sweeps at its authored width. A style'd road on a very
+		// tight turn can therefore self-intersect at its outer lanes; generalizing band-scaling to
+		// an arbitrary lane graph is follow-on work (the same problem Phase 2/4's lane tapering
+		// and spiral smoothing already have to solve), not something this path needs to solve on
+		// its own first.
+		RoadMesh::BuildRoadSectionFromStyle(*StylePreset, CrossSectionSettings.RoadThickness, Section);
+	}
+	else
+	{
+		RoadMesh::BuildRoadSection(CrossSectionSettings, RoadType == ERoadType::PavedRoad, Section);
+
+		// A curb+footpath band swept at a fixed Lateral independently at every station is a naive
+		// per-vertex-normal offset -- it bowties through itself on the inside of any turn tighter
+		// than the band is wide. BandInnerHalfWidth marks where the always-full-width road surface
+		// ends and the scalable band begins; the per-frame scale itself is computed below, once
+		// Frames exist for each run, from how sharply the road is actually turning at each station.
+		Options.BandInnerHalfWidth = FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
+		if (RoadType == ERoadType::PavedRoad)
+		{
+			if (CrossSectionSettings.bHasCurbs) RequestedBandWidth += FMath::Max(0.0f, CrossSectionSettings.CurbWidth);
+			if (CrossSectionSettings.bHasFootpaths) RequestedBandWidth += FMath::Max(0.0f, CrossSectionSettings.FootpathWidth);
+		}
 	}
 
 	const FTransform WorldToLocal = RoadMeshComponent->GetComponentTransform().Inverse();
