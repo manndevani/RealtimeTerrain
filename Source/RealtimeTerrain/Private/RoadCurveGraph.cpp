@@ -1,0 +1,170 @@
+// Copyright (c) 2026 RealtimeTerrain. All Rights Reserved.
+
+#include "RoadCurveGraph.h"
+
+namespace RoadCurveGraph
+{
+	int32 FindBracketIndex(const TArray<FRoadCurveOffsetKey>& Keys, double Dist)
+	{
+		// Ported from RoadBuilder's GetElementIndex: binary search for the largest index whose
+		// Dist does not exceed the query.
+		int32 Length = Keys.Num();
+		int32 Middle = Length;
+		int32 Offset = 0;
+		while (Middle > 0)
+		{
+			Middle = Length / 2;
+			if (Keys[Offset + Middle].Dist <= Dist)
+			{
+				Offset += Middle;
+			}
+			Length -= Middle;
+		}
+
+		// Ported from GetPointIndex: clamp so Offset+1 is always a valid bracketing key.
+		if (Offset == Keys.Num() - 1)
+		{
+			Offset--;
+		}
+		return Offset;
+	}
+
+	double EvaluateOffset(const TArray<FRoadCurveOffsetKey>& Keys, double Dist)
+	{
+		const int32 Index = FindBracketIndex(Keys, Dist);
+		const FRoadCurveOffsetKey& Start = Keys[Index];
+		const FRoadCurveOffsetKey& End = Keys[Index + 1];
+		const double SegmentLength = End.Dist - Start.Dist;
+		const double S = Dist - Start.Dist;
+		return FMath::CubicInterp(Start.Offset, Start.Slope * SegmentLength, End.Offset, End.Slope * SegmentLength, S / SegmentLength);
+	}
+
+	double EvaluateHeadingDelta(const TArray<FRoadCurveOffsetKey>& Keys, double Dist)
+	{
+		const int32 Index = FindBracketIndex(Keys, Dist);
+		const FRoadCurveOffsetKey& Start = Keys[Index];
+		const FRoadCurveOffsetKey& End = Keys[Index + 1];
+		const double SegmentLength = End.Dist - Start.Dist;
+		const double S = Dist - Start.Dist;
+		const double Derivative = FMath::CubicInterpDerivative(Start.Offset, Start.Slope * SegmentLength, End.Offset, End.Slope * SegmentLength, S / SegmentLength);
+		return FMath::Atan2(Derivative, SegmentLength);
+	}
+
+	TArray<FRoadCurveOffsetKey> CutOffsets(const TArray<FRoadCurveOffsetKey>& Keys, double Start, double End)
+	{
+		TArray<FRoadCurveOffsetKey> Results;
+		for (int32 i = 0; i < Keys.Num() - 1; i++)
+		{
+			const FRoadCurveOffsetKey& ThisKey = Keys[i];
+			const FRoadCurveOffsetKey& NextKey = Keys[i + 1];
+			const double SegStart = FMath::Max(Start, ThisKey.Dist);
+			const double SegEnd = FMath::Min(End, NextKey.Dist);
+			if (SegStart < SegEnd)
+			{
+				const double LocalStart = SegStart - ThisKey.Dist;
+				const double LocalEnd = SegEnd - ThisKey.Dist;
+				const double SegmentLength = NextKey.Dist - ThisKey.Dist;
+				check(SegmentLength > 0.0);
+
+				FRoadCurveOffsetKey NewKey;
+				NewKey.Dist = SegStart - Start;
+				NewKey.Offset = FMath::CubicInterp(ThisKey.Offset, ThisKey.Slope * SegmentLength, NextKey.Offset, NextKey.Slope * SegmentLength, LocalStart / SegmentLength);
+				NewKey.Slope = FMath::CubicInterpDerivative(ThisKey.Offset, ThisKey.Slope * SegmentLength, NextKey.Offset, NextKey.Slope * SegmentLength, LocalStart / SegmentLength) / SegmentLength;
+				Results.Add(NewKey);
+
+				if (SegEnd <= NextKey.Dist)
+				{
+					FRoadCurveOffsetKey LastKey;
+					LastKey.Dist = SegEnd - Start;
+					LastKey.Offset = FMath::CubicInterp(ThisKey.Offset, ThisKey.Slope * SegmentLength, NextKey.Offset, NextKey.Slope * SegmentLength, LocalEnd / SegmentLength);
+					LastKey.Slope = FMath::CubicInterpDerivative(ThisKey.Offset, ThisKey.Slope * SegmentLength, NextKey.Offset, NextKey.Slope * SegmentLength, LocalEnd / SegmentLength) / SegmentLength;
+					Results.Add(LastKey);
+				}
+			}
+		}
+		return Results;
+	}
+
+	void CleanOffsets(TArray<FRoadCurveOffsetKey>& Keys)
+	{
+		Keys.Sort();
+		for (int32 i = 1; i < Keys.Num() - 1;)
+		{
+			const FRoadCurveOffsetKey& Prev = Keys[i - 1];
+			const FRoadCurveOffsetKey& Next = Keys[i + 1];
+			const FRoadCurveOffsetKey& Key = Keys[i];
+			if (FMath::IsNearlyEqual(Prev.Dist, Key.Dist, 100.0) || FMath::IsNearlyEqual(Next.Dist, Key.Dist, 100.0))
+			{
+				Keys.RemoveAt(i);
+				continue;
+			}
+			if (FMath::IsNearlyEqual(Prev.Offset, Key.Offset, 1.0) && FMath::IsNearlyEqual(Next.Offset, Key.Offset, 1.0))
+			{
+				Keys.RemoveAt(i);
+				continue;
+			}
+			i++;
+		}
+	}
+}
+
+int32 URealtimeRoadCurve::AddLocalOffset(double Dist)
+{
+	const int32 Index = RoadCurveGraph::FindBracketIndex(LocalOffsets, Dist);
+	FRoadCurveOffsetKey NewKey;
+	NewKey.Dist = Dist;
+	NewKey.Offset = LocalOffsets[Index].Offset;
+	LocalOffsets.Insert(NewKey, Index + 1);
+	return Index + 1;
+}
+
+int32 URealtimeRoadCurve::FindLocalOffset(double Dist, double Tolerance) const
+{
+	for (int32 i = 0; i < LocalOffsets.Num(); i++)
+	{
+		if (FMath::IsNearlyEqual(Dist, LocalOffsets[i].Dist, Tolerance))
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
+}
+
+void URealtimeRoadCurve::Cut(double Start, double End)
+{
+	if (FindLocalOffset(Start, 0.0) == INDEX_NONE)
+	{
+		AddLocalOffset(Start);
+	}
+	if (FindLocalOffset(End, 0.0) == INDEX_NONE)
+	{
+		AddLocalOffset(End);
+	}
+	for (int32 i = 0; i < LocalOffsets.Num();)
+	{
+		if (LocalOffsets[i].Dist < Start || LocalOffsets[i].Dist > End)
+		{
+			LocalOffsets.RemoveAt(i);
+		}
+		else
+		{
+			i++;
+		}
+	}
+	for (FRoadCurveOffsetKey& Key : LocalOffsets)
+	{
+		Key.Dist -= Start;
+	}
+}
+
+void URealtimeRoadCurve::Join(URealtimeRoadCurve* Other)
+{
+	LocalOffsets.Pop();
+	const double ThisLength = Length();
+	for (int32 i = 1; i < Other->LocalOffsets.Num(); i++)
+	{
+		FRoadCurveOffsetKey Key = Other->LocalOffsets[i];
+		Key.Dist += ThisLength;
+		LocalOffsets.Add(Key);
+	}
+}

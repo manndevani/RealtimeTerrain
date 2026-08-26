@@ -1,5 +1,26 @@
 # RealtimeTerrain (Unreal Engine 5.8)
 
+## 📋 Project Status
+
+**Goal**: Port RoadBuilder plugin's boundary/lane/junction/elevation engineering into the runtime
+road system (`ARealtimeRoadSplineActor`/`ARealtimeRoadJunctionActor`), keeping it replicated and
+usable in-game. Full plan: `C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
+
+**Done**: Phase 1 foundation started — `URealtimeRoadCurve` (`Source/RealtimeTerrain/Public/RoadCurveGraph.h`),
+the cubic-Hermite offset-key math ported from RoadBuilder's `FCurveOffset`, plus `Cut`/`Join`
+ported from `URoadCurve`. Tests: `TerraDyne.RoadCurveGraph.{OffsetMath,Cut,Join}` — all passing.
+
+**Current work**: Phase 1 continues — `URealtimeRoadBoundary`/`URealtimeRoadLane` (mirroring
+RoadBuilder's `URoadBoundary`/`URoadBuilderLane`), style presets, and the replicated flat-struct
+wire format, then wiring into `ARealtimeRoadSplineActor` and `RoadMeshBuilder::BuildRoadSection`.
+
+**Remaining**: Phase 2 (junction lane routing + gore markings), Phase 3 (elevation profile +
+automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
+export). See plan file for detail on each.
+
+**Next step**: Implement `URealtimeRoadBoundary`/`URealtimeRoadLane` in `RoadCurveGraph.h`/`.cpp`.
+
+
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
 
 ---
@@ -27,7 +48,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
        │                 Runtime Chunk Framework                 │
        ├─────────────────────────────────────────────────────────┤
        │ • High-Speed FDynamicMesh3 & Dynamic Collisions         │
-       │ • Cesium DynamicPawn (WGS84, ESU Horizon, Zoom, TopView)│
+       │ • Cesium DynamicPawn (WGS84, ESU Horizon, Spd, TopView) │
        │ • Procedural Spline Roads & Junction Networks           │
        │ • Modular Spline Buildings & Dynamic-Step Pad Leveling  │
        │ • Full Undo/Redo (Ctrl+Z/Y) & Disk Persistence          │
@@ -48,9 +69,9 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **WGS84 Georeferencing**: Live Longitude, Latitude, and Height coordinate tracking.
   * **ESU Horizon Leveling**: Computes true East-South-Up orientation, eliminating horizon skew and gimbal lock across planetary distances.
   * **Ellipsoid-Aligned Flight**: `MoveUp_World` automatically follows the true geodetic surface normal.
-  * **Smooth Altitude-Scaled Zoom**: Mouse wheel zoom exponentially scales with camera altitude ($100\text{ m}$ ground level to $500\text{ km}$ orbit) — scaled from the pawn's real WGS84 height, not raw Unreal Z, so it stays correct far from the `CesiumGeoreference` origin (e.g. after flying to a Tiled Cesium Import footprint on another part of the globe), where Unreal Z alone no longer means "altitude".
   * **Top-Down Map Framing (`F` / `Home` / HUD Button)**: Instantly computes active dataset bounds and frames the entire terrain footprint.
-  * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($\text{Altitude} \times 2.5$) for effortless navigation from centimeters to regional scales, same real-WGS84-height basis as zoom.
+  * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($\text{Altitude} \times 2.5$) for effortless navigation from centimeters to regional scales — scaled from the pawn's real WGS84 height, not raw Unreal Z, so it stays correct far from the `CesiumGeoreference` origin (e.g. after flying to a Tiled Cesium Import footprint on another part of the globe), where Unreal Z alone no longer means "altitude".
+  * **Mouse Wheel Speed Control**: Scroll adjusts a flight-speed multiplier ($0.1\times$–$10\times$, exponential per notch) on top of the automatic altitude scaling above, instead of zooming/dollying the camera.
   * **Sculpt Isolation**: Left-click drag is dedicated to terrain editing and spline drawing; right-click drag orbits freely without fighting camera controls.
   * **World Bounds Checks disabled at startup**: `AWorldSettings::bEnableWorldBoundsChecks` is forced off in `UTerraDyneSubsystem::Initialize` (before any actor's `BeginPlay`). Left on — Unreal's default — it's incompatible with Cesium's origin rebasing: a rebase shifts every actor's absolute Z, so an airborne pawn can spuriously read as having fallen below `KillZ`, get destroyed, and respawn at the default `PlayerStart` — visible as the camera snapping back mid-flight to wherever it started.
 
@@ -81,6 +102,8 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Placeable on Tiled Cesium Import terrain**: TerraDyne's own chunk heightfield doesn't cover a locally-imported Cesium tile (see §9), so height sampling (`RoadMesh::SampleGroundHeight`) falls back to a $\pm 200\text{ km}$ line trace against the tile's real collision geometry whenever no TerraDyne chunk is under a station — same mechanism the ground raytrace above already used, just now able to tell TerraDyne terrain and "some other collidable ground" apart.
 * **Gentle cross-slope banking over Cesium tile terrain**: rough roads have always banked to the terrain's lateral slope; paved roads stayed deliberately flat, since a flat road reads as correctly engineered on Sandbox/GDAL-imported terrain. Over a locally-imported Cesium tile specifically — real-world terrain that can be steep enough for a rigidly flat road to look wrong — a paved road now banks gently too (`MaxPavedCrossSlopeDegrees`, default $8°$), gated on the same fallback signal above so Sandbox/GDAL paved roads are completely unaffected.
 * **Focus button**: frames the camera on the currently selected road (or road point) from the Roads panel section.
+* **Delete Point removes the whole road once nothing's left**: a road can't render below two points, so deleting the last one deletes the road itself (re-solving any junction it was pinned to) instead of silently refusing — previously there was no way to remove a two-point stub road at all.
+* **Junctions clean up after themselves**: deleting a connected road makes the junction re-solve from whatever's left; once fewer than two roads remain, the junction actor removes itself and un-pins the last survivor (if any) back to a normal, uncut road, instead of leaving stale, disconnected geometry behind. A freshly-placed junction with no roads drawn to it yet is unaffected — only one that had previously solved from real roads and then lost its connections is treated as orphaned.
 
 ### 6. Modular Spline Buildings & Dynamic Terraforming
 * Arbitrary polygon footprint definition using spline nodes.
@@ -122,6 +145,13 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * `VirtualHeightfieldMesh`
   * `CesiumForUnreal`
   * `CelestialVault` & `DaySequence`
+  * `RoadBuilder` ([Plugins/RoadBuilder-master](Plugins/RoadBuilder-master)) — third-party spline road/junction editor (street, highway, elevated, tunnel styles; OpenDrive export), retargeted from its stock UE 5.3 release to 5.8. Depends on `GeoReferencing` and `PCG` (both enabled). Local build fixes on top of the vanilla plugin, all scoped to `Plugins/RoadBuilder-master`:
+    * `Settings.h`/`Settings.cpp` renamed to `RoadBuilderSettings.h`/`.cpp` — the bare name collided with a new 5.8 engine header (`Engine/Source/Editor/WorldBookmark/.../Settings.h`) and UHT rejects duplicate header names project-wide.
+    * `URoadLane` renamed to `URoadBuilderLane` — collided with `FRoadLane` from the MetaRoad plugin at the UHT reflected-name level (case/prefix-insensitive). No serialized content referenced the old name (only `FRoadLaneStyle`, which was already asset-mapped under a distinct name).
+    * `RoadMarking.h`'s `DisallowedClasses` metadata now uses the long-form path `/Script/RoadBuilder.PolygonMarkStyle` — 5.8's UHT rejects short class names in that metadata key.
+    * `RoadBuilderEditor.Build.cs` now lists `PCG` directly (previously relied on transitively inheriting it through the `RoadBuilder` module dependency), fixing an `LNK2001` on `PCG::Private::LogNotLoadedObjectNotOnGameThread` introduced by 5.8's PCG module.
+    * `RoadBuilderSettings.cpp`'s `USettings_Global` constructor had a stray trailing `'` baked into the `DefaultGoreMarking` object path (`ChevronRegion.ChevronRegion'` instead of `ChevronRegion.ChevronRegion`) — a pre-existing upstream bug that only surfaces once the plugin's optional `Content.zip` (marking styles) is extracted into `Plugins/RoadBuilder-master/Content/`, since without that content the load was already failing for the unrelated reason of the asset not existing.
+  * The plugin's marking-style/prop content ships separately from its GitHub source as `Content.zip` (see [Plugins/RoadBuilder-master/Readme.md](Plugins/RoadBuilder-master/Readme.md)) — extract it into `Plugins/RoadBuilder-master/Content/` to get the built-in road styles' referenced assets (crosswalks, chevron/crosshatch gore markings, props, etc.).
 
 ### GDAL Third-Party Setup
 The DEM raster pipeline utilizes GDAL for geospatial raster parsing. To bootstrap vcpkg and build local GDAL binaries:
@@ -145,7 +175,7 @@ To compile the project via Unreal Build Tool (UBT):
 | :--- | :--- |
 | **Orbit / Look** | Right Mouse Button + Drag |
 | **Fly Movement** | `W` (Forward), `S` (Backward), `A` (Left), `D` (Right), `E` (Up), `Q` (Down) |
-| **Altitude Zoom** | Mouse Wheel Scroll Up / Down |
+| **Flight Speed Adjust** | Mouse Wheel Scroll Up / Down |
 | **Frame Whole Map (Top View)** | `F` or `Home` |
 | **Terrain Sculpting** | Left Mouse Button + Drag on terrain |
 | **Road Spline Authoring** | Left Click on terrain in Road mode |
