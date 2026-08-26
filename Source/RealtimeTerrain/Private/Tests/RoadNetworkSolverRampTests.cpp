@@ -237,3 +237,64 @@ bool FRoadNetworkSolverLaneConnectionMapTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+// Verifies RoadNetworkSolver::BuildLaneConnectorCentreline's endpoint positions and tangent
+// directions against an independent, hand-derived expectation for a simple 90-degree corner: a
+// vehicle approaching ArmA's cap moves TOWARD the node (opposite ArmA's own Centreline direction,
+// which points away from it by definition), then continues past ArmB's cap moving AWAY from the
+// node and on into ArmB's own body (matching ArmB's Centreline direction exactly) -- the tangent
+// convention that keeps the connector from kinking at either cap. Checked directly rather than
+// just "did it run", since a sign error here would still produce a plausible-looking curve.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadNetworkSolverLaneConnectorCentrelineTest, "TerraDyne.RoadNetwork.LaneConnectorCentreline", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadNetworkSolverLaneConnectorCentrelineTest::RunTest(const FString& Parameters)
+{
+	using namespace RoadNetworkSolver;
+
+	// ArmA heads +X away from the node; its cap (TrimDistance=200) sits at (200,0).
+	FArm ArmA;
+	ArmA.Centreline = { FVector2D(0.0, 0.0), FVector2D(1000.0, 0.0) };
+	ArmA.DrivingHalfWidth = 400.0;
+	ArmA.DrivingLaneCount = 2;
+	ArmA.TrimDistance = 200.0;
+
+	// ArmB heads +Y away from the node; its cap sits at (0,200).
+	FArm ArmB;
+	ArmB.Centreline = { FVector2D(0.0, 0.0), FVector2D(0.0, 1000.0) };
+	ArmB.DrivingHalfWidth = 400.0;
+	ArmB.DrivingLaneCount = 2;
+	ArmB.TrimDistance = 200.0;
+
+	// Lane 1 (the far lane, not the degenerate near-corner lane 0 where both arms' edges coincide
+	// right at the corner) on each side: 400*2/2=400cm lane width, so lane 1's centre sits at
+	// DrivingHalfWidth - 400*(1+0.5) = -200 from ArmA's own centreline, and mirrored for ArmB.
+	TArray<FVector2D> Centreline;
+	const bool bBuilt = BuildLaneConnectorCentreline(ArmA, 1, ArmB, 1, 8, Centreline);
+	TestTrue(TEXT("Connector should build for valid lane indices"), bBuilt);
+	if (!bBuilt) return false;
+
+	TestEqual(TEXT("Centreline has NumSegments+1 points"), Centreline.Num(), 9);
+
+	const FVector2D ExpectedStart(200.0, -200.0);
+	const FVector2D ExpectedEnd(-200.0, 200.0);
+	TestTrue(TEXT("Start position matches the hand-derived lane-1 offset on ArmA"), Centreline[0].Equals(ExpectedStart, 0.01));
+	TestTrue(TEXT("End position matches the hand-derived lane-1 offset on ArmB"), Centreline.Last().Equals(ExpectedEnd, 0.01));
+
+	// Tangent at each end, from a short finite difference against the neighbouring point.
+	const FVector2D StartTangent = (Centreline[1] - Centreline[0]).GetSafeNormal();
+	const FVector2D EndTangent = (Centreline.Last() - Centreline[Centreline.Num() - 2]).GetSafeNormal();
+	AddInfo(FString::Printf(TEXT("Start tangent: (%.3f, %.3f), end tangent: (%.3f, %.3f)"), StartTangent.X, StartTangent.Y, EndTangent.X, EndTangent.Y));
+
+	// Start: moving toward the node, i.e. -X (opposite ArmA's own +X Centreline direction).
+	TestTrue(TEXT("Start tangent points toward the node (-X), not away from it"), StartTangent.X < -0.5);
+	// End: continuing away from the node into ArmB's body, i.e. +Y (matching ArmB's own direction).
+	TestTrue(TEXT("End tangent points away from the node into ArmB (+Y)"), EndTangent.Y > 0.5);
+
+	for (const FVector2D& Point : Centreline)
+	{
+		TestFalse(TEXT("No NaN in the connector centreline"), FMath::IsNaN(Point.X) || FMath::IsNaN(Point.Y));
+	}
+
+	TestFalse(TEXT("Out-of-range lane index on ArmA fails cleanly"), BuildLaneConnectorCentreline(ArmA, 5, ArmB, 0, 8, Centreline));
+	TestFalse(TEXT("Zero segments fails cleanly"), BuildLaneConnectorCentreline(ArmA, 0, ArmB, 0, 0, Centreline));
+	return true;
+}

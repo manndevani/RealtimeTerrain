@@ -125,16 +125,24 @@ expressed as an explicit index map since this system doesn't spawn per-connector
 a marking bitmask on. Test: `TerraDyne.RoadNetwork.LaneConnectionMap` (equal-count, merge-down,
 merge-up, and zero-lane edge cases).
 
-**Remaining**: build actual per-lane connector centreline geometry from `MapLaneConnections` +
-`FindGoreApex`, feeding `RoadMeshBuilder::SweepSection` into the junction's own mesh — this is
-where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in Phase 1 but not yet consumed anywhere)
-finally becomes load-bearing. Today's gore-fill is a single raised island at the corner, not
-per-lane connectivity through it. Then Phase 3 (elevation profile + automatic flyover + pier
-instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive export). See plan file for
-detail on each.
+**Connector centreline geometry done and tested.** `RoadNetworkSolver::BuildLaneConnectorCentreline`
+builds a cubic-Hermite path between two mapped lanes across a corner, cap to cap. Verified against
+a hand-derived expectation for both endpoint *positions* and *tangent directions* (not just "did it
+run") — a sign error in the tangent convention (a vehicle approaches ArmA's cap moving toward the
+node, opposite ArmA's own Centreline direction, then continues past ArmB's cap moving away from
+the node matching ArmB's direction) was caught and corrected mid-implementation by manual
+derivation before it ever reached a test. Test: `TerraDyne.RoadNetwork.LaneConnectorCentreline`.
 
-**Next step**: A pure function computing one connector's centreline/frame list between two mapped
-lanes, tested in isolation before touching `RebuildJunction`'s mesh code.
+**Remaining**: wire this into `ARealtimeRoadJunctionActor`'s mesh-building — per corner, use
+`MapLaneConnections` on both arms' `DrivingLaneCount`, build a connector centreline per mapped lane
+pair, add height (blended the same way gore-apex height already is), convert to a
+`RoadMesh::FFrame` list via the existing `BuildFramesFromPolyline`, and sweep a flat single-lane
+section into the junction's mesh alongside the gore-fill. This is what makes "real per-lane
+connector routing" true rather than just the corner gore-fill. Then Phase 3 (elevation profile +
+automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
+export). See plan file for detail on each.
+
+**Next step**: Wire `BuildLaneConnectorCentreline` into `RebuildJunction`'s mesh lambda.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

@@ -810,4 +810,60 @@ void MapLaneConnections(int32 ArmALaneCount, int32 ArmBLaneCount, TArray<int32>&
 		}
 	}
 }
+
+bool BuildLaneConnectorCentreline(
+	const FArm& ArmA, int32 LaneIndexA,
+	const FArm& ArmB, int32 LaneIndexB,
+	int32 NumSegments,
+	TArray<FVector2D>& OutCentreline)
+{
+	OutCentreline.Reset();
+	if (ArmA.DrivingLaneCount <= 0 || ArmB.DrivingLaneCount <= 0 || NumSegments < 1)
+	{
+		return false;
+	}
+	if (LaneIndexA < 0 || LaneIndexA >= ArmA.DrivingLaneCount)
+	{
+		return false;
+	}
+	if (LaneIndexB < 0 || LaneIndexB >= ArmB.DrivingLaneCount)
+	{
+		return false;
+	}
+
+	// Lane 0 sits nearest the corner-facing edge, rising toward the far edge -- ArmA's corner-
+	// facing edge is its Left side and ArmB's is its Right side, matching SolveNode's own "arm i's
+	// left side and arm i+1's right side bound the wedge between them" convention.
+	const double LaneWidthA = (ArmA.DrivingHalfWidth * 2.0) / ArmA.DrivingLaneCount;
+	const double LateralOffsetA = ArmA.DrivingHalfWidth - LaneWidthA * (LaneIndexA + 0.5);
+	const double LaneWidthB = (ArmB.DrivingHalfWidth * 2.0) / ArmB.DrivingLaneCount;
+	const double LateralOffsetB = -ArmB.DrivingHalfWidth + LaneWidthB * (LaneIndexB + 0.5);
+
+	// A vehicle's actual direction of travel through the connector: approaching ArmA's cap means
+	// moving toward the node, the opposite of ArmA.Centreline's own direction (which, like every
+	// arm, points away from the node); continuing past ArmB's cap and on into ArmB's own body
+	// means moving away from the node, matching ArmB.Centreline's direction exactly. Matching the
+	// curve's tangent to this rather than to the arms' own Centreline directions unchanged is what
+	// keeps the connector from kinking at either cap.
+	const FVector2D PosOnA = PointAtDistance(ArmA.Centreline, ArmA.TrimDistance);
+	const FVector2D DirOnA = DirectionAtDistance(ArmA.Centreline, ArmA.TrimDistance);
+	const FVector2D StartPos = PosOnA + LeftNormal(DirOnA) * LateralOffsetA;
+	const FVector2D StartTangent = -DirOnA;
+
+	const FVector2D PosOnB = PointAtDistance(ArmB.Centreline, ArmB.TrimDistance);
+	const FVector2D DirOnB = DirectionAtDistance(ArmB.Centreline, ArmB.TrimDistance);
+	const FVector2D EndPos = PosOnB + LeftNormal(DirOnB) * LateralOffsetB;
+	const FVector2D EndTangent = DirOnB;
+
+	const double SegmentLength = FVector2D::Distance(StartPos, EndPos);
+	OutCentreline.Reserve(NumSegments + 1);
+	for (int32 k = 0; k <= NumSegments; ++k)
+	{
+		const double Alpha = static_cast<double>(k) / NumSegments;
+		const double X = FMath::CubicInterp(StartPos.X, StartTangent.X * SegmentLength, EndPos.X, EndTangent.X * SegmentLength, Alpha);
+		const double Y = FMath::CubicInterp(StartPos.Y, StartTangent.Y * SegmentLength, EndPos.Y, EndTangent.Y * SegmentLength, Alpha);
+		OutCentreline.Add(FVector2D(X, Y));
+	}
+	return true;
+}
 }

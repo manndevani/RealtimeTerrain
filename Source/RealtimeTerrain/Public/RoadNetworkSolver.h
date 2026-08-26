@@ -257,4 +257,27 @@ namespace RoadNetworkSolver
 	 * carry that mask on.
 	 */
 	void MapLaneConnections(int32 ArmALaneCount, int32 ArmBLaneCount, TArray<int32>& OutArmAToArmB);
+
+	/**
+	 * World-space centreline connecting one lane of ArmA to a lane of ArmB across a junction
+	 * corner (see MapLaneConnections for how lanes pair up) -- a cubic-Hermite blend between where
+	 * each lane's own edge is trimmed back to the corner (Arm.TrimDistance, set by SolveNode) and
+	 * that station's tangent direction, the same technique already used throughout this codebase
+	 * for smooth transitions (RoadCurveGraph's offset keys, RoadMeshBuilder's frame construction).
+	 * Reads as a smoothly curving turn lane rather than a kinked join.
+	 *
+	 * LaneIndexA/LaneIndexB are 0-based, outward from the corner (see MapLaneConnections).
+	 * Lane width within each arm is assumed uniform (DrivingHalfWidth split evenly by
+	 * DrivingLaneCount) -- an arm-level approximation, since a real per-lane width breakdown lives
+	 * on a URoadStylePreset this solver-level function has no access to; a caller with real
+	 * per-lane widths available should prefer those.
+	 *
+	 * Returns false when either lane index is out of range for its arm's DrivingLaneCount, or
+	 * NumSegments is less than 1.
+	 */
+	bool BuildLaneConnectorCentreline(
+		const FArm& ArmA, int32 LaneIndexA,
+		const FArm& ArmB, int32 LaneIndexB,
+		int32 NumSegments,
+		TArray<FVector2D>& OutCentreline);
 }
