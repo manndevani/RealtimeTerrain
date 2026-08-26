@@ -65,15 +65,25 @@ feeds it (style's own count when set, else the old implicit 2/1 for paved/rough)
 `TerraDyne.RoadNetwork.*` suite re-verified (`NWayBattery`, `PavedRoadBanksOverNonTerraDyneGround`,
 `TightCornerClampsRadius`) — no regressions from the new `FArm` field.
 
-**Remaining**: rest of Phase 2 — lane-count-aware corner trim in `SolveNode` (currently
-`DrivingLaneCount` is classified but not yet consumed by the trim math itself), then the actual
-per-lane connector routing through a junction and gore-fill geometry where a ramp/fork is
-detected. Then Phase 3 (elevation profile + automatic flyover + pier instancing), Phase 4 (spiral
-centreline smoothing), Phase 5 (OpenDrive export). See plan file for detail on each.
+**Lane-aware corner trim done.** `RoadNetworkSolver::SolveNode` now uses `IsRampConnection` on
+each pair of adjacent arms (comparing their `AngleRad` gap and `DrivingLaneCount`) and, when a
+corner classifies as a ramp, fillets it with `FNodeOptions::RampCornerRadiusMultiplier × CornerRadius`
+instead of the plain `CornerRadius` — a long, gentle merge taper instead of the same tight kerb-
+return radius an ordinary street corner gets, still clamped against available edge length like any
+other corner. Test: `TerraDyne.RoadNetwork.RampCornerGetsWiderRadius` (a shallow-angle fork with
+matching lane counts resolves to the base radius; the same angle with differing lane counts
+resolves noticeably wider). Full `TerraDyne.RoadNetwork.*` suite re-verified — no regressions.
 
-**Next step**: Use `IsRampConnection`'s classification in `ARealtimeRoadJunctionActor`'s corner-
-building to actually change the corner geometry at a detected ramp/fork (today it only trims by
-width, identically whether or not a corner is a ramp).
+**Remaining**: the big piece of Phase 2 — actual per-lane connector routing through a junction
+(not just a wider corner fillet) and gore-fill geometry where a ramp/fork is detected. This is
+where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in Phase 1 but not yet consumed anywhere)
+finally becomes load-bearing. Then Phase 3 (elevation profile + automatic flyover + pier
+instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive export). See plan file for
+detail on each.
+
+**Next step**: Design how a junction builds real per-lane connector paths (mirroring RoadBuilder's
+`BuildLink`) using the boundary/lane graph, feeding them through the existing
+`RoadMeshBuilder::SweepSection` into the junction's own mesh rather than a plain filleted slab.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

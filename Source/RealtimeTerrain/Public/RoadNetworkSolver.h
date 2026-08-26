@@ -77,6 +77,15 @@ namespace RoadNetworkSolver
 
 		/** Segments per corner arc. */
 		int32 ArcSegments = 8;
+
+		/**
+		 * Multiplies CornerRadius at a corner IsRampConnection classifies as a ramp/fork, so a
+		 * highway on/off-ramp reads as a long, gentle merge taper rather than the same tight kerb-
+		 * return radius an ordinary street corner gets. Still clamped against the edge length
+		 * actually available, same as any other corner, so it narrows rather than overshoots when
+		 * there isn't room for the full multiplied radius.
+		 */
+		double RampCornerRadiusMultiplier = 3.0;
 	};
 
 	/**

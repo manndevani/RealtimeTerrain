@@ -567,7 +567,16 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 			const double AvailableB = FMath::Max(0.0, BaseLenB - AlongRight);
 			const double MaxTangent = FMath::Min(AvailableA, AvailableB) * 0.9;
 
-			const double Radius = FMath::Min(Options.CornerRadius, MaxTangent * TanHalf);
+			// A ramp/fork reads as a long, gentle merge rather than a street-corner kerb return --
+			// same clamping against available edge length as any other corner, just a larger
+			// starting radius to clamp from.
+			const double AngleGap = FMath::Abs(FMath::FindDeltaAngleRadians(Arms[i].AngleRad, Arms[Next].AngleRad));
+			const bool bIsRampCorner = IsRampConnection(AngleGap, Arms[i].DrivingLaneCount, Arms[Next].DrivingLaneCount);
+			const double BaseCornerRadius = bIsRampCorner
+				? Options.CornerRadius * Options.RampCornerRadiusMultiplier
+				: Options.CornerRadius;
+
+			const double Radius = FMath::Min(BaseCornerRadius, MaxTangent * TanHalf);
 			Solution.CornerRadii[i] = Radius;
 			const double TangentDistance = Radius / TanHalf;
 
