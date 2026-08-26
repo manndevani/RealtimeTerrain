@@ -265,6 +265,19 @@ bool ARealtimeRoadJunctionActor::GetLegConnectionTransform(int32 LegIndex, FTran
 // Terrain
 //--------------------------------------------------------------------------------------------
 
+int32 ARealtimeRoadJunctionActor::GetRampCornerCount() const
+{
+	int32 Count = 0;
+	for (const bool bIsRamp : SolvedIsRampCorner)
+	{
+		if (bIsRamp)
+		{
+			Count++;
+		}
+	}
+	return Count;
+}
+
 bool ARealtimeRoadJunctionActor::SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const
 {
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ);
@@ -546,6 +559,8 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 	SolvedBoundary.Reset();
 	SolvedRoadsideChains.Reset();
 	SolvedCornerRadii.Reset();
+	SolvedIsRampCorner.Reset();
+	SolvedGoreApex.Reset();
 
 	UWorld* World = GetWorld();
 	if (!World) return false;
@@ -744,6 +759,34 @@ bool ARealtimeRoadJunctionActor::SolveIntersection()
 	SolvedCornerRadii = Solution.CornerRadii;
 	SolvedLegHeights = ArmHeights;
 
+	SolvedIsRampCorner = Solution.IsRampCorner;
+	SolvedGoreApex.Init(FVector::ZeroVector, Arms.Num());
+	for (int32 i = 0; i < Arms.Num(); ++i)
+	{
+		if (!SolvedIsRampCorner.IsValidIndex(i) || !SolvedIsRampCorner[i])
+		{
+			continue;
+		}
+
+		const int32 Next = (i + 1) % Arms.Num();
+		FVector2D ApexXY;
+		if (RoadNetworkSolver::FindGoreApex(Arms[i], Arms[Next], ApexXY))
+		{
+			// Blended, not either arm's own height outright: the gore sits between the two roads,
+			// not clearly on one or the other, the same reasoning HeightAt already applies to every
+			// other boundary vertex around a corner.
+			const float ApexHeight = FMath::Lerp(ArmHeights[i], ArmHeights[Next], 0.5f);
+			SolvedGoreApex[i] = FVector(ApexXY.X, ApexXY.Y, ApexHeight);
+		}
+		else
+		{
+			// The two arms' driving edges diverge outright rather than converge -- an ordinary
+			// non-ramp-shaped fork with no real gore point, even though the angle/lane-count test
+			// alone said "ramp". Treat it as not-a-gore rather than fabricating a fill.
+			SolvedIsRampCorner[i] = false;
+		}
+	}
+
 	// Rebuild Legs from the solved arms. Roads still pin themselves to leg sockets, so the legs
 	// have to agree with what the solver decided rather than with whatever was authored before.
 	JunctionType = ERoadJunctionType::Custom_N_Way;
@@ -925,6 +968,25 @@ void ARealtimeRoadJunctionActor::RebuildJunction()
 			Mesh, Boundary, Thickness,
 			RoadMesh::Slots::Surface, RoadMesh::Slots::Flank,
 			WorldToLocal, UVScale);
+
+		// Gore islands at ramp/fork corners. Independent of whether this junction has curbs or
+		// footpaths configured at all -- a gore reads as a raised island regardless -- and only
+		// meaningful on the solved-from-real-roads path: the authored-Legs fallback below has no
+		// ramp classification of its own, and SolvedIsRampCorner/SolvedGoreApex would otherwise be
+		// stale leftovers from whatever this junction last solved successfully from real roads.
+		if (bHaveGeometry)
+		{
+			for (int32 ChainIndex = 0; ChainIndex < CornerChains.Num(); ++ChainIndex)
+			{
+				if (!SolvedIsRampCorner.IsValidIndex(ChainIndex) || !SolvedIsRampCorner[ChainIndex])
+				{
+					continue;
+				}
+				RoadMesh::AppendGoreFill(
+					Mesh, SolvedGoreApex[ChainIndex], CornerChains[ChainIndex],
+					RoadMesh::Slots::Curb, WorldToLocal, UVScale);
+			}
+		}
 
 		if (RequestedBand <= UE_KINDA_SMALL_NUMBER)
 		{

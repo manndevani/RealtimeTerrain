@@ -96,22 +96,36 @@ chain; both produced a clean `(0, 0, 1)` normal on every triangle. Test:
 `TerraDyne.RoadMeshBuilder.GoreFillAlwaysFacesUp`. Full `TerraDyne.RoadMesh*` suite re-verified (6
 tests) — no regressions.
 
-**Remaining**: wire `AppendGoreFill` into `ARealtimeRoadJunctionActor::RebuildJunction` — at each
-`IsRampConnection`-flagged corner (needs `SolveIntersection`/`FNodeSolution` to expose which
-`RoadsideChains`/`CornerRadii` entries are ramp corners, since that's currently computed internally
-but not surfaced), call `FindGoreApex` and append the fill using that corner's own `CornerChains`
-entry, with a height interpolated the same way `HeightAt` already blends other boundary vertices.
-Known scope limit carried from the corner-radius work: only corners that hit `SolveNode`'s bounded-
-intersect path get ramp treatment today: very shallow angles whose true mitre point falls beyond
-either arm's own length take the separate bevel path instead, which isn't ramp-aware yet.
-Then the real per-lane connector routing through a junction (mirroring RoadBuilder's `BuildLink`)
-is the big remaining piece — where `URealtimeRoadBoundary`/`URealtimeRoadLane` (built in Phase 1
-but not yet consumed anywhere) finally becomes load-bearing. Then Phase 3 (elevation profile +
-automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
-export). See plan file for detail on each.
+**Phase 2's gore-fill wiring is complete and verified end-to-end.** `RoadNetworkSolver::FNodeSolution`
+now exposes `IsRampCorner` (parallel to `RoadsideChains`/`CornerRadii`), classified consistently on
+*both* of `SolveNode`'s corner paths — the arc-fillet path and the separate "bevel" path used when
+a corner's true mitre point falls beyond either arm's sampled length. That second path was
+initially missed and is, in practice, the *common* case for a realistic ramp: generous curb+
+footpath width is exactly what pushes the mitre point out of range. Caught by the integration test
+below, not assumed — see `TerraDyne.RoadNetwork.BevelPathStillClassifiesRamp`.
+`ARealtimeRoadJunctionActor` now carries `SolvedIsRampCorner`/`SolvedGoreApex` (populated in
+`SolveIntersection` via `FindGoreApex`, height-blended like every other boundary vertex) and calls
+`RoadMesh::AppendGoreFill` in `RebuildJunction`'s mesh lambda for each ramp corner on the solved-
+from-real-roads path. New public `GetRampCornerCount()` accessor for debug/UI use.
 
-**Next step**: Expose ramp-corner classification from `SolveIntersection` and wire `AppendGoreFill`
-into `RebuildJunction`'s mesh-building lambda.
+Verified at three levels: isolated math (`FindGoreApex`, `IsRampConnection`), isolated mesh winding
+(`AppendGoreFill` against real `FDynamicMesh3::GetTriNormal` output), and a full end-to-end
+integration test spawning three real road actors (a 2-lane through-road plus a 1-lane ramp at 20°
+— the actual highway on/off-ramp shape) and a real junction actor in a test world:
+`TerraDyne.RoadJunctionActor.RampTopologyDetectsGoreCorner` confirms the junction genuinely detects
+the ramp and produces a non-empty mesh. Full regression across all touched suites — 16 tests, 0
+regressions.
+
+**Remaining**: the real per-lane connector routing through a junction (mirroring RoadBuilder's
+`BuildLink`) is the big remaining piece of Phase 2 — where `URealtimeRoadBoundary`/`URealtimeRoadLane`
+(built in Phase 1 but not yet consumed anywhere) finally becomes load-bearing; today's gore-fill is
+a single raised island at the corner, not per-lane connectivity through it. Then Phase 3 (elevation
+profile + automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5
+(OpenDrive export). See plan file for detail on each.
+
+**Next step**: Design the per-lane connector routing (Phase 2's `BuildLink` equivalent) — for each
+junction corner, build a lane-to-lane connector path per driving lane crossing it, feeding
+`RoadMeshBuilder::SweepSection` directly into the junction's own mesh.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

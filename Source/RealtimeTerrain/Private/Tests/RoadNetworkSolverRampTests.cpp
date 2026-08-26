@@ -142,3 +142,53 @@ bool FRoadNetworkSolverGoreApexTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Narrower driving width converges nearer the node than a wider one"), NarrowDistance < WideDistance);
 	return true;
 }
+
+// Regression test for a real gap this exact scenario surfaced end-to-end
+// (TerraDyne.RoadJunctionActor.RampTopologyDetectsGoreCorner): a corner whose true mitre point
+// falls beyond either arm's own sampled length takes SolveNode's separate bevel path rather than
+// the arc-fillet one, and that path was not classifying ramps at all -- so a realistic ramp with
+// generous curb+footpath width (which is exactly what pushes the mitre point out of range) was
+// silently invisible to ramp/gore logic, not an exotic edge case. HalfWidth here (585) matches
+// CrossSectionSettings' real defaults (400 base + 25 curb + 160 footpath), and the arm length
+// (3000) matches what the integration test actually used.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadNetworkSolverBevelPathRampTest, "TerraDyne.RoadNetwork.BevelPathStillClassifiesRamp", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadNetworkSolverBevelPathRampTest::RunTest(const FString& Parameters)
+{
+	using namespace RoadNetworkSolver;
+
+	auto BuildArms = [](int32 LaneCountA, int32 LaneCountB) -> TArray<FArm>
+	{
+		FArm ArmA;
+		ArmA.Centreline = { FVector2D(0.0, 0.0), FVector2D(3000.0, 0.0) };
+		ArmA.HalfWidth = 585.0;
+		ArmA.DrivingLaneCount = LaneCountA;
+
+		const double AngleRad = FMath::DegreesToRadians(20.0);
+		FArm ArmB;
+		ArmB.Centreline = { FVector2D(0.0, 0.0), FVector2D(3000.0 * FMath::Cos(AngleRad), 3000.0 * FMath::Sin(AngleRad)) };
+		ArmB.HalfWidth = 585.0;
+		ArmB.DrivingLaneCount = LaneCountB;
+
+		return { ArmA, ArmB };
+	};
+
+	FNodeOptions Options;
+	Options.CornerRadius = 300.0;
+
+	TArray<FArm> RampArms = BuildArms(2, 1);
+	const FNodeSolution RampSolution = SolveNode(FVector2D::ZeroVector, RampArms, Options);
+	TestTrue(TEXT("Ramp solution should be valid"), RampSolution.bValid);
+	if (!RampSolution.bValid) return false;
+
+	// Confirms this really did take the bevel path (radius forced to exactly 0), not the arc path
+	// -- otherwise this test would not actually be exercising the branch it's named for.
+	TestEqual(TEXT("Corner resolved via the bevel path (radius 0), confirming this exercises that branch"), RampSolution.CornerRadii[0], 0.0, 0.001);
+	TestTrue(TEXT("Bevel-path corner is still classified as a ramp"), RampSolution.IsRampCorner[0]);
+
+	TArray<FArm> NonRampArms = BuildArms(2, 2);
+	const FNodeSolution NonRampSolution = SolveNode(FVector2D::ZeroVector, NonRampArms, Options);
+	TestTrue(TEXT("Non-ramp solution should be valid"), NonRampSolution.bValid);
+	if (!NonRampSolution.bValid) return false;
+	TestFalse(TEXT("Bevel-path corner with matching lane counts is not classified as a ramp"), NonRampSolution.IsRampCorner[0]);
+	return true;
+}

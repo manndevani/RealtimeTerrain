@@ -216,6 +216,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Junction|Realtime")
 	float GetLegWidth(int32 LegIndex) const;
 
+	/**
+	 * How many of this junction's corners RoadNetworkSolver classified as a ramp/fork on the last
+	 * successful solve-from-nearby-roads (see RoadNetworkSolver::IsRampConnection) -- e.g. for a
+	 * debug overlay, or to decide whether a UI should offer gore-related options for this junction.
+	 * Always 0 on the authored-Legs fallback path, which has no ramp classification of its own.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Junction|Realtime")
+	int32 GetRampCornerCount() const;
+
 protected:
 	void ApplyMaterials();
 
@@ -269,9 +278,27 @@ private:
 	/** Parallel to SolvedRoadsideChains: the fillet radius resolved at each corner. See RoadNetworkSolver::FNodeSolution::CornerRadii. */
 	TArray<double> SolvedCornerRadii;
 
+	/** Parallel to SolvedRoadsideChains: whether RoadNetworkSolver classified this corner as a ramp/fork. */
+	TArray<bool> SolvedIsRampCorner;
+
+	/**
+	 * Parallel to SolvedRoadsideChains: the gore-fill apex (RoadNetworkSolver::FindGoreApex), world
+	 * space including height, at corners SolvedIsRampCorner flags true. Undefined elsewhere.
+	 */
+	TArray<FVector> SolvedGoreApex;
+
 	/** Surface height at each leg's socket, so a connecting road pins to its own arm, not a plane. */
 	TArray<float> SolvedLegHeights;
 
 	/** Guards the road-rebuild cycle described on IsAnySolveInProgress. */
 	static bool bAnySolveInProgress;
+
+	/**
+	 * Set by SolveIntersection specifically when it failed because fewer than two roads are left
+	 * connected -- as opposed to failing for an unrelated reason (no world yet, the re-entrancy
+	 * guard, an invalid solver result on 2+ arms) -- so RebuildJunction can tell "this junction is
+	 * now orphaned, remove it" apart from every other reason a solve might not have produced
+	 * geometry this call. Reset to false at the start of every SolveIntersection call.
+	 */
+	bool bLastSolveWasOrphaned = false;
 };

@@ -142,6 +142,15 @@ namespace RoadNetworkSolver
 		 * for its own corners, rather than assuming the solver's output can carry any band width.
 		 */
 		TArray<double> CornerRadii;
+
+		/**
+		 * Per corner, parallel to RoadsideChains and CornerRadii: whether IsRampConnection
+		 * classified this corner as a ramp/fork while resolving its fillet radius. Exposed so a
+		 * caller can add gore-fill geometry (see RoadMesh::AppendGoreFill) at exactly the corners
+		 * that got the wider ramp radius above, without having to independently re-derive the same
+		 * classification from the (by-then-reordered) source arms.
+		 */
+		TArray<bool> IsRampCorner;
 	};
 
 	/**

@@ -482,6 +482,7 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 	// it -- an unconstrained corner (the straight-through gap of a T-junction, say) has no fillet
 	// to be tight against, so it should never be what narrows a caller's band width.
 	Solution.CornerRadii.Init(TNumericLimits<double>::Max(), NumArms);
+	Solution.IsRampCorner.Init(false, NumArms);
 
 	// Tracked per arm, not per corner: an arm is constrained if either of its two neighbours
 	// collided with it.
@@ -531,6 +532,14 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 			CornerArcs[i] = { BevelA, BevelB };
 			Solution.CornerRadii[i] = 0.0;
 
+			// Ramp classification is about the angle and lane counts, not which of the two corner
+			// treatments above resolved it -- a shallow ramp/fork is exactly the shape most likely
+			// to need the bevel fallback in the first place (generous curb+footpath width pushes
+			// the true mitre point beyond a realistically-sampled arm's own length), so leaving this
+			// branch unclassified would silently miss the common case rather than an edge case.
+			const double BevelAngleGap = FMath::Abs(FMath::FindDeltaAngleRadians(Arms[i].AngleRad, Arms[Next].AngleRad));
+			Solution.IsRampCorner[i] = IsRampConnection(BevelAngleGap, Arms[i].DrivingLaneCount, Arms[Next].DrivingLaneCount);
+
 			Arms[i].TrimDistance = FMath::Max(
 				Arms[i].TrimDistance, ProjectOntoPolyline(Arms[i].Centreline, BevelA));
 			Arms[Next].TrimDistance = FMath::Max(
@@ -578,6 +587,7 @@ FNodeSolution SolveNode(const FVector2D& NodeLocation, TArray<FArm>& Arms, const
 
 			const double Radius = FMath::Min(BaseCornerRadius, MaxTangent * TanHalf);
 			Solution.CornerRadii[i] = Radius;
+			Solution.IsRampCorner[i] = bIsRampCorner;
 			const double TangentDistance = Radius / TanHalf;
 
 			if (Radius > WeldTolerance && TangentDistance > WeldTolerance)
