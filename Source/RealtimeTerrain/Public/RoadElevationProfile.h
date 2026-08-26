@@ -18,7 +18,7 @@
  * "Offset" reads wrong for a height channel and this session's own established pattern already
  * ported RoadBuilder's boundary/lane offset keys under their own name for the same reason.
  */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FRoadHeightKey
 {
 	GENERATED_BODY()

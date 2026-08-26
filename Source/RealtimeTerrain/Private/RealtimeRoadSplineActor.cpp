@@ -70,6 +70,7 @@ void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 	DOREPLIFETIME(ARealtimeRoadSplineActor, CrossSectionSettings);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ScatterSettings);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, StylePreset);
+	DOREPLIFETIME(ARealtimeRoadSplineActor, HeightKeys);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ReplicatedWorldPoints);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, JunctionCuts);
 }
@@ -696,11 +697,74 @@ bool ARealtimeRoadSplineActor::BuildConformedCentreline(
 		{
 			Point.Z += TerrainSurfaceOffset;
 		}
+
+		ApplyElevationProfile(OutPoints, OutDistances);
 	}
 
 	// Junction pinning happens per run in BuildRuns, after the stations have been cut, so that
 	// smoothing cannot drag a socket-pinned end off its socket.
 	return OutPoints.Num() >= 2;
+}
+
+void ARealtimeRoadSplineActor::ApplyElevationProfile(TArray<FVector>& Points, const TArray<double>& Distances) const
+{
+	TArray<FRoadHeightKey> EffectiveKeys = HeightKeys;
+
+	if (bAutoFlyover)
+	{
+		TArray<double> Heights;
+		Heights.Reserve(Points.Num());
+		for (const FVector& Point : Points)
+		{
+			Heights.Add(Point.Z);
+		}
+
+		TArray<FRoadHeightKey> Bridges;
+		RoadElevationProfile::DetectFlyoverBridges(
+			Distances, Heights,
+			FMath::DegreesToRadians(static_cast<double>(MaxComfortableGradeDegrees)),
+			MinFlyoverRunLength,
+			Bridges);
+
+		// A user-authored key always wins over an auto bridge that would cover the same stretch --
+		// the designer's own intent for that stretch, not the automatic heuristic's guess.
+		for (int32 i = 0; i + 1 < Bridges.Num(); i += 2)
+		{
+			const double BridgeStart = Bridges[i].Dist;
+			const double BridgeEnd = Bridges[i + 1].Dist;
+			bool bOverlapsUserKey = false;
+			for (const FRoadHeightKey& UserKey : HeightKeys)
+			{
+				if (UserKey.Dist >= BridgeStart && UserKey.Dist <= BridgeEnd)
+				{
+					bOverlapsUserKey = true;
+					break;
+				}
+			}
+			if (!bOverlapsUserKey)
+			{
+				EffectiveKeys.Add(Bridges[i]);
+				EffectiveKeys.Add(Bridges[i + 1]);
+			}
+		}
+	}
+
+	if (EffectiveKeys.Num() < 2)
+	{
+		return;
+	}
+	EffectiveKeys.Sort();
+
+	for (int32 i = 0; i < Points.Num(); ++i)
+	{
+		const double Distance = Distances[i];
+		if (Distance < EffectiveKeys[0].Dist || Distance > EffectiveKeys.Last().Dist)
+		{
+			// Outside every authored/bridged stretch -- leave the terrain-conforming height alone.
+			continue;
+		}
+		Points[i].Z = RoadElevationProfile::EvaluateHeight(EffectiveKeys, Distance);
+	}
 }
 
 void ARealtimeRoadSplineActor::ComputeCrossSlopeRoll(const TArray<RoadMesh::FFrame>& Frames, TArray<double>& OutRoll) const

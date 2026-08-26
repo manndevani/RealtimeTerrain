@@ -49,17 +49,27 @@ this section tracks current state only, not a running journal.
   own height keys are always hand-authored. Test: `TerraDyne.RoadElevationProfile.AutoFlyoverDetection`
   (sawtooth stretch correctly bridged at its exact boundaries; flat sequence produces no bridge;
   a too-short steep step is gated out by the minimum-run-length check).
-- Remaining: authored elevation channel on `ARealtimeRoadSplineActor` (optional, backward-
-  compatible like `StylePreset`), wiring `DetectFlyoverBridges` into `BuildConformedCentreline`
-  (manual keys always win over an auto bridge covering the same stretch), pier instancing via the
-  existing `ScatterHISMComponent`.
+- `ARealtimeRoadSplineActor`: `HeightKeys` (replicated, optional, empty by default — a road with
+  keys stops following terrain over that stretch), `bAutoFlyover`/`MaxComfortableGradeDegrees`/
+  `MinFlyoverRunLength`, and `ApplyElevationProfile(Points, Distances)` — merges auto-detected
+  bridges with any authored keys (an authored key anywhere inside an auto bridge's span suppresses
+  that whole bridge pair, full stop) and overwrites `Points[i].Z` in place. Wired into
+  `BuildConformedCentreline` right after terrain conforming/smoothing.
+  `FRoadHeightKey`'s `USTRUCT` needed the `BlueprintType` specifier (not just `USTRUCT()`) since
+  `HeightKeys` is `BlueprintReadWrite` — UHT rejects a `BlueprintReadWrite` `TArray` of a non-
+  `BlueprintType` struct at compile time.
+  Test: `TerraDyne.RoadSplineActor.ApplyElevationProfile` (sawtooth auto-bridges to 454.40 at
+  station 10; two bracketing user keys override the same stretch to exactly 5000.0).
+- Remaining: pier instancing via the existing `ScatterHISMComponent`/`FRoadScatterSettings`.
+- **Full regression sweep after this increment: 29 tests, 0 regressions.**
 ### Phase 4 — NOT STARTED (spiral/clothoid centreline smoothing)
 ### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
 
-**Next step**: Start Phase 3 — port `FHeightPoint`/`FHeightSegment`'s cubic-Hermite height-profile
-math from RoadBuilder's `RoadActor.h` as a small, pure, testable module, then hook automatic
-flyover detection into `BuildConformedCentreline` and pier instancing into the existing
-`ScatterHISMComponent`. See plan file for full detail.
+**Next step**: Finish Phase 3 — pier instancing wherever post-elevation-profile road height
+meaningfully exceeds raw sampled terrain height (reuse `ScatterHISMComponent`; needs the raw
+terrain sample retained alongside the final road height, since `ApplyElevationProfile` currently
+overwrites it in place). Then Phase 4 (port `Spiral.h` Euler-spiral math for settle-pass centreline
+smoothing) and Phase 5 (OpenDrive/.xodr export). See plan file for full detail.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

@@ -112,4 +112,90 @@ bool FRoadSplineActorDrivingLaneCountTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Styled road's driving half-width excludes the sidewalk lane"), Styled->GetDrivingSurfaceHalfWidth(), 525.0, 0.01);
 	return true;
 }
+
+// Verifies ApplyElevationProfile end-to-end on a real actor: a synthetic sawtooth height sequence
+// (the same shape TerraDyne.RoadElevationProfile.AutoFlyoverDetection already verified the
+// detector against, run through the actual actor API this time) gets smoothed into an S-curve
+// bridge rather than left following every zigzag, and a manually-authored HeightKey overriding
+// the same stretch takes priority over the automatic one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadSplineActorElevationProfileTest, "TerraDyne.RoadSplineActor.ApplyElevationProfile", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadSplineActorElevationProfileTest::RunTest(const FString& Parameters)
+{
+	auto BuildSawtoothSequence = [](TArray<FVector>& OutPoints, TArray<double>& OutDistances)
+	{
+		OutPoints.Reset();
+		OutDistances.Reset();
+		for (int32 i = 0; i <= 20; ++i)
+		{
+			const double Dist = i * 100.0;
+			double Height = 0.0;
+			if (i > 4 && i <= 15)
+			{
+				Height = (i % 2 == 1) ? 800.0 : 0.0;
+			}
+			else if (i > 15)
+			{
+				Height = 800.0;
+			}
+			OutPoints.Add(FVector(Dist, 0.0, Height));
+			OutDistances.Add(Dist);
+		}
+	};
+
+	{
+		ARealtimeRoadSplineActor* Road = NewObject<ARealtimeRoadSplineActor>();
+		Road->bAutoFlyover = true;
+		Road->MaxComfortableGradeDegrees = 45.0f;
+		Road->MinFlyoverRunLength = 500.0f;
+
+		TArray<FVector> Points;
+		TArray<double> Distances;
+		BuildSawtoothSequence(Points, Distances);
+		Road->ApplyElevationProfile(Points, Distances);
+
+		// Station 10 (dist 1000) sits deep in the sawtooth, at the pre-override height of 0 or 800
+		// depending on parity -- after bridging, it should read as an intermediate S-curve value,
+		// not still be pinned to one of the sawtooth's own extreme values.
+		const double BridgedHeight = Points[10].Z;
+		AddInfo(FString::Printf(TEXT("Bridged height at station 10 (dist 1000): %.2f"), BridgedHeight));
+		TestTrue(TEXT("Auto-flyover smooths the sawtooth: station 10 no longer sits at a raw sawtooth extreme"), BridgedHeight > 50.0 && BridgedHeight < 750.0);
+
+		// Outside the bridged stretch (station 0, well before it) should be untouched.
+		TestEqual(TEXT("Station outside the bridge keeps its original height"), Points[0].Z, 0.0, 0.01);
+	}
+	{
+		// Same sawtooth, but with two manually-authored keys bracketing station 10 (dist 800 and
+		// 1200, both inside the [400,1500] stretch the automatic detector would otherwise bridge).
+		// A user key anywhere inside an auto-detected run suppresses that WHOLE automatic bridge
+		// pair (the designer's own intent takes over for that stretch, full stop, rather than
+		// trying to splice partial automatic and manual coverage together) -- so the two user keys
+		// need to bracket what they actually want smoothed themselves.
+		ARealtimeRoadSplineActor* Road = NewObject<ARealtimeRoadSplineActor>();
+		Road->bAutoFlyover = true;
+		Road->MaxComfortableGradeDegrees = 45.0f;
+		Road->MinFlyoverRunLength = 500.0f;
+		FRoadHeightKey UserKeyA;
+		UserKeyA.Dist = 800.0;
+		UserKeyA.Height = 5000.0; // deliberately far from anything the sawtooth or a bridge would produce.
+		UserKeyA.Slope = 0.0;
+		FRoadHeightKey UserKeyB;
+		UserKeyB.Dist = 1200.0;
+		UserKeyB.Height = 5000.0;
+		UserKeyB.Slope = 0.0;
+		Road->HeightKeys.Add(UserKeyA);
+		Road->HeightKeys.Add(UserKeyB);
+
+		TArray<FVector> Points;
+		TArray<double> Distances;
+		BuildSawtoothSequence(Points, Distances);
+		Road->ApplyElevationProfile(Points, Distances);
+
+		// Station 10 (dist 1000) sits between the two user keys, both at height 5000 -- the
+		// automatic bridge for this stretch should be suppressed entirely (not partially merged),
+		// leaving only the user's own flat 5000 profile in effect there.
+		AddInfo(FString::Printf(TEXT("Height at station 10 with a bracketing user override present: %.2f"), Points[10].Z));
+		TestEqual(TEXT("A manually-authored bracket overrides the automatic bridge, not just nudges it"), Points[10].Z, 5000.0, 0.01);
+	}
+	return true;
+}
 #endif // WITH_EDITOR

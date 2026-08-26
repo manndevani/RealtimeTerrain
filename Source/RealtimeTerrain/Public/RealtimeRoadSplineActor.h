@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Engine/TimerHandle.h"
 #include "RoadTypes.h"
+#include "RoadElevationProfile.h"
 #include "RealtimeRoadSplineActor.generated.h"
 
 class USplineComponent;
@@ -79,6 +80,36 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Style")
 	TObjectPtr<URoadStylePreset> StylePreset;
+
+	//--- ELEVATION PROFILE ---
+
+	/**
+	 * Authored height keys (see RoadElevationProfile.h), independent of terrain sampling. Empty
+	 * by default, leaving every existing road's terrain-conforming behavior unchanged. A road with
+	 * keys covering a stretch stops sampling terrain there and follows this profile instead --
+	 * the entire mechanism behind an intentionally elevated road (a bridge, an overpass).
+	 *
+	 * Merged with any auto-detected flyover bridges (see bAutoFlyover) into one effective profile
+	 * at rebuild time; an authored key always wins over an auto bridge covering the same stretch.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Elevation")
+	TArray<FRoadHeightKey> HeightKeys;
+
+	/**
+	 * Automatically bridge over stretches too steep/rough for a comfortable road grade instead of
+	 * conforming to every bump (RoadElevationProfile::DetectFlyoverBridges). Only engages where
+	 * HeightKeys doesn't already cover the stretch.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Elevation")
+	bool bAutoFlyover = true;
+
+	/** Local grade beyond which a stretch is "too steep" and a candidate for auto-flyover bridging. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Elevation", meta = (EditCondition = "bAutoFlyover", ClampMin = "1.0", ClampMax = "80.0"))
+	float MaxComfortableGradeDegrees = 20.0f;
+
+	/** Minimum length a too-steep run has to span before it's worth bridging rather than just following it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Elevation", meta = (EditCondition = "bAutoFlyover", ClampMin = "100.0"))
+	float MinFlyoverRunLength = 2000.0f;
 
 	//--- TERRAIN CONFORMING ---
 
@@ -324,6 +355,18 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	bool SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const;
+
+	/**
+	 * Overrides Points' heights, in place, wherever HeightKeys or an auto-detected flyover bridge
+	 * (see bAutoFlyover) covers that stretch -- called from BuildConformedCentreline after terrain-
+	 * conforming, smoothing and TerrainSurfaceOffset already ran, so a bridge's own boundary
+	 * heights are taken from the same final values the rest of the road already settled on,
+	 * splicing in with no visible seam. Public (not just an internal step) since it's a pure
+	 * transform with no world/terrain dependency of its own -- useful standalone for previewing
+	 * what the effective elevation profile does to an arbitrary height sequence.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road|Elevation")
+	void ApplyElevationProfile(UPARAM(ref) TArray<FVector>& Points, const TArray<double>& Distances) const;
 
 	/**
 	 * Driving lanes this road carries, for junction ramp/fork classification
