@@ -34,8 +34,32 @@ struct FRoadCurveOffsetKey
 namespace RoadCurveGraph
 {
 	/**
+	 * Largest index i such that Elements[i].Dist <= Dist (binary search over a Dist-sorted array).
+	 * Ported from RoadBuilder's GetElementIndex (RoadCurve.h), generalised to any element type
+	 * with a public double Dist -- RoadBuilder itself reuses the identical template for its offset
+	 * keys, lane segments and boundary segments alike.
+	 */
+	template <typename ElementType>
+	int32 FindElementIndex(const TArray<ElementType>& Elements, double Dist)
+	{
+		int32 Length = Elements.Num();
+		int32 Middle = Length;
+		int32 Offset = 0;
+		while (Middle > 0)
+		{
+			Middle = Length / 2;
+			if (Elements[Offset + Middle].Dist <= Dist)
+			{
+				Offset += Middle;
+			}
+			Length -= Middle;
+		}
+		return Offset;
+	}
+
+	/**
 	 * Index i such that Keys[i].Dist <= Dist, clamped so i+1 is always a valid bracketing key.
-	 * Ported from RoadBuilder's GetElementIndex/GetPointIndex (RoadCurve.h).
+	 * Ported from RoadBuilder's GetPointIndex (RoadCurve.h), built on FindElementIndex above.
 	 */
 	REALTIMETERRAIN_API int32 FindBracketIndex(const TArray<FRoadCurveOffsetKey>& Keys, double Dist);
 
@@ -119,4 +143,111 @@ public:
 	 * RecomputeEffectiveOffsets() afterward.
 	 */
 	void Join(URealtimeRoadCurve* Other);
+};
+
+/** Mirrors RoadBuilder's ELaneType (LaneLane.h). */
+UENUM()
+enum class ERealtimeLaneType : uint8
+{
+	None,
+	Driving,
+	Shoulder,
+	Sidewalk,
+	Median,
+	Collapsed,
+};
+
+/** One stretch of a lane's length carrying a given lane type. Mirrors RoadBuilder's FLaneSegment. */
+USTRUCT()
+struct FRealtimeLaneSegment
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Segment)
+	double Dist = 0.0;
+
+	UPROPERTY(EditAnywhere, Category = Segment)
+	ERealtimeLaneType LaneType = ERealtimeLaneType::Driving;
+};
+
+/** One stretch of a boundary's length carrying a marking. Mirrors RoadBuilder's FBoundarySegment. */
+USTRUCT()
+struct FRealtimeBoundarySegment
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Segment)
+	double Dist = 0.0;
+
+	/** True for a solid line (e.g. no-passing, outer edge); false for dashed/none. */
+	UPROPERTY(EditAnywhere, Category = Segment)
+	bool bSolidMarking = false;
+};
+
+class URealtimeRoadBoundary;
+
+/**
+ * Sits between two boundaries and describes what kind of lane occupies that gap along its
+ * length. Mirrors RoadBuilder's URoadBuilderLane (RoadLane.h). A lane's own inherited
+ * Offsets/LocalOffsets (from URealtimeRoadCurve) go unused, matching RoadBuilder: a lane's actual
+ * shape comes from sweeping between LeftBoundary and RightBoundary, not from any curve data of
+ * its own -- which is also why, unlike URealtimeRoadBoundary, Cut/Join here only touch Segments.
+ */
+UCLASS()
+class REALTIMETERRAIN_API URealtimeRoadLane : public URealtimeRoadCurve
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = Lane)
+	TArray<FRealtimeLaneSegment> Segments;
+
+	UPROPERTY()
+	TObjectPtr<URealtimeRoadBoundary> LeftBoundary;
+
+	UPROPERTY()
+	TObjectPtr<URealtimeRoadBoundary> RightBoundary;
+
+	double SegmentStart(int32 Index) const { return Segments[Index].Dist; }
+	double SegmentEnd(int32 Index) const { return Index + 1 < Segments.Num() ? Segments[Index + 1].Dist : Length(); }
+
+	/** Index of the segment covering Dist. Ported from URoadBuilderLane::GetSegment(double). */
+	int32 GetSegmentAt(double Dist) const;
+
+	/** Appends Lane's segments after this lane's own end. Ported from URoadBuilderLane::Join. */
+	void Join(URealtimeRoadLane* Lane);
+
+	/** Trims Segments to [Start, End] and re-bases distances. Ported from URoadBuilderLane::Cut. */
+	void Cut(double Start, double End);
+};
+
+/**
+ * A named edge -- a lane divider, a road edge, a sidewalk edge -- independently curvable via its
+ * inherited offset profile. Mirrors RoadBuilder's URoadBoundary (RoadBoundary.h). Unlike a lane, a
+ * boundary's own curve data is real and load-bearing (it is what BuildRoadSection samples to place
+ * each lane's edge), so Cut/Join here trim/join both the curve (Offsets/LocalOffsets) and Segments.
+ */
+UCLASS()
+class REALTIMETERRAIN_API URealtimeRoadBoundary : public URealtimeRoadCurve
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = Boundary)
+	TArray<FRealtimeBoundarySegment> Segments;
+
+	UPROPERTY()
+	TObjectPtr<URealtimeRoadLane> LeftLane;
+
+	UPROPERTY()
+	TObjectPtr<URealtimeRoadLane> RightLane;
+
+	double SegmentStart(int32 Index) const { return Segments[Index].Dist; }
+	double SegmentEnd(int32 Index) const { return Index + 1 < Segments.Num() ? Segments[Index + 1].Dist : Length(); }
+
+	/** Appends Boundary's curve and segments after this boundary's own end. Ported from URoadBoundary::Join. */
+	void Join(URealtimeRoadBoundary* Boundary);
+
+	/** Trims the curve and Segments to [Start, End] and re-bases distances. Ported from URoadBoundary::Cut. */
+	void Cut(double Start, double End);
 };

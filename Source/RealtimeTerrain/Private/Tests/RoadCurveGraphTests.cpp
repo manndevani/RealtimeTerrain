@@ -91,3 +91,65 @@ bool FRoadCurveGraphJoinTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Joined tail value"), First->GetOffset(1500.0), 300.0, 0.01);
 	return true;
 }
+
+// Verifies a lane's segment-list Cut/Join (ported from URoadBuilderLane) trims/appends by
+// segment only -- a lane's own inherited curve offsets are unused, matching RoadBuilder, where a
+// lane's shape comes from its two boundaries rather than its own curve data.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadCurveGraphLaneSegmentTest, "TerraDyne.RoadCurveGraph.LaneSegments", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadCurveGraphLaneSegmentTest::RunTest(const FString& Parameters)
+{
+	URealtimeRoadLane* Lane = NewObject<URealtimeRoadLane>();
+	Lane->LocalOffsets.Add({ 0.0, 0.0, 0.0 });
+	Lane->LocalOffsets.Add({ 1000.0, 0.0, 0.0 });
+	Lane->RecomputeEffectiveOffsets();
+	Lane->Segments.Add({ 0.0, ERealtimeLaneType::Driving });
+	Lane->Segments.Add({ 500.0, ERealtimeLaneType::Sidewalk });
+
+	TestEqual(TEXT("Segment at 250 is Driving"), (int32)Lane->Segments[Lane->GetSegmentAt(250.0)].LaneType, (int32)ERealtimeLaneType::Driving);
+	TestEqual(TEXT("Segment at 750 is Sidewalk"), (int32)Lane->Segments[Lane->GetSegmentAt(750.0)].LaneType, (int32)ERealtimeLaneType::Sidewalk);
+
+	Lane->Cut(250.0, 750.0);
+	TestEqual(TEXT("Cut lane segment count"), Lane->Segments.Num(), 2);
+	// Ported Cut() filters by whether a segment's [Start,End) still overlaps the cut range and
+	// then rebases every surviving segment's Dist by -Start; it does not clip a segment's own Dist
+	// to the range boundary. The first segment originally started at 0 (before the cut range) but
+	// still overlaps it, so it survives with a negative rebased Dist rather than being snapped to 0.
+	TestEqual(TEXT("Cut lane first segment rebased (started before range)"), Lane->Segments[0].Dist, -250.0, 0.01);
+	TestEqual(TEXT("Cut lane second segment re-based to 250"), Lane->Segments[1].Dist, 250.0, 0.01);
+
+	URealtimeRoadLane* Other = NewObject<URealtimeRoadLane>();
+	Other->Segments.Add({ 0.0, ERealtimeLaneType::Sidewalk });
+	Other->Segments.Add({ 100.0, ERealtimeLaneType::Median });
+	Lane->Join(Other);
+	TestEqual(TEXT("Joined lane segment count"), Lane->Segments.Num(), 3);
+	// Join's distance-shift is Length(), which (matching RoadBuilder) reads the lane's own curve
+	// Offsets rather than its segment list -- Cut() above never touched Offsets, so Length() is
+	// still the original 1000, not the post-cut segment span.
+	TestEqual(TEXT("Joined lane tail segment re-based by curve Length()"), Lane->Segments.Last().Dist, 1000.0 + 100.0, 0.01);
+	TestEqual(TEXT("Joined lane tail segment type"), (int32)Lane->Segments.Last().LaneType, (int32)ERealtimeLaneType::Median);
+	return true;
+}
+
+// Verifies a boundary's Cut/Join trims/joins both the curve offsets AND the segment list
+// together (unlike a lane), matching RoadBuilder's URoadBoundary::Cut/Join which both call
+// URoadCurve::Cut/Join before touching Segments.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadCurveGraphBoundarySegmentTest, "TerraDyne.RoadCurveGraph.BoundarySegments", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadCurveGraphBoundarySegmentTest::RunTest(const FString& Parameters)
+{
+	URealtimeRoadBoundary* Boundary = NewObject<URealtimeRoadBoundary>();
+	Boundary->LocalOffsets.Add({ 0.0, 400.0, 0.0 });
+	Boundary->LocalOffsets.Add({ 1000.0, 400.0, 0.0 });
+	Boundary->RecomputeEffectiveOffsets();
+	Boundary->Segments.Add({ 0.0, false });
+	Boundary->Segments.Add({ 500.0, true });
+
+	Boundary->Cut(250.0, 750.0);
+	Boundary->RecomputeEffectiveOffsets();
+
+	TestEqual(TEXT("Cut boundary curve length"), Boundary->Length(), 500.0, 0.01);
+	TestEqual(TEXT("Cut boundary offset preserved"), Boundary->GetOffset(0.0), 400.0, 0.01);
+	TestEqual(TEXT("Cut boundary segment count"), Boundary->Segments.Num(), 2);
+	TestEqual(TEXT("Cut boundary second segment re-based to 250"), Boundary->Segments[1].Dist, 250.0, 0.01);
+	TestTrue(TEXT("Cut boundary second segment still solid"), Boundary->Segments[1].bSolidMarking);
+	return true;
+}

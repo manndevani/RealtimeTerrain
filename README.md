@@ -6,19 +6,23 @@
 road system (`ARealtimeRoadSplineActor`/`ARealtimeRoadJunctionActor`), keeping it replicated and
 usable in-game. Full plan: `C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
 
-**Done**: Phase 1 foundation started — `URealtimeRoadCurve` (`Source/RealtimeTerrain/Public/RoadCurveGraph.h`),
-the cubic-Hermite offset-key math ported from RoadBuilder's `FCurveOffset`, plus `Cut`/`Join`
-ported from `URoadCurve`. Tests: `TerraDyne.RoadCurveGraph.{OffsetMath,Cut,Join}` — all passing.
+**Done**: Phase 1 boundary/lane object graph, in `Source/RealtimeTerrain/Public/RoadCurveGraph.h`
++ `.cpp` — `URealtimeRoadCurve` (cubic-Hermite offset-key math + `Cut`/`Join`, ported from
+RoadBuilder's `FCurveOffset`/`URoadCurve`), `URealtimeRoadLane` and `URealtimeRoadBoundary`
+(ported from `URoadBuilderLane`/`URoadBoundary`, including their distinct Cut/Join semantics — a
+lane's own curve offsets are unused/vestigial, matching RoadBuilder, since a lane's shape comes
+from its two boundaries). Tests: `TerraDyne.RoadCurveGraph.{OffsetMath,Cut,Join,LaneSegments,BoundarySegments}` — all passing.
 
-**Current work**: Phase 1 continues — `URealtimeRoadBoundary`/`URealtimeRoadLane` (mirroring
-RoadBuilder's `URoadBoundary`/`URoadBuilderLane`), style presets, and the replicated flat-struct
-wire format, then wiring into `ARealtimeRoadSplineActor` and `RoadMeshBuilder::BuildRoadSection`.
+**Current work**: Phase 1 continues — style presets (`URoadLaneShape`/`URoadLaneMarkStyle`/
+`URoadStylePreset`, mirroring RoadBuilder's `ULaneShape`/`ULaneMarkStyle`/`URoadStyle`), then the
+replicated flat-struct wire format, then wiring into `ARealtimeRoadSplineActor` and
+`RoadMeshBuilder::BuildRoadSection`.
 
 **Remaining**: Phase 2 (junction lane routing + gore markings), Phase 3 (elevation profile +
 automatic flyover + pier instancing), Phase 4 (spiral centreline smoothing), Phase 5 (OpenDrive
 export). See plan file for detail on each.
 
-**Next step**: Implement `URealtimeRoadBoundary`/`URealtimeRoadLane` in `RoadCurveGraph.h`/`.cpp`.
+**Next step**: Implement `URoadLaneShape`/`URoadLaneMarkStyle`/`URoadStylePreset` style presets.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

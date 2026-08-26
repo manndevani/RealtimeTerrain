@@ -6,21 +6,7 @@ namespace RoadCurveGraph
 {
 	int32 FindBracketIndex(const TArray<FRoadCurveOffsetKey>& Keys, double Dist)
 	{
-		// Ported from RoadBuilder's GetElementIndex: binary search for the largest index whose
-		// Dist does not exceed the query.
-		int32 Length = Keys.Num();
-		int32 Middle = Length;
-		int32 Offset = 0;
-		while (Middle > 0)
-		{
-			Middle = Length / 2;
-			if (Keys[Offset + Middle].Dist <= Dist)
-			{
-				Offset += Middle;
-			}
-			Length -= Middle;
-		}
-
+		int32 Offset = FindElementIndex(Keys, Dist);
 		// Ported from GetPointIndex: clamp so Offset+1 is always a valid bracketing key.
 		if (Offset == Keys.Num() - 1)
 		{
@@ -166,5 +152,77 @@ void URealtimeRoadCurve::Join(URealtimeRoadCurve* Other)
 		FRoadCurveOffsetKey Key = Other->LocalOffsets[i];
 		Key.Dist += ThisLength;
 		LocalOffsets.Add(Key);
+	}
+}
+
+int32 URealtimeRoadLane::GetSegmentAt(double Dist) const
+{
+	// Ported from URoadBuilderLane::GetSegment(double).
+	return RoadCurveGraph::FindElementIndex(Segments, Dist);
+}
+
+void URealtimeRoadLane::Join(URealtimeRoadLane* Lane)
+{
+	const double ThisLength = Length();
+	for (int32 i = 1; i < Lane->Segments.Num(); i++)
+	{
+		FRealtimeLaneSegment Segment = Lane->Segments[i];
+		Segment.Dist += ThisLength;
+		Segments.Add(Segment);
+	}
+}
+
+void URealtimeRoadLane::Cut(double Start, double End)
+{
+	for (int32 i = 0; i < Segments.Num();)
+	{
+		const double SegStart = SegmentStart(i);
+		const double SegEnd = SegmentEnd(i);
+		if (SegEnd < Start || SegStart > End)
+		{
+			Segments.RemoveAt(i);
+		}
+		else
+		{
+			i++;
+		}
+	}
+	for (FRealtimeLaneSegment& Segment : Segments)
+	{
+		Segment.Dist -= Start;
+	}
+}
+
+void URealtimeRoadBoundary::Join(URealtimeRoadBoundary* Boundary)
+{
+	URealtimeRoadCurve::Join(Boundary);
+	const double ThisLength = Length();
+	for (int32 i = 1; i < Boundary->Segments.Num(); i++)
+	{
+		FRealtimeBoundarySegment Segment = Boundary->Segments[i];
+		Segment.Dist += ThisLength;
+		Segments.Add(Segment);
+	}
+}
+
+void URealtimeRoadBoundary::Cut(double Start, double End)
+{
+	URealtimeRoadCurve::Cut(Start, End);
+	for (int32 i = 0; i < Segments.Num();)
+	{
+		const double SegStart = SegmentStart(i);
+		const double SegEnd = SegmentEnd(i);
+		if (SegEnd < Start || SegStart > End)
+		{
+			Segments.RemoveAt(i);
+		}
+		else
+		{
+			i++;
+		}
+	}
+	for (FRealtimeBoundarySegment& Segment : Segments)
+	{
+		Segment.Dist -= Start;
 	}
 }
