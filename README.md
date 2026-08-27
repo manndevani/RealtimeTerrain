@@ -272,10 +272,57 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   existing point-list snapshot stack for a road).
 - **Full regression sweep after this increment: 51 tests, 0 regressions.**
 
-**Next step**: Phase 4 — migrate `ATerraDyneEditController` (buildings) and
-`URealtimeRoadBuilderComponent` (road points) to drive `UGizmoManipulationSubsystem` instead of
-their own duplicated raycast/plane-intersection/delta-apply code, then delete `ATerraDyneGizmoActor`
-once both are migrated and green. See plan file for the full 10-phase order.
+### Phase 4 — COMPLETE ✅ (both consumers migrated onto the shared subsystem)
+- `ATerraDyneEditController` (buildings) and `URealtimeRoadBuilderComponent` (road points) both now
+  drive `UGizmoManipulationSubsystem`'s `Begin/Update/End/CancelManipulation` instead of their own
+  duplicated raycast/plane-intersection/delta-apply code. `TraceGizmoUnderCursor`,
+  `BestFacingVerticalPlaneNormal`, `IntersectCursorWithPlane`-for-axis-drag, and the whole
+  `ETerraDyneGizmoAxis`-keyed switch statements are gone from both files.
+- **A necessary Phase 3 design refinement, discovered while actually attempting this migration, not
+  planned in advance**: the subsystem originally hardcoded `TargetActor->SetActorTransform()`
+  (`TargetActor = Target->GetOwner()`), correct for a building but wrong for a road control point — a
+  road point is one vertex on a much larger spline actor, moved via `MovePointRealtime`, not a
+  whole-actor transform, and its own world location (not the road actor's arbitrary origin) is the
+  correct pivot. Fixed by generalizing the subsystem to pluggable `FGizmoGetTransform`/
+  `FGizmoSetTransform` delegates (`SetTargetTransformAccessors`), with the simple
+  `SetTarget(USceneComponent*)` becoming a thin convenience wrapper around them for the whole-actor
+  case. The delta math itself never changed — only where its result reads from and writes to.
+- **`ATerraDyneGizmoActor`'s real scope, found only by reading it fully rather than trusting the
+  plan's "delete this class" instruction**: it secretly served two unrelated responsibilities — the
+  old axis-translate gizmo, AND the building-footprint-spline-vertex-handle spheres (an entirely
+  separate feature). Deleting it outright would have broken footprint editing. Stripped instead of
+  deleted: `ETerraDyneGizmoAxis`, the arrow/tip/shaft meshes, `SetHighlightedAxis`,
+  `GetAxisFromComponent` are gone; `SplinePointMeshHandles`, `UpdateSplinePointHandles`,
+  `SetHighlightedSplinePoint` and the footprint feature stay exactly as before. The class comment now
+  says so explicitly, since the name is a historical artifact of this split.
+- **The subsystem's one gizmo target is shared by both consumers** — each tracks its own prior
+  binding (`GizmoBoundBuilding` on the controller; `GizmoBoundRoad`/`GizmoBoundPointIndex` on the
+  road component) and only ever calls `SetTarget`/`ClearTarget` when it actually owns the current
+  binding, never unconditionally — otherwise a building-tool tick could silently steal or clear a
+  road tool's active gizmo, or vice versa.
+- **Escape-to-cancel** now works for both: `ATerraDyneEditController::SetupInputComponent` binds
+  `EKeys::Escape` to a single `GizmoSubsystem->CancelManipulation()` call, which restores whichever
+  consumer's target (if any) is mid-drag and fires `OnManipulationCancel`. Both consumers bind a
+  handler to that delegate and check the passed-in target against their own binding before reacting
+  (the delegate fires for any cancel, not just their own). The road handler additionally pops the
+  now-redundant undo snapshot `BeginPointDrag` pushed, since the subsystem already restored the
+  point's exact pre-drag position, making that edit a no-op. The building handler resettles
+  `PadTargetWorldZ`/the footprint-handle visuals but deliberately does **not** call
+  `SnapToPadHeight()` (that would recompute a new pad height and move Z away from the transform
+  Cancel just restored) and sends no RPC (buildings only ever commit via `RequestMoveBuilding` on a
+  normal release, never per-tick and never on cancel, so there is nothing to undo on other machines).
+- **Full regression sweep after this increment: 83 tests found, 82 passed, 0 regressions** — the one
+  failure (`TerraDyne.Raster.Workflow`) is a pre-existing GIS raster-import test unrelated to this
+  work (a missing satellite/ortho layer import), in a file this migration never touched.
+- **Known limitation**: this phase is verified by full headless regression + direct code
+  verification of every cross-consumer ownership/cancel-identity path against the subsystem's actual
+  broadcast semantics, but **not** by an in-editor manual drag test — actually clicking and dragging
+  a building and a road point's gizmo handles in a running editor session is still needed before this
+  phase is fully trustworthy, and hasn't been done yet.
+
+**Next step**: Phase 5 — snapping, world/local space, and plane/rotation-ring handles live
+end-to-end (the math and hit-testing have existed since Phase 1/3; this phase proves them through the
+now-migrated consumers). See plan file for the full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

@@ -5,14 +5,13 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "RoadTypes.h"
-#include "Building/TerraDyneGizmoActor.h"
 #include "RealtimeRoadBuilderComponent.generated.h"
 
 class ARealtimeRoadSplineActor;
 class ARealtimeRoadJunctionActor;
 class ATerraDyneManager;
 class ARoadEditOverlayActor;
-class ATerraDyneGizmoActor;
+class UGizmoManipulationSubsystem;
 class APlayerController;
 
 /**
@@ -114,9 +113,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road Builder|Overlay")
 	bool bShowPointGizmo = true;
 
-	/** Translate gizmo sitting on the selected point. Shared class with the building tool. */
-	UPROPERTY(Transient, BlueprintReadOnly, Category = "Road Builder|Overlay")
-	TObjectPtr<ATerraDyneGizmoActor> PointGizmo;
+	/** Cached world subsystem driving the shared runtime gizmo -- also used by the building tool. */
+	UPROPERTY(Transient)
+	TObjectPtr<UGizmoManipulationSubsystem> GizmoSubsystem;
+
+	/**
+	 * Which road/point the gizmo's transform accessors are currently bound to -- rebinding a fresh
+	 * pair of closures every tick regardless of whether the selection actually changed would be
+	 * exactly the kind of per-frame allocation a drag-time system should avoid.
+	 */
+	TWeakObjectPtr<ARealtimeRoadSplineActor> GizmoBoundRoad;
+	int32 GizmoBoundPointIndex = INDEX_NONE;
 
 	/**
 	 * Handles a press on the edit overlay. Call on mouse down.
@@ -160,9 +167,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Road Builder|History")
 	bool RedoRoadEdit();
 
-	/** Removes the selected control point. Refuses to take a road below two points. */
+	/**
+	 * Removes the selected control point. Once a road is down to two points, deletes the whole
+	 * road instead (see DeleteSelectedRoad) rather than refusing outright.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
 	bool DeleteSelectedPoint();
+
+	/** Removes the selected road entirely, re-solving any junction it was pinned to. */
+	UFUNCTION(BlueprintCallable, Category = "Road Builder")
+	bool DeleteSelectedRoad();
 
 	UFUNCTION(BlueprintCallable, Category = "Road Builder")
 	bool HasPointSelected() const;
@@ -271,17 +285,25 @@ protected:
 
 	APlayerController* GetOwningPlayerController() const;
 
-	/** Keeps the gizmo on the selected point and highlights whichever axis is under the cursor. */
+	/** Keeps the shared gizmo targeted on the selected point's own spline component. */
 	void UpdatePointGizmo();
 
-	/** Which gizmo axis the cursor is over, if any. */
-	bool TraceGizmoAxisUnderCursor(ETerraDyneGizmoAxis& OutAxis) const;
+	/** The cursor ray, for callers that need the raw origin/direction rather than a plane hit. */
+	bool GetCursorRay(FVector& OutOrigin, FVector& OutDirection) const;
 
-	/** Where the cursor ray meets a plane. */
-	bool IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const;
+	/** Builds an FGizmoInteractionRay from the current cursor position, or returns false if the mouse can't be deprojected right now. */
+	bool BuildGizmoInteractionRay(struct FGizmoInteractionRay& OutRay) const;
 
-	/** Moves the selected point along the axis being dragged. */
-	void UpdateAxisDrag();
+	/** The active camera's forward vector, for hit-testing handles whose plane depends on view direction (e.g. the screen-space rotation ring). */
+	FVector GetCameraForwardVector() const;
+
+	/**
+	 * Reacts to an Escape-cancel landing on our own bound point (the subsystem is shared with the
+	 * building tool, so a building-gizmo cancel must not touch road drag state) -- settles the road
+	 * the same way EndPointDrag would, since the subsystem already restored the point's position
+	 * and nothing else will tell this component the drag stopped.
+	 */
+	void HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget);
 
 	/** Finds the nearest selectable spline point across every non-preview road in the level. */
 	bool FindRoadPointNear(
@@ -322,11 +344,9 @@ private:
 	 */
 	TWeakObjectPtr<ARealtimeRoadSplineActor> OverlayBuiltForRoad;
 
-	/** None means the drag came from a point handle and follows the ground instead of an axis. */
-	ETerraDyneGizmoAxis DragAxis = ETerraDyneGizmoAxis::None;
+	/** Whether the current drag is a gizmo axis/plane/rotate/scale grab (subsystem-driven) rather than a free ground-follow drag -- queried once at BeginPointDrag, not re-derived every tick. */
+	bool bIsGizmoDrag = false;
 	FVector DragStartPointLocation = FVector::ZeroVector;
-	FVector DragStartIntersection = FVector::ZeroVector;
-	FPlane DragPlane = FPlane(FVector::ZeroVector, FVector::UpVector);
 
 	/** Time since the last junction re-solve during the current drag. */
 	float TimeSinceJunctionResolve = 0.0f;

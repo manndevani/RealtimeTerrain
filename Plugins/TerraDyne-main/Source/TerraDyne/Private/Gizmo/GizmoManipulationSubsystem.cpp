@@ -24,6 +24,11 @@ void UGizmoManipulationSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+AActor* UGizmoManipulationSubsystem::GetGizmoActor() const
+{
+	return GizmoActor;
+}
+
 ARuntimeGizmoActor* UGizmoManipulationSubsystem::EnsureGizmoActor()
 {
 	if (!GizmoActor)
@@ -45,12 +50,11 @@ FVector UGizmoManipulationSubsystem::GetPivotLocation() const
 	{
 		return State.CustomPivot;
 	}
-	if (State.Target.IsValid())
+	if (State.GetTransformFn.IsBound())
 	{
-		const AActor* Owner = State.Target->GetOwner();
-		return Owner ? Owner->GetActorLocation() : State.Target->GetComponentLocation();
+		return State.GetTransformFn.Execute().GetLocation();
 	}
-	return FVector::ZeroVector;
+	return State.Target.IsValid() ? State.Target->GetComponentLocation() : FVector::ZeroVector;
 }
 
 void UGizmoManipulationSubsystem::UpdateGizmoTransform()
@@ -60,10 +64,9 @@ void UGizmoManipulationSubsystem::UpdateGizmoTransform()
 	GizmoActor->SetActorLocation(GetPivotLocation());
 
 	FQuat Rotation = FQuat::Identity;
-	if (State.Space == EGizmoCoordinateSpace::Local && State.Target.IsValid())
+	if (State.Space == EGizmoCoordinateSpace::Local && State.GetTransformFn.IsBound())
 	{
-		const AActor* Owner = State.Target->GetOwner();
-		Rotation = Owner ? Owner->GetActorQuat() : State.Target->GetComponentQuat();
+		Rotation = State.GetTransformFn.Execute().GetRotation();
 	}
 	GizmoActor->SetActorRotation(Rotation);
 }
@@ -76,7 +79,32 @@ void UGizmoManipulationSubsystem::SetTarget(USceneComponent* NewTarget)
 		return;
 	}
 
-	State.Target = NewTarget;
+	// The obvious default: the target's owning actor's whole transform is what gets read and
+	// mutated. A weak pointer in the captured lambdas, not a raw one, so a target destroyed mid-
+	// session (e.g. the selected actor deleted while its gizmo is still up) fails the accessor call
+	// safely instead of dereferencing a dangling AActor*.
+	TWeakObjectPtr<AActor> OwnerWeak = NewTarget->GetOwner();
+	SetTargetTransformAccessors(
+		FGizmoGetTransform::CreateLambda([OwnerWeak]() -> FTransform
+		{
+			return OwnerWeak.IsValid() ? OwnerWeak->GetActorTransform() : FTransform::Identity;
+		}),
+		FGizmoSetTransform::CreateLambda([OwnerWeak](const FTransform& NewTransform)
+		{
+			if (OwnerWeak.IsValid())
+			{
+				OwnerWeak->SetActorTransform(NewTransform);
+			}
+		}),
+		NewTarget);
+}
+
+void UGizmoManipulationSubsystem::SetTargetTransformAccessors(FGizmoGetTransform GetTransform, FGizmoSetTransform SetTransform, USceneComponent* NominalTarget)
+{
+	State.Target = NominalTarget;
+	State.GetTransformFn = MoveTemp(GetTransform);
+	State.SetTransformFn = MoveTemp(SetTransform);
+
 	if (ARuntimeGizmoActor* Gizmo = EnsureGizmoActor())
 	{
 		Gizmo->SetActorHiddenInGame(false);
@@ -89,6 +117,8 @@ void UGizmoManipulationSubsystem::SetTarget(USceneComponent* NewTarget)
 void UGizmoManipulationSubsystem::ClearTarget()
 {
 	State.Target = nullptr;
+	State.GetTransformFn.Unbind();
+	State.SetTransformFn.Unbind();
 	State.bIsManipulating = false;
 	State.ActiveHandle = EGizmoHandleType::None;
 	State.HoveredHandle = EGizmoHandleType::None;
@@ -262,7 +292,7 @@ EGizmoHandleType UGizmoManipulationSubsystem::UpdateHover(const FGizmoInteractio
 
 EGizmoHandleType UGizmoManipulationSubsystem::BeginManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward)
 {
-	if (!State.Target.IsValid())
+	if (!State.GetTransformFn.IsBound())
 	{
 		return EGizmoHandleType::None;
 	}
@@ -274,15 +304,9 @@ EGizmoHandleType UGizmoManipulationSubsystem::BeginManipulation(const FGizmoInte
 		return EGizmoHandleType::None;
 	}
 
-	AActor* TargetActor = State.Target->GetOwner();
-	if (!TargetActor)
-	{
-		return EGizmoHandleType::None;
-	}
-
 	State.ActiveHandle = Handle;
 	State.bIsManipulating = true;
-	State.InitialTransform = TargetActor->GetActorTransform();
+	State.InitialTransform = State.GetTransformFn.Execute();
 	State.InitialRay = Ray;
 	State.InitialIntersection = HitPoint;
 
@@ -297,13 +321,7 @@ EGizmoHandleType UGizmoManipulationSubsystem::BeginManipulation(const FGizmoInte
 
 void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward)
 {
-	if (!State.bIsManipulating || !State.Target.IsValid())
-	{
-		return;
-	}
-
-	AActor* TargetActor = State.Target->GetOwner();
-	if (!TargetActor)
+	if (!State.bIsManipulating || !State.SetTransformFn.IsBound())
 	{
 		return;
 	}
@@ -408,7 +426,7 @@ void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay&
 	}
 	}
 
-	TargetActor->SetActorTransform(NewTransform);
+	State.SetTransformFn.Execute(NewTransform);
 
 	// The gizmo itself only follows the target for Translate/Rotate -- scaling the object shouldn't
 	// also grow/shrink the gizmo, matching how a real DCC tool's gizmo behaves.
@@ -440,9 +458,9 @@ void UGizmoManipulationSubsystem::CancelManipulation()
 	}
 
 	USceneComponent* Target = State.Target.Get();
-	if (AActor* TargetActor = Target ? Target->GetOwner() : nullptr)
+	if (State.SetTransformFn.IsBound())
 	{
-		TargetActor->SetActorTransform(State.InitialTransform);
+		State.SetTransformFn.Execute(State.InitialTransform);
 	}
 
 	State.bIsManipulating = false;

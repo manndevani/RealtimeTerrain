@@ -43,8 +43,22 @@ class TERRADYNE_API UGizmoManipulationSubsystem : public UWorldSubsystem
 public:
 	virtual void Deinitialize() override;
 
-	/** Selects NewTarget, spawning/showing the gizmo actor at its pivot if not already present. Pass nullptr to clear (equivalent to ClearTarget). */
+	/**
+	 * Selects NewTarget, spawning/showing the gizmo actor at its pivot if not already present.
+	 * Binds the obvious default transform accessors (NewTarget's owning actor's whole transform) --
+	 * correct for a target that really is "one actor to move/rotate/scale." Pass nullptr to clear
+	 * (equivalent to ClearTarget).
+	 */
 	void SetTarget(USceneComponent* NewTarget);
+
+	/**
+	 * The general form SetTarget is a convenience wrapper around: supply your own read/write
+	 * functions instead of assuming "the target's owning actor's whole transform" is the right
+	 * thing to read and mutate. NominalTarget is identity-only (GetTarget()/the delegates' payload);
+	 * it does not have to be the actual thing GetTransform/SetTransform touch.
+	 */
+	void SetTargetTransformAccessors(FGizmoGetTransform GetTransform, FGizmoSetTransform SetTransform, USceneComponent* NominalTarget);
+
 	void ClearTarget();
 	USceneComponent* GetTarget() const { return State.Target.Get(); }
 
@@ -84,6 +98,9 @@ public:
 
 	bool IsManipulating() const { return State.bIsManipulating; }
 	EGizmoHandleType GetActiveHandle() const { return State.ActiveHandle; }
+
+	/** The shared gizmo actor itself, or null if none has been spawned yet -- for callers that need to e.g. add it to a separate trace's ignore list. */
+	AActor* GetGizmoActor() const;
 
 	FOnGizmoManipulationBegin OnManipulationBegin;
 	FOnGizmoManipulationEnd OnManipulationEnd;

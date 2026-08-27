@@ -8,16 +8,18 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TerraDyneGizmoActor.generated.h"
 
-UENUM(BlueprintType)
-enum class ETerraDyneGizmoAxis : uint8
-{
-	None,
-	X,
-	Y,
-	Z,
-	CenterXY
-};
-
+/**
+ * Visual handle spheres for editing a building's footprint spline -- one per control point,
+ * spawned/repositioned on demand as the footprint changes.
+ *
+ * This is NOT a transform gizmo, despite the name: the runtime translate/rotate/scale gizmo used
+ * to move/rotate/resize a whole building (or a road control point) is a separate, generic,
+ * reusable system now (Plugins/TerraDyne-main/Source/TerraDyne/Public/Gizmo/ --
+ * UGizmoManipulationSubsystem + ARuntimeGizmoActor). This class used to own BOTH responsibilities;
+ * once the axis/plane/rotate/scale handle set moved to that new system, only the footprint-vertex
+ * handles were left here. The name is a historical artifact kept to limit the size of that change,
+ * not a description of current scope.
+ */
 UCLASS()
 class TERRADYNE_API ATerraDyneGizmoActor : public AActor
 {
@@ -30,9 +32,6 @@ public:
 	virtual void PostInitializeComponents() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 
-	void SetHighlightedAxis(ETerraDyneGizmoAxis Axis);
-	ETerraDyneGizmoAxis GetAxisFromComponent(const UPrimitiveComponent* Component) const;
-
 	void UpdateSplinePointHandles(const TArray<FVector>& LocalSplinePoints, const FTransform& BuildingTransform);
 	void SetHighlightedSplinePoint(int32 PointIndex);
 	int32 GetSplinePointIndexFromComponent(const UPrimitiveComponent* Component) const;
@@ -41,36 +40,14 @@ public:
 	TObjectPtr<USceneComponent> SceneRoot;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshShaftX;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshTipX;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshShaftY;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshTipY;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshShaftZ;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshTipZ;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
-	TObjectPtr<UStaticMeshComponent> MeshCenterXY;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
 	TArray<TObjectPtr<UStaticMeshComponent>> SplinePointMeshHandles;
 
 private:
 	/**
-	 * Base material the per-axis MIDs are built from, resolved once in the constructor.
+	 * Base material the spline-point-handle MIDs are built from, resolved once in the constructor.
 	 *
 	 * Deliberately NOT Transient. The cooker only follows hard references reachable from a
-	 * serialized property of the CDO — the axis meshes cook because a default subobject's
-	 * StaticMesh property holds them, but a material reachable only through a runtime MID is
+	 * serialized property of the CDO — a material reachable only through a runtime MID is
 	 * invisible to it and would be missing from a packaged build.
 	 */
 	UPROPERTY()
@@ -90,18 +67,6 @@ private:
 	static void ApplyGizmoColor(UMaterialInstanceDynamic* DMI, const FLinearColor& InColor);
 
 	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> MatX;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> MatY;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> MatZ;
-
-	UPROPERTY(Transient)
-	TObjectPtr<UMaterialInstanceDynamic> MatCenter;
-
-	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MatSplinePoint;
 
 	UPROPERTY(Transient)
@@ -111,6 +76,5 @@ private:
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> SphereMesh;
 
-	ETerraDyneGizmoAxis CurrentHighlight = ETerraDyneGizmoAxis::None;
 	int32 CurrentHighlightedPoint = INDEX_NONE;
 };

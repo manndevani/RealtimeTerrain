@@ -5,6 +5,8 @@
 #include "World/TerraDyneChunk.h"
 #include "Building/TerraDyneBuildingActor.h"
 #include "Building/TerraDyneGizmoActor.h"
+#include "Gizmo/GizmoManipulationSubsystem.h"
+#include "Gizmo/RuntimeGizmoActor.h"
 #include "Components/SplineComponent.h"
 #include "TerraDyneModule.h"
 #include "Engine/World.h"
@@ -135,6 +137,7 @@ void ATerraDyneEditController::SetupInputComponent()
 
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ATerraDyneEditController::OnLeftClickStart);
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ATerraDyneEditController::OnLeftClickStop);
+	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ATerraDyneEditController::OnCancelManipulationPressed);
 	// Ctrl+Z / Ctrl+Y instead of bare keys, so Z and Y stay available for other input.
 	{
 		FInputKeyBinding UndoBinding(FInputChord(EKeys::Z, false, true, false, false), IE_Pressed);
@@ -174,67 +177,17 @@ bool ATerraDyneEditController::TraceUnderCursor(FHitResult& OutHit) const
 	{
 		TraceParams.AddIgnoredActor(ActiveMoveGizmo);
 	}
+	if (GizmoSubsystem)
+	{
+		if (AActor* RuntimeGizmo = GizmoSubsystem->GetGizmoActor())
+		{
+			TraceParams.AddIgnoredActor(RuntimeGizmo);
+		}
+	}
 
 	// 50,000,000 uu (500 km) reaches terrain from orbital and high flight altitudes across large GIS datasets
 	return GetWorld()->LineTraceSingleByChannel(
 		OutHit, WorldLoc, WorldLoc + WorldDir * 50000000.0f, ECC_WorldStatic, TraceParams);
-}
-
-bool ATerraDyneEditController::TraceGizmoUnderCursor(ETerraDyneGizmoAxis& OutAxis, FVector& OutHitPoint) const
-{
-	OutAxis = ETerraDyneGizmoAxis::None;
-	if (!ActiveMoveGizmo || ActiveMoveGizmo->IsHidden())
-	{
-		return false;
-	}
-
-	FVector WorldLoc, WorldDir;
-	if (!const_cast<ATerraDyneEditController*>(this)->DeprojectMousePositionToWorld(WorldLoc, WorldDir))
-	{
-		return false;
-	}
-
-	const FVector TraceEnd = WorldLoc + WorldDir * 200000.0f;
-	FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(TraceGizmo), false);
-
-	TArray<UStaticMeshComponent*> Handles = {
-		ActiveMoveGizmo->MeshTipX,
-		ActiveMoveGizmo->MeshShaftX,
-		ActiveMoveGizmo->MeshTipY,
-		ActiveMoveGizmo->MeshShaftY,
-		ActiveMoveGizmo->MeshTipZ,
-		ActiveMoveGizmo->MeshShaftZ,
-		ActiveMoveGizmo->MeshCenterXY
-	};
-
-	float BestDistance = MAX_FLT;
-	UStaticMeshComponent* BestComp = nullptr;
-	FVector BestLocation = FVector::ZeroVector;
-
-	for (UStaticMeshComponent* HandleComp : Handles)
-	{
-		if (!HandleComp) continue;
-
-		FHitResult CompHit;
-		if (HandleComp->LineTraceComponent(CompHit, WorldLoc, TraceEnd, TraceParams))
-		{
-			if (CompHit.Distance < BestDistance)
-			{
-				BestDistance = CompHit.Distance;
-				BestComp = HandleComp;
-				BestLocation = CompHit.Location;
-			}
-		}
-	}
-
-	if (BestComp)
-	{
-		OutAxis = ActiveMoveGizmo->GetAxisFromComponent(BestComp);
-		OutHitPoint = BestLocation;
-		return OutAxis != ETerraDyneGizmoAxis::None;
-	}
-
-	return false;
 }
 
 bool ATerraDyneEditController::TraceSplinePointUnderCursor(int32& OutPointIndex, FVector& OutHitPoint) const
@@ -297,6 +250,21 @@ bool ATerraDyneEditController::IntersectCursorWithPlane(const FPlane& Plane, FVe
 	return true;
 }
 
+bool ATerraDyneEditController::BuildGizmoInteractionRay(FGizmoInteractionRay& OutRay) const
+{
+	return const_cast<ATerraDyneEditController*>(this)->DeprojectMousePositionToWorld(OutRay.Origin, OutRay.Direction);
+}
+
+FVector ATerraDyneEditController::GetCameraForwardVector() const
+{
+	if (PlayerCameraManager)
+	{
+		return PlayerCameraManager->GetCameraRotation().Vector();
+	}
+	FGizmoInteractionRay Ray;
+	return BuildGizmoInteractionRay(Ray) ? Ray.Direction : FVector::ForwardVector;
+}
+
 void ATerraDyneEditController::OnLeftClickStart()
 {
 	bFlattenHeightLocked = false;
@@ -321,29 +289,18 @@ void ATerraDyneEditController::OnLeftClickStart()
 			}
 		}
 
-		// 2. Check if user clicked on the Move Gizmo handle
-		ETerraDyneGizmoAxis ClickedAxis = ETerraDyneGizmoAxis::None;
-		FVector HitGizmoPoint;
-		if (TraceGizmoUnderCursor(ClickedAxis, HitGizmoPoint) && ClickedAxis != ETerraDyneGizmoAxis::None)
+		// 2. Check if user clicked on the shared runtime gizmo's handle
+		if (GizmoSubsystem)
 		{
-			DraggingGizmoAxis = ClickedAxis;
-			GizmoDragStartBuildingLoc = ToolUI->SelectedBuilding->GetActorLocation();
-
-			FVector PlaneNormal = FVector::UpVector;
-			if (ClickedAxis == ETerraDyneGizmoAxis::Z)
+			FGizmoInteractionRay Ray;
+			if (BuildGizmoInteractionRay(Ray))
 			{
-				FVector CamLoc = PlayerCameraManager ? PlayerCameraManager->GetCameraLocation() : FVector::ZeroVector;
-				FVector Facing = (CamLoc - GizmoDragStartBuildingLoc).GetSafeNormal2D();
-				PlaneNormal = Facing.IsNearlyZero() ? FVector::ForwardVector : Facing;
+				if (GizmoSubsystem->BeginManipulation(Ray, GetCameraForwardVector()) != EGizmoHandleType::None)
+				{
+					bIsGizmoAxisDrag = true;
+					return;
+				}
 			}
-			else if (ClickedAxis == ETerraDyneGizmoAxis::X || ClickedAxis == ETerraDyneGizmoAxis::Y || ClickedAxis == ETerraDyneGizmoAxis::CenterXY)
-			{
-				PlaneNormal = FVector::UpVector;
-			}
-
-			GizmoDragPlane = FPlane(GizmoDragStartBuildingLoc, PlaneNormal);
-			IntersectCursorWithPlane(GizmoDragPlane, GizmoDragStartIntersection);
-			return;
 		}
 	}
 
@@ -554,17 +511,17 @@ void ATerraDyneEditController::OnLeftClickStop()
 		return;
 	}
 
-	if (DraggingGizmoAxis != ETerraDyneGizmoAxis::None)
+	if (bIsGizmoAxisDrag)
 	{
+		bIsGizmoAxisDrag = false;
+		if (GizmoSubsystem)
+		{
+			GizmoSubsystem->EndManipulation();
+		}
 		UTerraDyneToolWidget* ToolUI = GetToolWidget();
 		if (ToolUI && ToolUI->SelectedBuilding.IsValid())
 		{
 			RequestMoveBuilding(ToolUI->SelectedBuilding.Get(), ToolUI->SelectedBuilding->GetActorTransform());
-		}
-		DraggingGizmoAxis = ETerraDyneGizmoAxis::None;
-		if (ActiveMoveGizmo)
-		{
-			ActiveMoveGizmo->SetHighlightedAxis(ETerraDyneGizmoAxis::None);
 		}
 		return;
 	}
@@ -589,6 +546,43 @@ void ATerraDyneEditController::OnRedoPressed()
 	if (!TryRoadRedo())
 	{
 		RequestRedo();
+	}
+}
+
+void ATerraDyneEditController::OnCancelManipulationPressed()
+{
+	// One call serves both consumers -- the subsystem already knows which one (if either) is
+	// actually mid-drag, and CancelManipulation is a no-op if nothing is.
+	if (GizmoSubsystem)
+	{
+		GizmoSubsystem->CancelManipulation();
+	}
+}
+
+void ATerraDyneEditController::HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget)
+{
+	// The subsystem is shared with the road tool, so a cancel could be for a road-point drag that
+	// has nothing to do with us -- only react if it's our own bound building's drag being cancelled.
+	if (!bIsGizmoAxisDrag || !GizmoBoundBuilding.IsValid() || CancelledTarget != GizmoBoundBuilding->GetRootComponent())
+	{
+		return;
+	}
+
+	bIsGizmoAxisDrag = false;
+
+	// The subsystem already restored the building's exact pre-drag transform -- resettle the
+	// pad-tracking/preview state to match, the same way a normal release would, since nothing else
+	// will tell this controller the drag stopped. Deliberately does NOT call SnapToPadHeight: that
+	// would recompute a new pad height and could move Z away from the transform Cancel just
+	// restored, which is the opposite of what a cancel is supposed to do.
+	ATerraDyneBuildingActor* Building = GizmoBoundBuilding.Get();
+	Building->PadTargetWorldZ = Building->GetActorLocation().Z;
+	Building->NotifyBuildingChanged();
+
+	if (ActiveMoveGizmo)
+	{
+		ActiveMoveGizmo->SetActorLocation(Building->GetActorLocation());
+		ActiveMoveGizmo->UpdateSplinePointHandles(Building->GatherSplinePointsLocal(), Building->GetActorTransform());
 	}
 }
 
@@ -706,40 +700,18 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 			}
 		}
 	}
-	// 2. Handle move gizmo axis drag
-	else if (DraggingGizmoAxis != ETerraDyneGizmoAxis::None)
+	// 2. Handle shared runtime gizmo drag
+	else if (bIsGizmoAxisDrag)
 	{
 		UTerraDyneToolWidget* ToolUI = GetToolWidget();
-		if (ToolUI && ToolUI->SelectedBuilding.IsValid())
+		if (ToolUI && ToolUI->SelectedBuilding.IsValid() && GizmoSubsystem)
 		{
-			FVector CurrentIntersection;
-			if (IntersectCursorWithPlane(GizmoDragPlane, CurrentIntersection))
+			FGizmoInteractionRay Ray;
+			if (BuildGizmoInteractionRay(Ray))
 			{
-				const FVector Delta = CurrentIntersection - GizmoDragStartIntersection;
-				FVector NewLoc = GizmoDragStartBuildingLoc;
+				GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector());
 
-				if (DraggingGizmoAxis == ETerraDyneGizmoAxis::X)
-				{
-					NewLoc.X += Delta.X;
-					ToolUI->SelectedBuilding->SetActorLocation(NewLoc);
-				}
-				else if (DraggingGizmoAxis == ETerraDyneGizmoAxis::Y)
-				{
-					NewLoc.Y += Delta.Y;
-					ToolUI->SelectedBuilding->SetActorLocation(NewLoc);
-				}
-				else if (DraggingGizmoAxis == ETerraDyneGizmoAxis::Z)
-				{
-					NewLoc.Z += Delta.Z;
-					ToolUI->SelectedBuilding->SetActorLocation(NewLoc);
-					ToolUI->SelectedBuilding->PadTargetWorldZ = NewLoc.Z;
-				}
-				else if (DraggingGizmoAxis == ETerraDyneGizmoAxis::CenterXY)
-				{
-					NewLoc.X += Delta.X;
-					NewLoc.Y += Delta.Y;
-					ToolUI->SelectedBuilding->SetActorLocation(NewLoc);
-				}
+				ToolUI->SelectedBuilding->PadTargetWorldZ = ToolUI->SelectedBuilding->GetActorLocation().Z;
 
 				// Throttled terrain pad update during continuous drag (~20Hz)
 				if (TimeSinceLastPadUpdate >= 0.05f)
@@ -752,7 +724,6 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 				if (ActiveMoveGizmo)
 				{
 					ActiveMoveGizmo->SetActorLocation(ToolUI->SelectedBuilding->GetActorLocation());
-					ActiveMoveGizmo->SetHighlightedAxis(DraggingGizmoAxis);
 					ActiveMoveGizmo->UpdateSplinePointHandles(ToolUI->SelectedBuilding->GatherSplinePointsLocal(), ToolUI->SelectedBuilding->GetActorTransform());
 				}
 			}
@@ -799,11 +770,28 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 
 void ATerraDyneEditController::UpdateMoveGizmo()
 {
+	if (!GizmoSubsystem)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			GizmoSubsystem = World->GetSubsystem<UGizmoManipulationSubsystem>();
+			if (GizmoSubsystem)
+			{
+				GizmoSubsystem->OnManipulationCancel.AddUObject(this, &ATerraDyneEditController::HandleGizmoManipulationCancelled);
+			}
+		}
+	}
+
 	if (!IsLocalController() || !IsInstructor())
 	{
 		if (ActiveMoveGizmo)
 		{
 			ActiveMoveGizmo->SetActorHiddenInGame(true);
+		}
+		if (GizmoSubsystem && GizmoBoundBuilding.IsValid())
+		{
+			GizmoSubsystem->ClearTarget();
+			GizmoBoundBuilding = nullptr;
 		}
 		return;
 	}
@@ -829,28 +817,44 @@ void ATerraDyneEditController::UpdateMoveGizmo()
 			ActiveMoveGizmo->SetActorLocation(Selected->GetActorLocation());
 			ActiveMoveGizmo->SetActorHiddenInGame(false);
 			ActiveMoveGizmo->UpdateSplinePointHandles(Selected->GatherSplinePointsLocal(), Selected->GetActorTransform());
+		}
 
-			if (DraggingGizmoAxis == ETerraDyneGizmoAxis::None && DraggingSplinePointIndex == INDEX_NONE)
+		if (GizmoSubsystem && GizmoBoundBuilding.Get() != Selected)
+		{
+			GizmoSubsystem->SetTarget(Selected->GetRootComponent());
+			GizmoBoundBuilding = Selected;
+		}
+
+		if (!bIsGizmoAxisDrag && DraggingSplinePointIndex == INDEX_NONE)
+		{
+			float MouseX = 0.0f, MouseY = 0.0f;
+			GetMousePosition(MouseX, MouseY);
+			const FVector2D CurrentMousePos(MouseX, MouseY);
+			if (FVector2D::DistSquared(CurrentMousePos, LastMousePosition) > 1.0f)
 			{
-				float MouseX = 0.0f, MouseY = 0.0f;
-				GetMousePosition(MouseX, MouseY);
-				const FVector2D CurrentMousePos(MouseX, MouseY);
-				if (FVector2D::DistSquared(CurrentMousePos, LastMousePosition) > 1.0f)
+				LastMousePosition = CurrentMousePos;
+				int32 HoverPoint = INDEX_NONE;
+				FVector HitPoint;
+				if (TraceSplinePointUnderCursor(HoverPoint, HitPoint))
 				{
-					LastMousePosition = CurrentMousePos;
-					int32 HoverPoint = INDEX_NONE;
-					FVector HitPoint;
-					if (TraceSplinePointUnderCursor(HoverPoint, HitPoint))
+					if (ActiveMoveGizmo)
 					{
 						ActiveMoveGizmo->SetHighlightedSplinePoint(HoverPoint);
-						ActiveMoveGizmo->SetHighlightedAxis(ETerraDyneGizmoAxis::None);
 					}
-					else
+				}
+				else
+				{
+					if (ActiveMoveGizmo)
 					{
 						ActiveMoveGizmo->SetHighlightedSplinePoint(INDEX_NONE);
-						ETerraDyneGizmoAxis HoverAxis = ETerraDyneGizmoAxis::None;
-						TraceGizmoUnderCursor(HoverAxis, HitPoint);
-						ActiveMoveGizmo->SetHighlightedAxis(HoverAxis);
+					}
+					if (GizmoSubsystem)
+					{
+						FGizmoInteractionRay Ray;
+						if (BuildGizmoInteractionRay(Ray))
+						{
+							GizmoSubsystem->UpdateHover(Ray, GetCameraForwardVector());
+						}
 					}
 				}
 			}
@@ -861,8 +865,12 @@ void ATerraDyneEditController::UpdateMoveGizmo()
 		if (ActiveMoveGizmo)
 		{
 			ActiveMoveGizmo->SetActorHiddenInGame(true);
-			ActiveMoveGizmo->SetHighlightedAxis(ETerraDyneGizmoAxis::None);
 			ActiveMoveGizmo->SetHighlightedSplinePoint(INDEX_NONE);
+		}
+		if (GizmoSubsystem && GizmoBoundBuilding.IsValid())
+		{
+			GizmoSubsystem->ClearTarget();
+			GizmoBoundBuilding = nullptr;
 		}
 	}
 }

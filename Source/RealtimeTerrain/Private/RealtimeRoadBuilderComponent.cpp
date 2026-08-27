@@ -17,7 +17,8 @@
 #include "GameFramework/PlayerController.h"
 #include "CollisionQueryParams.h"
 #include "Core/TerraDyneManager.h"
-#include "Building/TerraDyneGizmoActor.h"
+#include "Gizmo/GizmoManipulationSubsystem.h"
+#include "Gizmo/RuntimeGizmoActor.h"
 #include "Camera/PlayerCameraManager.h"
 
 URealtimeRoadBuilderComponent::URealtimeRoadBuilderComponent()
@@ -39,9 +40,21 @@ void URealtimeRoadBuilderComponent::TickComponent(
 
 	if (bIsDraggingPoint && SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE)
 	{
-		if (DragAxis != ETerraDyneGizmoAxis::None)
+		if (bIsGizmoDrag)
 		{
-			UpdateAxisDrag();
+			// UpdatePointGizmo (called at the end of this tick, below) keeps the subsystem's
+			// transform accessors bound to this exact point's GetSplinePointWorldLocation/
+			// MovePointRealtime -- UpdateManipulation reads/writes through those, not a generic
+			// actor transform, so the delta math applies straight to the point with no translation
+			// step needed here.
+			if (GizmoSubsystem && GizmoSubsystem->IsManipulating())
+			{
+				FGizmoInteractionRay Ray;
+				if (BuildGizmoInteractionRay(Ray))
+				{
+					GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector());
+				}
+			}
 		}
 		else
 		{
@@ -85,10 +98,11 @@ void URealtimeRoadBuilderComponent::EndPlay(const EEndPlayReason::Type EndPlayRe
 		EditOverlay->Destroy();
 		EditOverlay = nullptr;
 	}
-	if (PointGizmo)
+	// The gizmo actor itself belongs to UGizmoManipulationSubsystem (shared with the building tool,
+	// one per world) -- this component only ever clears ITS OWN claim on it, never destroys it.
+	if (GizmoSubsystem && GizmoBoundRoad.IsValid() && GizmoSubsystem->GetTarget() == GizmoBoundRoad->SplineComponent)
 	{
-		PointGizmo->Destroy();
-		PointGizmo = nullptr;
+		GizmoSubsystem->ClearTarget();
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -155,7 +169,10 @@ bool URealtimeRoadBuilderComponent::TraceGroundUnderCursor(FVector& OutLocation)
 	// swallow the ground trace that decides where a dragged point goes.
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(RoadBuilderCursorGround), false);
 	Params.AddIgnoredActor(EditOverlay);
-	Params.AddIgnoredActor(PointGizmo);
+	if (GizmoSubsystem)
+	{
+		Params.AddIgnoredActor(GizmoSubsystem->GetGizmoActor());
+	}
 	if (SelectedRoadActor.IsValid())
 	{
 		Params.AddIgnoredActor(SelectedRoadActor.Get());
@@ -257,168 +274,125 @@ void URealtimeRoadBuilderComponent::UpdatePointGizmo()
 	const bool bWanted =
 		bShowPointGizmo && SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE;
 
+	if (!GizmoSubsystem)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			GizmoSubsystem = World->GetSubsystem<UGizmoManipulationSubsystem>();
+			if (GizmoSubsystem)
+			{
+				GizmoSubsystem->OnManipulationCancel.AddUObject(this, &URealtimeRoadBuilderComponent::HandleGizmoManipulationCancelled);
+			}
+		}
+	}
+	if (!GizmoSubsystem) return;
+
 	if (!bWanted)
 	{
-		if (PointGizmo)
+		if (GizmoBoundRoad.IsValid())
 		{
-			PointGizmo->SetActorHiddenInGame(true);
-			PointGizmo->SetActorEnableCollision(false);
+			GizmoSubsystem->ClearTarget();
+			GizmoBoundRoad = nullptr;
+			GizmoBoundPointIndex = INDEX_NONE;
 		}
 		return;
 	}
 
-	UWorld* World = GetWorld();
-	if (!World) return;
-
-	if (!PointGizmo)
+	// Only rebind the accessor closures when the selection actually changes -- rebuilding them
+	// every tick regardless would be exactly the per-frame allocation a drag-time system should
+	// avoid, and SelectedRoadActor->SplineComponent is a stable identity to bind against for as
+	// long as the selection doesn't change.
+	if (SelectedRoadActor.Get() != GizmoBoundRoad.Get() || SelectedPointIndex != GizmoBoundPointIndex)
 	{
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		SpawnParams.ObjectFlags |= RF_Transient;
-		PointGizmo = World->SpawnActor<ATerraDyneGizmoActor>(
-			ATerraDyneGizmoActor::StaticClass(), FTransform::Identity, SpawnParams);
-		if (!PointGizmo) return;
+		GizmoBoundRoad = SelectedRoadActor.Get();
+		GizmoBoundPointIndex = SelectedPointIndex;
+
+		TWeakObjectPtr<ARealtimeRoadSplineActor> RoadWeak = SelectedRoadActor.Get();
+		TWeakObjectPtr<URealtimeRoadBuilderComponent> SelfWeak = this;
+		const int32 PointIndex = SelectedPointIndex;
+
+		GizmoSubsystem->SetTargetTransformAccessors(
+			FGizmoGetTransform::CreateLambda([RoadWeak, SelfWeak, PointIndex]() -> FTransform
+			{
+				if (!RoadWeak.IsValid()) return FTransform::Identity;
+				FVector Location = RoadWeak->GetSplinePointWorldLocation(PointIndex);
+				// The visible handle sphere is lifted by EditOverlay->VerticalOffset (ShowRoad) so
+				// it reads clearly against the road surface; the gizmo has to match that lift or it
+				// sits visibly below the handle it's supposed to be centered on.
+				if (SelfWeak.IsValid() && SelfWeak->EditOverlay)
+				{
+					Location.Z += SelfWeak->EditOverlay->VerticalOffset;
+				}
+				return FTransform(Location);
+			}),
+			FGizmoSetTransform::CreateLambda([RoadWeak, PointIndex](const FTransform& NewTransform)
+			{
+				if (RoadWeak.IsValid())
+				{
+					RoadWeak->MovePointRealtime(PointIndex, NewTransform.GetLocation());
+				}
+			}),
+			SelectedRoadActor->SplineComponent);
 	}
 
-	PointGizmo->SetActorHiddenInGame(false);
-	PointGizmo->SetActorEnableCollision(true);
-
-	// The visible handle sphere is lifted by EditOverlay->VerticalOffset (ShowRoad) so it reads
-	// clearly against the road surface; the gizmo has to match that lift or it sits visibly below
-	// the handle it's supposed to be centered on.
-	FVector GizmoLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
-	if (EditOverlay)
+	// Mid-drag the subsystem's own ActiveHandle already reflects what's being dragged; only hover
+	// needs a fresh trace here, and only when nothing is currently being dragged at all (an axis
+	// grab or the free ground-follow drag both count).
+	if (!bIsDraggingPoint)
 	{
-		GizmoLocation.Z += EditOverlay->VerticalOffset;
-	}
-	PointGizmo->SetActorLocation(GizmoLocation);
-
-	// Mid-drag the highlight stays on the axis being dragged, even once the cursor has left it.
-	if (bIsDraggingPoint)
-	{
-		PointGizmo->SetHighlightedAxis(DragAxis);
-	}
-	else
-	{
-		ETerraDyneGizmoAxis Hovered = ETerraDyneGizmoAxis::None;
-		TraceGizmoAxisUnderCursor(Hovered);
-		PointGizmo->SetHighlightedAxis(Hovered);
-	}
-}
-
-bool URealtimeRoadBuilderComponent::TraceGizmoAxisUnderCursor(ETerraDyneGizmoAxis& OutAxis) const
-{
-	OutAxis = ETerraDyneGizmoAxis::None;
-
-	APlayerController* Controller = GetOwningPlayerController();
-	UWorld* World = GetWorld();
-	if (!Controller || !World || !PointGizmo || PointGizmo->IsHidden())
-	{
-		return false;
-	}
-
-	FVector Origin;
-	FVector Direction;
-	if (!Controller->DeprojectMousePositionToWorld(Origin, Direction)) return false;
-
-	// Same reasoning as TraceHandleUnderCursor: a single-hit trace resolves to whatever's closest
-	// along the ray, and the point-handle sphere (45cm radius, a different actor) sits at the same
-	// world position as the gizmo's CenterXY disc (20cm radius) and geometrically contains it from
-	// most viewing angles -- so a single-hit trace would resolve to the sphere and CenterXY would
-	// never be reachable at all. Walking every hit in order and skipping ones that aren't part of
-	// this gizmo lets the disc (or an axis arm behind something else) still win.
-	TArray<FHitResult> Hits;
-	World->LineTraceMultiByChannel(Hits, Origin, Origin + Direction * 5000000.0, ECC_Visibility);
-
-	for (const FHitResult& Hit : Hits)
-	{
-		const ETerraDyneGizmoAxis Axis = PointGizmo->GetAxisFromComponent(Hit.GetComponent());
-		if (Axis != ETerraDyneGizmoAxis::None)
+		FGizmoInteractionRay Ray;
+		if (BuildGizmoInteractionRay(Ray))
 		{
-			OutAxis = Axis;
-			return true;
+			GizmoSubsystem->UpdateHover(Ray, GetCameraForwardVector());
 		}
 	}
-	return false;
 }
 
-bool URealtimeRoadBuilderComponent::IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const
+bool URealtimeRoadBuilderComponent::GetCursorRay(FVector& OutOrigin, FVector& OutDirection) const
 {
 	APlayerController* Controller = GetOwningPlayerController();
 	if (!Controller) return false;
-
-	FVector Origin;
-	FVector Direction;
-	if (!Controller->DeprojectMousePositionToWorld(Origin, Direction)) return false;
-
-	OutIntersection = FMath::RayPlaneIntersection(Origin, Direction, Plane);
-	return true;
+	return Controller->DeprojectMousePositionToWorld(OutOrigin, OutDirection);
 }
 
-void URealtimeRoadBuilderComponent::UpdateAxisDrag()
+bool URealtimeRoadBuilderComponent::BuildGizmoInteractionRay(FGizmoInteractionRay& OutRay) const
 {
-	FVector Intersection;
-	if (!IntersectCursorWithPlane(DragPlane, Intersection)) return;
+	return GetCursorRay(OutRay.Origin, OutRay.Direction);
+}
 
-	const FVector Delta = Intersection - DragStartIntersection;
-	FVector NewLocation = DragStartPointLocation;
-
-	switch (DragAxis)
+FVector URealtimeRoadBuilderComponent::GetCameraForwardVector() const
+{
+	if (const APlayerController* Controller = GetOwningPlayerController())
 	{
-	case ETerraDyneGizmoAxis::X:
-		NewLocation.X += Delta.X;
-		break;
-	case ETerraDyneGizmoAxis::Y:
-		NewLocation.Y += Delta.Y;
-		break;
-	case ETerraDyneGizmoAxis::Z:
-		NewLocation.Z += Delta.Z;
-		break;
-	case ETerraDyneGizmoAxis::CenterXY:
-		NewLocation.X += Delta.X;
-		NewLocation.Y += Delta.Y;
-		break;
-	default:
-		return;
+		if (const APlayerCameraManager* CameraManager = Controller->PlayerCameraManager)
+		{
+			return CameraManager->GetCameraRotation().Vector();
+		}
 	}
-
-	// Axis drags deliberately skip the terrain snap a handle drag uses. Constraining motion to one
-	// axis and then dropping the result onto the ground would make the Z arrow do nothing at all.
-	SelectedRoadActor->MovePointRealtime(SelectedPointIndex, NewLocation);
+	FVector Origin, Direction;
+	return GetCursorRay(Origin, Direction) ? Direction : FVector::ForwardVector;
 }
 
 bool URealtimeRoadBuilderComponent::BeginPointDrag()
 {
-	// An axis arrow wins over a point handle: it is the smaller, more deliberate target, it only
-	// exists on the already-selected point, and it is the only way to move a point somewhere the
-	// ground trace would never put it.
-	ETerraDyneGizmoAxis Axis = ETerraDyneGizmoAxis::None;
-	if (SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE && TraceGizmoAxisUnderCursor(Axis))
+	// A gizmo handle wins over a plain point handle: it is the smaller, more deliberate target, it
+	// only exists on the already-selected point, and it is the only way to move a point somewhere
+	// the ground trace would never put it. UpdatePointGizmo (run every tick) keeps the subsystem's
+	// transform accessors bound to whichever point is currently selected, so as long as one is
+	// selected the subsystem already knows how to read/write it correctly.
+	if (SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE && GizmoSubsystem)
 	{
-		DragAxis = Axis;
-		DragStartPointLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
-
-		// Z drags against a vertical plane turned to face the camera, so cursor motion maps to
-		// height. The others drag against the horizontal plane through the point.
-		FVector Normal = FVector::UpVector;
-		if (Axis == ETerraDyneGizmoAxis::Z)
+		FGizmoInteractionRay Ray;
+		if (BuildGizmoInteractionRay(Ray))
 		{
-			const APlayerController* Controller = GetOwningPlayerController();
-			const FVector CameraLocation = (Controller && Controller->PlayerCameraManager)
-				? Controller->PlayerCameraManager->GetCameraLocation()
-				: FVector::ZeroVector;
-
-			const FVector Facing = (CameraLocation - DragStartPointLocation).GetSafeNormal2D();
-			Normal = Facing.IsNearlyZero() ? FVector::ForwardVector : Facing;
+			if (GizmoSubsystem->BeginManipulation(Ray, GetCameraForwardVector()) != EGizmoHandleType::None)
+			{
+				bIsGizmoDrag = true;
+				RecordUndo(SelectedRoadActor.Get());
+				bIsDraggingPoint = true;
+				return true;
+			}
 		}
-
-		DragPlane = FPlane(DragStartPointLocation, Normal);
-		IntersectCursorWithPlane(DragPlane, DragStartIntersection);
-
-		RecordUndo(SelectedRoadActor.Get());
-
-		bIsDraggingPoint = true;
-		return true;
 	}
 
 	// Otherwise a press has to land on a handle. A fresh trace here, rather than trusting
@@ -443,7 +417,7 @@ bool URealtimeRoadBuilderComponent::BeginPointDrag()
 		SelectRoadPoint(PressedRoad, PressedPointIndex);
 	}
 
-	DragAxis = ETerraDyneGizmoAxis::None;
+	bIsGizmoDrag = false;
 	DragStartPointLocation = SelectedRoadActor->GetSplinePointWorldLocation(SelectedPointIndex);
 
 	// Once, here, rather than per frame: undo should step back to where the point started, not
@@ -470,18 +444,47 @@ void URealtimeRoadBuilderComponent::EndPointDrag()
 	if (!bIsDraggingPoint) return;
 
 	bIsDraggingPoint = false;
-	DragAxis = ETerraDyneGizmoAxis::None;
+	if (bIsGizmoDrag && GizmoSubsystem)
+	{
+		GizmoSubsystem->EndManipulation();
+	}
+	bIsGizmoDrag = false;
 	DragGrabOffset = FVector::ZeroVector;
 	OverlayBuiltForRoad = nullptr;
 	TimeSinceJunctionResolve = 0.0f;
 
-	if (PointGizmo)
-	{
-		PointGizmo->SetHighlightedAxis(ETerraDyneGizmoAxis::None);
-	}
-
 	// Settle now rather than waiting out the road's timer, so collision matches the final position
 	// the moment the player lets go.
+	if (SelectedRoadActor.IsValid())
+	{
+		SelectedRoadActor->RebuildRoad();
+		SelectedRoadActor->RefreshAffectedJunctions();
+	}
+}
+
+void URealtimeRoadBuilderComponent::HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget)
+{
+	// The subsystem is shared with the building tool, so a cancel could be for a building drag with
+	// nothing to do with us -- only react if it's our own bound point's drag being cancelled.
+	if (!bIsDraggingPoint || !bIsGizmoDrag) return;
+	if (!GizmoBoundRoad.IsValid() || CancelledTarget != GizmoBoundRoad->SplineComponent) return;
+
+	bIsDraggingPoint = false;
+	bIsGizmoDrag = false;
+	DragGrabOffset = FVector::ZeroVector;
+	OverlayBuiltForRoad = nullptr;
+	TimeSinceJunctionResolve = 0.0f;
+
+	// The subsystem already restored the point to its pre-drag transform, so the snapshot BeginPointDrag
+	// pushed for this drag is now a no-op edit -- drop it rather than leaving a redundant undo step.
+	if (!UndoStack.IsEmpty())
+	{
+		UndoStack.Pop();
+	}
+
+	// Settle now rather than waiting out the road's timer, matching EndPointDrag's own reasoning --
+	// nothing else will tell this component the drag stopped, since the subsystem already fired
+	// CancelManipulation instead of EndManipulation.
 	if (SelectedRoadActor.IsValid())
 	{
 		SelectedRoadActor->RebuildRoad();
@@ -589,6 +592,40 @@ bool URealtimeRoadBuilderComponent::RedoRoadEdit()
 	return false;
 }
 
+bool URealtimeRoadBuilderComponent::DeleteSelectedRoad()
+{
+	ARealtimeRoadSplineActor* Road = SelectedRoadActor.Get();
+	if (!Road) return false;
+
+	// Snapshot every junction this road is pinned to before it disappears. SolveIntersection
+	// rescans the world for roads fresh each time it runs, so a junction left untouched here would
+	// keep showing this road's now-deleted leg -- a stale corner, an orphaned band -- until
+	// something else happened to trigger a rebuild.
+	TSet<ARealtimeRoadJunctionActor*> AffectedJunctions;
+	for (const FRoadJunctionCut& Cut : Road->JunctionCuts)
+	{
+		if (Cut.Junction)
+		{
+			AffectedJunctions.Add(Cut.Junction);
+		}
+	}
+	if (Road->StartJunction) AffectedJunctions.Add(Road->StartJunction);
+	if (Road->EndJunction) AffectedJunctions.Add(Road->EndJunction);
+
+	ClearSelection();
+	Road->Destroy();
+
+	for (ARealtimeRoadJunctionActor* Junction : AffectedJunctions)
+	{
+		if (Junction)
+		{
+			Junction->RebuildJunction();
+		}
+	}
+
+	return true;
+}
+
 bool URealtimeRoadBuilderComponent::DeleteSelectedPoint()
 {
 	if (!HasPointSelected()) return false;
@@ -597,10 +634,15 @@ bool URealtimeRoadBuilderComponent::DeleteSelectedPoint()
 	if (!Road || !Road->SplineComponent) return false;
 
 	const int32 Num = Road->SplineComponent->GetNumberOfSplinePoints();
+	if (SelectedPointIndex < 0 || SelectedPointIndex >= Num) return false;
 
-	// Two points is the least a road can be built from, so this refuses rather than silently
-	// leaving a road that cannot generate a mesh.
-	if (Num <= 2 || SelectedPointIndex < 0 || SelectedPointIndex >= Num) return false;
+	// A road can't render a mesh with fewer than two points, so deleting one that would leave it
+	// below that floor deletes the whole road instead of silently refusing -- there is nothing
+	// left for "delete this point" to mean once every point on the road is gone.
+	if (Num <= 2)
+	{
+		return DeleteSelectedRoad();
+	}
 
 	RecordUndo(Road);
 

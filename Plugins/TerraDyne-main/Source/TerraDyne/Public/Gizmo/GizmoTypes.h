@@ -77,13 +77,31 @@ struct FGizmoInteractionRay
  * the rest of that drag is computed relative to them -- never compounded onto the previous frame's
  * already-modified transform, which is what avoids floating-point drift over a long drag.
  */
+/**
+ * How the subsystem reads/writes the thing actually being manipulated. Plain (non-UPROPERTY)
+ * delegate members are fine inside a USTRUCT alongside reflected ones -- UHT just skips them.
+ *
+ * The obvious default (SetTarget(USceneComponent*)) binds these to the target's owning actor's
+ * whole transform -- correct for a building, which IS one actor being moved/rotated/scaled. A
+ * target that isn't shaped like "one actor's transform" (a single control point on a much larger
+ * spline actor, moved via its own setter, is the concrete case this exists for) instead calls
+ * SetTargetTransformAccessors directly with its own get/apply functions -- the delta MATH never
+ * changes, only where its result reads from and writes to.
+ */
+DECLARE_DELEGATE_RetVal(FTransform, FGizmoGetTransform);
+DECLARE_DELEGATE_OneParam(FGizmoSetTransform, const FTransform&);
+
 USTRUCT()
 struct FGizmoManipulationState
 {
 	GENERATED_BODY()
 
+	/** Identity only -- which component GetTarget()/the Begin/End/Cancel delegates report. The actual read/write goes through GetTransformFn/SetTransformFn below. */
 	UPROPERTY()
 	TWeakObjectPtr<USceneComponent> Target;
+
+	FGizmoGetTransform GetTransformFn;
+	FGizmoSetTransform SetTransformFn;
 
 	UPROPERTY()
 	EGizmoMode Mode = EGizmoMode::Translate;

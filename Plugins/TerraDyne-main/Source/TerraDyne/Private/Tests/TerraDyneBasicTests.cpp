@@ -174,8 +174,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 /**
- * The move gizmo is a RUNTIME tool, so it has to hold up outside the editor. Two things about it
- * were wrong and neither showed up in the editor, which is why they are pinned here.
+ * ATerraDyneGizmoActor is a RUNTIME visual (building footprint spline-point handles -- its own
+ * class comment explains why the name no longer matches its scope), so it has to hold up outside
+ * the editor. Two things about it were wrong and neither showed up in the editor, which is why
+ * they are pinned here. (Its former axis/translate-gizmo responsibility moved to the new
+ * ARuntimeGizmoActor/UGizmoManipulationSubsystem system -- see TerraDyne.Gizmo.* tests for that.)
  */
 bool FTerraDyneGizmoRuntimeAssetsTest::RunTest(const FString& Parameters)
 {
@@ -195,24 +198,39 @@ bool FTerraDyneGizmoRuntimeAssetsTest::RunTest(const FString& Parameters)
         return false;
     }
 
-    // Handle meshes must resolve. The spline-point sphere in particular was held in a Transient
-    // property, so it was never serialized into the CDO and never seen by the cooker.
-    UStaticMesh* ShaftMesh = GizmoA->MeshShaftX->GetStaticMesh();
-    UStaticMesh* TipMesh = GizmoA->MeshTipX->GetStaticMesh();
-    TestNotNull(TEXT("Axis shaft mesh resolved"), ShaftMesh);
-    TestNotNull(TEXT("Axis tip mesh resolved"), TipMesh);
+    // Populate one handle on each so there is something to check -- the array starts empty.
+    const TArray<FVector> OnePoint = { FVector::ZeroVector };
+    GizmoA->UpdateSplinePointHandles(OnePoint, FTransform::Identity);
+    GizmoB->UpdateSplinePointHandles(OnePoint, FTransform::Identity);
+    TestEqual(TEXT("First gizmo has one handle"), GizmoA->SplinePointMeshHandles.Num(), 1);
+    TestEqual(TEXT("Second gizmo has one handle"), GizmoB->SplinePointMeshHandles.Num(), 1);
+    if (GizmoA->SplinePointMeshHandles.Num() != 1 || GizmoB->SplinePointMeshHandles.Num() != 1)
+    {
+        return false;
+    }
 
-    UMaterialInterface* AxisMat = GizmoA->MeshShaftX->GetMaterial(0);
-    TestNotNull(TEXT("Axis handle has a material"), AxisMat);
-    if (!AxisMat)
+    // Handle meshes must resolve. The spline-point sphere used to be held in a Transient property,
+    // so it was never serialized into the CDO and never seen by the cooker.
+    UStaticMeshComponent* HandleA = GizmoA->SplinePointMeshHandles[0];
+    TestNotNull(TEXT("First handle component exists"), HandleA);
+    if (!HandleA)
+    {
+        return false;
+    }
+    UStaticMesh* HandleMesh = HandleA->GetStaticMesh();
+    TestNotNull(TEXT("Handle mesh resolved"), HandleMesh);
+
+    UMaterialInterface* HandleMat = HandleA->GetMaterial(0);
+    TestNotNull(TEXT("Handle has a material"), HandleMat);
+    if (!HandleMat)
     {
         return false;
     }
 
     // The base material must come from a tree that survives cooking. /Engine/EditorMaterials and
     // /Engine/VREditor are editor-only and are simply absent from a packaged build.
-    UMaterialInterface* BaseMat = AxisMat;
-    if (UMaterialInstanceDynamic* AsMID = Cast<UMaterialInstanceDynamic>(AxisMat))
+    UMaterialInterface* BaseMat = HandleMat;
+    if (UMaterialInstanceDynamic* AsMID = Cast<UMaterialInstanceDynamic>(HandleMat))
     {
         BaseMat = Cast<UMaterialInterface>(AsMID->Parent);
     }
@@ -226,10 +244,11 @@ bool FTerraDyneGizmoRuntimeAssetsTest::RunTest(const FString& Parameters)
     }
 
     // Each gizmo needs its own MIDs. Built in the constructor they belonged to the CDO, so every
-    // spawned gizmo shared one set and highlighting an axis on one recoloured all of them.
-    UMaterialInterface* MatA = GizmoA->MeshShaftX->GetMaterial(0);
-    UMaterialInterface* MatB = GizmoB->MeshShaftX->GetMaterial(0);
-    TestNotNull(TEXT("Second gizmo has its own axis material"), MatB);
+    // spawned gizmo shared one set and highlighting a handle on one recoloured all of them.
+    UStaticMeshComponent* HandleB = GizmoB->SplinePointMeshHandles[0];
+    UMaterialInterface* MatA = HandleA->GetMaterial(0);
+    UMaterialInterface* MatB = HandleB ? HandleB->GetMaterial(0) : nullptr;
+    TestNotNull(TEXT("Second gizmo has its own handle material"), MatB);
     TestNotEqual(TEXT("Two gizmos do not share one dynamic material instance"), MatA, MatB);
 
     return true;

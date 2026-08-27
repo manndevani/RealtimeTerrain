@@ -5,11 +5,11 @@
 #include "GameFramework/PlayerController.h"
 #include "Core/TerraDyneSaveGame.h"
 #include "World/TerraDyneTileData.h"
-#include "Building/TerraDyneGizmoActor.h"
 #include "IO/TerraDyneRasterLayers.h"
 #include "TerraDyneEditController.generated.h"
 
 class ATerraDyneManager;
+class UGizmoManipulationSubsystem;
 
 /**
  * Network routing for terrain edits.
@@ -156,22 +156,42 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<class ATerraDyneGizmoActor> ActiveMoveGizmo;
 
+	/** Lazily fetched the first time UpdateMoveGizmo runs -- see RealtimeRoadBuilderComponent's identical pattern. */
+	UPROPERTY(Transient)
+	TObjectPtr<UGizmoManipulationSubsystem> GizmoSubsystem;
+
+	/**
+	 * Which building (if any) this controller currently owns the shared subsystem's target for.
+	 * The subsystem is shared with URealtimeRoadBuilderComponent -- clearing its target whenever
+	 * this controller merely has no building selected would rip away a road tool's point gizmo
+	 * the instant a road tool mode ticks this controller too. Only ever touch ClearTarget/SetTarget
+	 * here when this is the consumer that actually set it, mirroring GizmoBoundRoad's guard.
+	 */
+	TWeakObjectPtr<class ATerraDyneBuildingActor> GizmoBoundBuilding;
+
 	void UpdateHolographicPreview();
 	void UpdateMoveGizmo();
-	bool TraceGizmoUnderCursor(ETerraDyneGizmoAxis& OutAxis, FVector& OutHitPoint) const;
 	bool TraceSplinePointUnderCursor(int32& OutPointIndex, FVector& OutHitPoint) const;
 	bool IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const;
+
+	/** Bound to GizmoSubsystem->OnManipulationCancel -- reacts only if the cancelled target is our own bound building (the subsystem is shared with the road tool). */
+	void HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget);
+
+	/** Builds an FGizmoInteractionRay from the current cursor position, or returns false if the mouse can't be deprojected right now. */
+	bool BuildGizmoInteractionRay(struct FGizmoInteractionRay& OutRay) const;
+
+	/** The active camera's forward vector, for hit-testing handles whose plane depends on view direction (e.g. the screen-space rotation ring). */
+	FVector GetCameraForwardVector() const;
 
 	bool bIsClicking = false;
 	bool bStrokeBegun = false;
 	bool bFlattenHeightLocked = false;
 	float LockedFlattenHeight = 0.0f;
 
-	ETerraDyneGizmoAxis DraggingGizmoAxis = ETerraDyneGizmoAxis::None;
-	FVector GizmoDragStartBuildingLoc = FVector::ZeroVector;
+	/** Whether the drag currently in progress is the shared gizmo (as opposed to a plain spline-vertex handle). Mirrors bIsGizmoDrag on RealtimeRoadBuilderComponent -- BeginManipulation can return None, so this can't just be inferred from GizmoSubsystem->IsManipulating(). */
+	bool bIsGizmoAxisDrag = false;
 	FVector GizmoDragStartIntersection = FVector::ZeroVector;
 	FPlane GizmoDragPlane;
-	FVector GizmoDragAxisDir = FVector::ZeroVector;
 
 	int32 DraggingSplinePointIndex = INDEX_NONE;
 	FVector SplinePointDragStartLocal = FVector::ZeroVector;
@@ -183,6 +203,7 @@ private:
 	void OnLeftClickStop();
 	void OnUndoPressed();
 	void OnRedoPressed();
+	void OnCancelManipulationPressed();
 	void PerformToolAction();
 
 	/**
