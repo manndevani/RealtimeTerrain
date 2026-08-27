@@ -201,8 +201,42 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   `TerraDyne.Building`/every `TerraDyne.Road*` suite untouched — this phase is pure addition, no
   rendering or existing-code changes yet).
 
-**Next step**: Phase 2 — `AGizmoActor` (the visual handle set, explicit handle-type tagging per
-component, mode-based visibility+collision toggling). See plan file for the full 10-phase order.
+### Phase 2 — COMPLETE ✅ (`ARuntimeGizmoActor` — visual handle set)
+- `Plugins/TerraDyne-main/Source/TerraDyne/Public/Gizmo/RuntimeGizmoActor.h`/`.cpp`: one
+  `UStaticMeshComponent` per handle (16 explicit `EGizmoHandleType` values) across all three modes.
+  Every handle is tagged explicitly (`TMap` from component to handle type, built once at
+  construction) — `GetHandleType`/`GetComponentForHandle` never infer identity from a mesh or
+  material. `SetMode(EGizmoMode)` toggles visibility **and** collision together per handle set, so
+  a handle from an inactive mode is never still hit-testable. Coloring reuses
+  `ATerraDyneGizmoActor`'s proven dynamic-MID pattern (7 shared MIDs: X/Y/Z axis colors, 3 plane
+  colors, one neutral MID shared by Center/RotateScreen/ScaleUniform, since those three never
+  render simultaneously — each belongs to a different, mutually exclusive mode).
+- **Three real bugs found and fixed this phase** (not left in, and not all caught by the same
+  method — a reminder that different bug classes need different catches):
+  1. **Build-time**: originally named `AGizmoActor`/`GizmoActor.h`, which collided with Epic's own
+     `Engine/Source/Runtime/InteractiveToolsFramework/Public/BaseGizmos/GizmoActor.h` (UHT requires
+     globally-unique header filenames project+engine-wide, not just per-module) — renamed to
+     `ARuntimeGizmoActor`/`RuntimeGizmoActor.h` throughout.
+  2. **Found by code review, before any test ran**: `SetHighlightedHandle`'s per-axis color-select
+     lambda captured `Handle` but also took a same-named parameter, so `Handle == Handle` always
+     evaluated true — every axis would have highlighted simultaneously. Fixed, and pinned by a new
+     assertion in `TerraDyne.Gizmo.ActorRuntimeAssets` reading the MID's actual emissive value back.
+  3. **Found from real data, not assumption**: the migrated `SM_RotationHandle`/`SM_ScaleHandle`
+     meshes' primary axis (a ring's normal; a scale handle's long arm) is local **X**, not Z like
+     the engine's own Cylinder — confirmed by logging each mesh's actual bounds extent
+     (`SM_RotationHandle`: X=2, Y=92, Z=92; `SM_ScaleHandle`: X=58.5, Y=7, Z=7) rather than assuming
+     the same convention as the Cylinder/Cone arrows. Every ring and scale handle originally pointed
+     at the wrong world axis; fixed with a dedicated `FRotationMatrix::MakeFromX` rotation set (the
+     arrows keep their own correct `MakeFromZ` set). Pinned by
+     `TerraDyne.Gizmo.ActorHandleOrientation`, which rotates each handle's real local-X through its
+     assigned rotation and checks it lands exactly on the intended world axis (not just "a rotation
+     exists") — all 6 (RotateX/Y/Z, ScaleX/Y/Z) land within 0.01 of their target axis.
+- **Full regression sweep after this increment: 44 tests, 0 regressions.**
+
+**Next step**: Phase 3 — `UGizmoManipulationSubsystem` (owns the live `ARuntimeGizmoActor` +
+`FGizmoManipulationState`, the clean `SetTarget`/`SetMode`/`Begin`/`Update`/`End`/
+`CancelManipulation` API) plus dedicated mathematical hit-testing (ray-vs-line/plane/ring/box, no
+reliance on physics collision). See plan file for the full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
