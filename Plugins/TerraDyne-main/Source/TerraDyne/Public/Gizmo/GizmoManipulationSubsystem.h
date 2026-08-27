@@ -87,8 +87,16 @@ public:
 	/** Starts a drag if Ray hits a handle of the current mode within its click tolerance. Returns the handle grabbed, or None if nothing was close enough (in which case no manipulation was started). */
 	EGizmoHandleType BeginManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward);
 
-	/** Continues an in-progress drag. No-op if not currently manipulating. */
-	void UpdateManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward);
+	/**
+	 * Continues an in-progress drag. No-op if not currently manipulating.
+	 *
+	 * bInvertSnapForThisCall flips whether snapping is applied for just this call, without touching
+	 * the persistent IsSnappingEnabled() setting -- the standard DCC-tool convention of holding Ctrl
+	 * to snap when it's off by default, or to move freely when it's on. A caller reads its own live
+	 * Ctrl-key state and passes it in every tick; releasing Ctrl mid-drag reverts to the persistent
+	 * setting on the very next call, with no separate state to reset afterwards.
+	 */
+	void UpdateManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward, bool bInvertSnapForThisCall = false);
 
 	/** Commits the current drag's transform and fires OnManipulationEnd. No-op if not currently manipulating. */
 	void EndManipulation();

@@ -63,6 +63,7 @@ private:
 	bool bSectionLevelsOpen = true;
 	bool bSectionGeoTIFFOpen = true;
 	bool bSectionSculptOpen = true;
+	bool bSectionGizmoOpen = true;
 	bool bSectionRoadsOpen = true;
 	bool bSectionBuildingsOpen = true;
 	bool bSectionTelemetryOpen = false;
@@ -96,6 +97,13 @@ private:
 	// Helper to get the Orchestrator from the World
 	class ATerraDyneOrchestrator* GetOrchestrator() const;
 	class ATerraDyneManager* GetManager() const;
+	class UGizmoManipulationSubsystem* GetGizmoSubsystem() const;
+
+	//--- Gizmo section (shared by Roads and Buildings -- one runtime gizmo, not per-tool state) ---
+	ECheckBoxState IsGizmoWorldSpaceChecked() const;
+	void OnGizmoWorldSpaceCheckedChanged(ECheckBoxState NewState);
+	ECheckBoxState IsGizmoSnappingChecked() const;
+	void OnGizmoSnappingCheckedChanged(ECheckBoxState NewState);
 
 	//--- Mode Badge & Switcher ---
 	FReply OnHeaderModeBadgeClicked();

@@ -138,7 +138,12 @@ void ATerraDyneEditController::SetupInputComponent()
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ATerraDyneEditController::OnLeftClickStart);
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ATerraDyneEditController::OnLeftClickStop);
 	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ATerraDyneEditController::OnCancelManipulationPressed);
-	// Ctrl+Z / Ctrl+Y instead of bare keys, so Z and Y stay available for other input.
+	InputComponent->BindKey(EKeys::C, IE_Pressed, this, &ATerraDyneEditController::OnToggleGizmoSpacePressed);
+	InputComponent->BindKey(EKeys::G, IE_Pressed, this, &ATerraDyneEditController::OnToggleGizmoSnappingPressed);
+	// Ctrl+Z / Ctrl+Y instead of bare keys, so Z and Y stay available for other input. Shift+W/E/R
+	// instead of bare keys for the same reason -- W/E are also the (unconditional, modifier-blind)
+	// axis-mapping keys for camera forward/up movement, so ATerraDyneEditPawn separately suppresses
+	// its own movement handlers while Shift is held, keeping Shift+W/E/R free of any camera nudge.
 	{
 		FInputKeyBinding UndoBinding(FInputChord(EKeys::Z, false, true, false, false), IE_Pressed);
 		UndoBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnUndoPressed);
@@ -147,6 +152,18 @@ void ATerraDyneEditController::SetupInputComponent()
 		FInputKeyBinding RedoBinding(FInputChord(EKeys::Y, false, true, false, false), IE_Pressed);
 		RedoBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnRedoPressed);
 		InputComponent->KeyBindings.Add(MoveTemp(RedoBinding));
+
+		FInputKeyBinding TranslateModeBinding(FInputChord(EKeys::W, true, false, false, false), IE_Pressed);
+		TranslateModeBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnSetGizmoModeTranslate);
+		InputComponent->KeyBindings.Add(MoveTemp(TranslateModeBinding));
+
+		FInputKeyBinding RotateModeBinding(FInputChord(EKeys::E, true, false, false, false), IE_Pressed);
+		RotateModeBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnSetGizmoModeRotate);
+		InputComponent->KeyBindings.Add(MoveTemp(RotateModeBinding));
+
+		FInputKeyBinding ScaleModeBinding(FInputChord(EKeys::R, true, false, false, false), IE_Pressed);
+		ScaleModeBinding.KeyDelegate.GetDelegateForManualSet().BindUObject(this, &ATerraDyneEditController::OnSetGizmoModeScale);
+		InputComponent->KeyBindings.Add(MoveTemp(ScaleModeBinding));
 	}
 }
 
@@ -559,6 +576,49 @@ void ATerraDyneEditController::OnCancelManipulationPressed()
 	}
 }
 
+void ATerraDyneEditController::OnSetGizmoModeTranslate()
+{
+	if (GizmoSubsystem)
+	{
+		GizmoSubsystem->SetMode(EGizmoMode::Translate);
+	}
+}
+
+void ATerraDyneEditController::OnSetGizmoModeRotate()
+{
+	if (GizmoSubsystem)
+	{
+		GizmoSubsystem->SetMode(EGizmoMode::Rotate);
+	}
+}
+
+void ATerraDyneEditController::OnSetGizmoModeScale()
+{
+	if (GizmoSubsystem)
+	{
+		GizmoSubsystem->SetMode(EGizmoMode::Scale);
+	}
+}
+
+void ATerraDyneEditController::OnToggleGizmoSpacePressed()
+{
+	if (GizmoSubsystem)
+	{
+		GizmoSubsystem->SetCoordinateSpace(
+			GizmoSubsystem->GetCoordinateSpace() == EGizmoCoordinateSpace::World
+				? EGizmoCoordinateSpace::Local
+				: EGizmoCoordinateSpace::World);
+	}
+}
+
+void ATerraDyneEditController::OnToggleGizmoSnappingPressed()
+{
+	if (GizmoSubsystem)
+	{
+		GizmoSubsystem->SetSnappingEnabled(!GizmoSubsystem->IsSnappingEnabled());
+	}
+}
+
 void ATerraDyneEditController::HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget)
 {
 	// The subsystem is shared with the road tool, so a cancel could be for a road-point drag that
@@ -709,7 +769,8 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 			FGizmoInteractionRay Ray;
 			if (BuildGizmoInteractionRay(Ray))
 			{
-				GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector());
+				const bool bInvertSnap = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+				GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector(), bInvertSnap);
 
 				ToolUI->SelectedBuilding->PadTargetWorldZ = ToolUI->SelectedBuilding->GetActorLocation().Z;
 

@@ -77,6 +77,16 @@ protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void Tick(float DeltaTime) override;
 
+	/**
+	 * Suppressed while Shift is held (see the .cpp) -- Unreal's legacy Axis Mappings have no
+	 * modifier-key concept, so the "W"/"D"/"E" keys bound to these fire regardless of Shift, and the
+	 * gizmo system's Shift+W/E/R mode-switch hotkeys (ATerraDyneEditController) need those same keys
+	 * free of any camera movement while Shift is down.
+	 */
+	virtual void MoveForward(float Val) override;
+	virtual void MoveRight(float Val) override;
+	virtual void MoveUp_World(float Val) override;
+
 private:
 	bool bIsOrbiting = false;
 
@@ -98,4 +108,5 @@ private:
 	void OnLookYaw(float Value);
 	void OnLookPitch(float Value);
 	void OnMouseWheelSpeedAdjust(float Value);
+	bool IsShiftHeld() const;
 };

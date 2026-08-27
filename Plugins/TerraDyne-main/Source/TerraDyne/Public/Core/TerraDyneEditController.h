@@ -204,6 +204,18 @@ private:
 	void OnUndoPressed();
 	void OnRedoPressed();
 	void OnCancelManipulationPressed();
+
+	/** Shift+W/E/R -- switches the shared gizmo's mode. One binding serves both consumers, same as OnCancelManipulationPressed. */
+	void OnSetGizmoModeTranslate();
+	void OnSetGizmoModeRotate();
+	void OnSetGizmoModeScale();
+
+	/** C -- toggles the shared gizmo between World and Local coordinate space. */
+	void OnToggleGizmoSpacePressed();
+
+	/** G -- toggles the shared gizmo's persistent snapping setting. Holding Ctrl during a drag inverts this for that drag only (see Tick's gizmo-drag branch) without touching the persistent value. */
+	void OnToggleGizmoSnappingPressed();
+
 	void PerformToolAction();
 
 	/**

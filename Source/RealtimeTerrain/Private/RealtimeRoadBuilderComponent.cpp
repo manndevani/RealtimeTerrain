@@ -52,7 +52,10 @@ void URealtimeRoadBuilderComponent::TickComponent(
 				FGizmoInteractionRay Ray;
 				if (BuildGizmoInteractionRay(Ray))
 				{
-					GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector());
+					const APlayerController* Controller = GetOwningPlayerController();
+					const bool bInvertSnap = Controller
+						&& (Controller->IsInputKeyDown(EKeys::LeftControl) || Controller->IsInputKeyDown(EKeys::RightControl));
+					GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector(), bInvertSnap);
 				}
 			}
 		}

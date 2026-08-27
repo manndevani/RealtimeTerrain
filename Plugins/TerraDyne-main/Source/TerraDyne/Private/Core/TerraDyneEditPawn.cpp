@@ -9,6 +9,7 @@
 #include "CesiumFlyToComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/FloatingPawnMovement.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/NetSerialization.h"
 #include "Engine/World.h"
 
@@ -109,6 +110,30 @@ void ATerraDyneEditPawn::OnMouseWheelSpeedAdjust(float Value)
 	constexpr float StepFactor = 1.15f;
 	FlightSpeedMultiplier = FMath::Clamp(
 		FlightSpeedMultiplier * FMath::Pow(StepFactor, Value), 0.1f, 10.0f);
+}
+
+bool ATerraDyneEditPawn::IsShiftHeld() const
+{
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	return PC && (PC->IsInputKeyDown(EKeys::LeftShift) || PC->IsInputKeyDown(EKeys::RightShift));
+}
+
+void ATerraDyneEditPawn::MoveForward(float Val)
+{
+	if (IsShiftHeld()) return;
+	Super::MoveForward(Val);
+}
+
+void ATerraDyneEditPawn::MoveRight(float Val)
+{
+	if (IsShiftHeld()) return;
+	Super::MoveRight(Val);
+}
+
+void ATerraDyneEditPawn::MoveUp_World(float Val)
+{
+	if (IsShiftHeld()) return;
+	Super::MoveUp_World(Val);
 }
 
 void ATerraDyneEditPawn::FocusOnMap()

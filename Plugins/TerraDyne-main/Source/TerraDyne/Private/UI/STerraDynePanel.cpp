@@ -8,6 +8,7 @@
 #include "IO/TerraDyneArchiveHelper.h"
 #include "IO/TerraDyneRasterLayers.h"
 #include "Building/TerraDyneBuildingActor.h"
+#include "Gizmo/GizmoManipulationSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
@@ -477,6 +478,44 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			.OnValueChanged(this, &STerraDynePanel::OnBrushStrengthChanged)
 		];
 
+	// 3b. Content for GIZMO section -- shared by Roads and Buildings, since it's one runtime gizmo
+	// and one subsystem's worth of state, not a per-tool setting.
+	TSharedRef<SWidget> GizmoContent = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &STerraDynePanel::IsGizmoWorldSpaceChecked)
+			.OnCheckStateChanged(this, &STerraDynePanel::OnGizmoWorldSpaceCheckedChanged)
+			.ToolTipText(LOCTEXT("GizmoWorldSpaceTip", "Checked: gizmo axes are always world X/Y/Z. Unchecked: gizmo axes follow the selected object's own rotation (Local space). Hotkey: C."))
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("GizmoWorldSpace", "World Space (C)"))
+				.Font(LabelFont)
+				.ColorAndOpacity(HudDim)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &STerraDynePanel::IsGizmoSnappingChecked)
+			.OnCheckStateChanged(this, &STerraDynePanel::OnGizmoSnappingCheckedChanged)
+			.ToolTipText(LOCTEXT("GizmoSnappingTip", "Snaps translate/rotate/scale drags to a fixed increment. Hotkey: G. Hold Ctrl while dragging to invert this just for that drag, without changing the setting."))
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("GizmoSnapping", "Snapping Enabled (G, hold Ctrl to invert)"))
+				.Font(LabelFont)
+				.ColorAndOpacity(HudDim)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 1)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("GizmoModeHint", "Mode: Shift+W Translate / Shift+E Rotate / Shift+R Scale"))
+			.Font(MicroFont)
+			.ColorAndOpacity(HudDim)
+			.AutoWrapText(true)
+		];
+
 	// 4. Content for ROADS section
 	TSharedRef<SWidget> RoadsContent = SNew(SVerticalBox)
 		// Draw / Select
@@ -890,6 +929,12 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						+ SScrollBox::Slot().Padding(0, 1)
 						[
 							MakeCollapsibleSection(LOCTEXT("SecSculpting", "SCULPTING"), bSectionSculptOpen, SculptContent, SectionHeaderFont)
+						]
+
+						// 3b. GIZMO SECTION -- shared translate/rotate/scale settings for Roads + Buildings
+						+ SScrollBox::Slot().Padding(0, 1)
+						[
+							MakeCollapsibleSection(LOCTEXT("SecGizmo", "GIZMO"), bSectionGizmoOpen, GizmoContent, SectionHeaderFont)
 						]
 
 						// 4. ROADS SECTION
@@ -1384,6 +1429,48 @@ ATerraDyneManager* STerraDynePanel::GetManager() const
 		}
 	}
 	return nullptr;
+}
+
+UGizmoManipulationSubsystem* STerraDynePanel::GetGizmoSubsystem() const
+{
+	if (OwnerWidget.IsValid())
+	{
+		if (UWorld* World = OwnerWidget->GetWorld())
+		{
+			return World->GetSubsystem<UGizmoManipulationSubsystem>();
+		}
+	}
+	return nullptr;
+}
+
+ECheckBoxState STerraDynePanel::IsGizmoWorldSpaceChecked() const
+{
+	const UGizmoManipulationSubsystem* Gizmo = GetGizmoSubsystem();
+	return (!Gizmo || Gizmo->GetCoordinateSpace() == EGizmoCoordinateSpace::World)
+		? ECheckBoxState::Checked
+		: ECheckBoxState::Unchecked;
+}
+
+void STerraDynePanel::OnGizmoWorldSpaceCheckedChanged(ECheckBoxState NewState)
+{
+	if (UGizmoManipulationSubsystem* Gizmo = GetGizmoSubsystem())
+	{
+		Gizmo->SetCoordinateSpace(NewState == ECheckBoxState::Checked ? EGizmoCoordinateSpace::World : EGizmoCoordinateSpace::Local);
+	}
+}
+
+ECheckBoxState STerraDynePanel::IsGizmoSnappingChecked() const
+{
+	const UGizmoManipulationSubsystem* Gizmo = GetGizmoSubsystem();
+	return (Gizmo && Gizmo->IsSnappingEnabled()) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void STerraDynePanel::OnGizmoSnappingCheckedChanged(ECheckBoxState NewState)
+{
+	if (UGizmoManipulationSubsystem* Gizmo = GetGizmoSubsystem())
+	{
+		Gizmo->SetSnappingEnabled(NewState == ECheckBoxState::Checked);
+	}
 }
 
 //--- Callbacks ---

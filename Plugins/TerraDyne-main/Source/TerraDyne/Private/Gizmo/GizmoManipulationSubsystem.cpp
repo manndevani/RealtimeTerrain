@@ -319,12 +319,16 @@ EGizmoHandleType UGizmoManipulationSubsystem::BeginManipulation(const FGizmoInte
 	return Handle;
 }
 
-void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward)
+void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay& Ray, const FVector& CameraForward, bool bInvertSnapForThisCall)
 {
 	if (!State.bIsManipulating || !State.SetTransformFn.IsBound())
 	{
 		return;
 	}
+
+	// XOR, not an overwrite of State.bSnappingEnabled -- releasing Ctrl next frame must fall straight
+	// back to the persistent setting, not leave it stuck at whatever the last held-Ctrl frame set.
+	const bool bEffectiveSnapping = State.bSnappingEnabled != bInvertSnapForThisCall;
 
 	// The gizmo's own pivot/rotation at drag START, held fixed for the whole drag -- every delta is
 	// computed relative to this, not the target's current (already-modified) transform, so rounding
@@ -387,7 +391,7 @@ void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay&
 	case EGizmoMode::Translate:
 	{
 		FVector Delta = GizmoMath::ComputeTranslateDelta(State.ActiveHandle, State.Space, TargetRotation, State.InitialIntersection, CurrentIntersection);
-		if (State.bSnappingEnabled)
+		if (bEffectiveSnapping)
 		{
 			Delta = GizmoMath::SnapVector(Delta, State.TranslateSnapSize);
 		}
@@ -406,7 +410,7 @@ void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay&
 			Axis = GizmoMath::ResolveAxisDirection(State.ActiveHandle, State.Space, TargetRotation);
 		}
 		double Angle = GizmoMath::ComputeRotationAngle(Axis, Origin, State.InitialIntersection, CurrentIntersection);
-		if (State.bSnappingEnabled)
+		if (bEffectiveSnapping)
 		{
 			Angle = FMath::DegreesToRadians(GizmoMath::SnapValue(FMath::RadiansToDegrees(Angle), State.RotateSnapDegrees));
 		}
@@ -417,7 +421,7 @@ void UGizmoManipulationSubsystem::UpdateManipulation(const FGizmoInteractionRay&
 	case EGizmoMode::Scale:
 	{
 		FVector Ratio = GizmoMath::ComputeScaleDelta(State.ActiveHandle, State.Space, TargetRotation, Origin, State.InitialIntersection, CurrentIntersection);
-		if (State.bSnappingEnabled)
+		if (bEffectiveSnapping)
 		{
 			Ratio = GizmoMath::SnapVector(Ratio, State.ScaleSnapIncrement);
 		}

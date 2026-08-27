@@ -320,9 +320,45 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   a building and a road point's gizmo handles in a running editor session is still needed before this
   phase is fully trustworthy, and hasn't been done yet.
 
-**Next step**: Phase 5 — snapping, world/local space, and plane/rotation-ring handles live
-end-to-end (the math and hit-testing have existed since Phase 1/3; this phase proves them through the
-now-migrated consumers). See plan file for the full 10-phase order.
+### Phase 5 — COMPLETE ✅ (mode/space/snap live end-to-end)
+- **Mode switching**: `Shift+W`/`Shift+E`/`Shift+R` switch the shared gizmo to Translate/Rotate/Scale,
+  bound once on `ATerraDyneEditController` (works for whichever consumer currently owns the target,
+  same "one call for both" pattern as Escape-cancel). Plain `W`/`E` were already claimed by this
+  project's own always-on camera-flight axis mappings, and Unreal's legacy Axis Mappings have no
+  modifier-key concept — they fire on the raw key regardless of Shift — so `ATerraDyneEditPawn` now
+  overrides `MoveForward`/`MoveRight`/`MoveUp_World` (inherited from `ADefaultPawn`) to no-op while
+  either Shift key is held, freeing `Shift+W/E/R` (and `Shift+A/S/D/Q`) for hotkeys with zero camera
+  side effect instead of a same-frame flight nudge (which, at orbital altitude, is not cosmetic — a
+  single frame of this project's own altitude-scaled max speed is tens of kilometers).
+- **World/Local space**: `C` toggles `SetCoordinateSpace`, plus a "World Space" checkbox in a new
+  GIZMO section of the tool panel (`STerraDynePanel`) — both drive the same subsystem call. Verified
+  by direct code reading that `SetMode`/`SetCoordinateSpace`/`SetPivotMode` only ever touch the
+  gizmo's own visual actor (`UpdateGizmoTransform`) and `FGizmoManipulationState`, never
+  `SetTransformFn` — switching space genuinely cannot move the selected object, matching the plan's
+  explicit "switching must not unexpectedly modify the object's transform" requirement.
+- **Snapping**: `G` toggles the persistent `SetSnappingEnabled`, also exposed as a panel checkbox.
+  Holding Ctrl during a drag inverts snapping for that drag only, without touching the persistent
+  setting — the standard DCC convention. `UpdateManipulation` gained a `bInvertSnapForThisCall`
+  parameter (default `false`, so both existing call sites and the two Phase-3 subsystem tests needed
+  no changes) computing `bEffectiveSnapping = State.bSnappingEnabled != bInvertSnapForThisCall` once,
+  used by all three mode branches instead of reading `State.bSnappingEnabled` directly. Both
+  consumers now read their own controller's live Ctrl-key state every `UpdateManipulation` call.
+  New test `TerraDyne.Gizmo.SubsystemInvertSnap` walks one continuous 137-unit drag through all three
+  combinations without ever re-calling `BeginManipulation` — persistent-off+Ctrl snaps to 100,
+  persistent-on+Ctrl gives the raw 137, and releasing Ctrl the very next call falls straight back to
+  the persistent (on) setting with no leftover state, exactly matching the logged values.
+- **Plane and rotation-ring handles**: no new code needed — Phase 1's math and Phase 3's hit-testing
+  already handled them, and Phase 4's migration already routes every mode through the same
+  `Begin/Update/EndManipulation` calls regardless of handle type. Reachable end-to-end as soon as
+  Rotate/Scale mode can actually be selected, which this phase's hotkeys now make possible.
+- **Full regression sweep after this increment: 84 tests found, 83 passed, 0 regressions** — the same
+  pre-existing, unrelated `TerraDyne.Raster.Workflow` failure as Phase 4.
+- **Known limitation carried over from Phase 4**: still no in-editor manual verification of the full
+  interactive feel (dragging every handle type, confirming the Shift/Ctrl/C/G hotkeys don't fight any
+  other input in practice) — headless automation cannot exercise real mouse/keyboard interaction.
+
+**Next step**: Phase 6 — road-point width scaling, giving the road tool's Scale mode a real, useful
+meaning (Rotate has none for a single spline point). See plan file for the full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
