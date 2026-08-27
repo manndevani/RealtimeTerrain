@@ -223,3 +223,20 @@ Plugins/Monolith/
 !/Content/UnrealDrive_CitySample/Textures/ground_trash_01_basecolor.uasset
 !/Content/UnrealDrive_CitySample/Textures/ground_trash_mask95_trashMask.uasset
 !/Content/UnrealDrive_CitySample/Textures/patch_04.uasset
+
+# ---------------------------------------------------------------------------
+# Gizmo handle meshes migrated from the MIT-licensed UnrealTransformGizmo repo
+# (github.com/robinwood3d/UnrealTransformGizmo) for the runtime transform
+# gizmo system -- attribution recorded in Content/THIRD_PARTY_NOTICES.md.
+# Otherwise covered by the /Content/* rule above; same allow-then-reignore
+# cascade as Materials/UnrealDrive_CitySample.
+# ---------------------------------------------------------------------------
+!/Content/Gizmo/
+/Content/Gizmo/*
+!/Content/Gizmo/Meshes/
+/Content/Gizmo/Meshes/*
+!/Content/Gizmo/Meshes/SM_RotationHandle.uasset
+!/Content/Gizmo/Meshes/SM_ScaleHandle.uasset
+!/Content/Gizmo/Meshes/SM_UniformScaleHandle.uasset
+
+!/Content/THIRD_PARTY_NOTICES.md

@@ -155,11 +155,54 @@ this section tracks current state only, not a running journal.
 
 Boundary/lane graph, junction lane routing + gore markings, elevation/auto-flyover/piers,
 Euler-spiral centreline smoothing, and OpenDRIVE export are all implemented, tested (35 automation
-tests, 0 regressions), committed, and pushed to `road-system-rewrite`. See the plan file
-(`C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`) for the original scope and each
-phase's section above for what was actually built and why. Every new feature defaults to its
-pre-existing behavior when unset (`StylePreset`, `HeightKeys`, `bUseSpiralCentreline` all off/empty
-by default), so no existing road in the project changed behavior as a side effect of this work.
+tests, 0 regressions), committed, and pushed to `road-system-rewrite`. Each phase's section above
+describes what was actually built and why (the plan file this was built from now holds the
+in-progress Gizmo System plan below, per this project's workflow of one live plan document at a
+time — see git log for the RoadBuilder port's original phase-by-phase history). Every new feature
+defaults to its pre-existing behavior when unset (`StylePreset`, `HeightKeys`,
+`bUseSpiralCentreline` all off/empty by default), so no existing road in the project changed
+behavior as a side effect of this work.
+
+## 🎯 Gizmo System — reusable runtime transform gizmo (in progress)
+
+**Goal**: replace the old translate-only, per-consumer-duplicated `ATerraDyneGizmoActor` with a
+proper reusable translate/rotate/scale gizmo system (world/local space, plane handles, rotation
+rings, mathematically precise hit testing, snapping, undo integration) shared by the building
+editor and the road-point editor instead of each reimplementing its own drag math. Full plan:
+`C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
+
+### Phase 1 — COMPLETE ✅ (manipulation core math)
+- `Plugins/TerraDyne-main/Source/TerraDyne/Public/Gizmo/GizmoTypes.h`: `EGizmoHandleType` (16
+  explicit handle identities — translate axes, planes, screen-space centre, rotation rings +
+  screen rotation, scale axes + uniform), `EGizmoMode`/`EGizmoCoordinateSpace`/`EGizmoPivotMode`,
+  `FGizmoInteractionRay` (device-agnostic — mouse today, a future VR controller could produce the
+  same struct), `FGizmoManipulationState`.
+- `GizmoManipulationMath.h`/`.cpp`: pure `namespace GizmoMath`, no UObject/UWorld/component
+  references anywhere — axis/plane resolution for World vs Local space; a generalized
+  best-facing-drag-plane resolver (replaces this project's two previously byte-identical
+  `BestFacingVerticalPlaneNormal` copies in `TerraDyneEditController.cpp` and
+  `RealtimeRoadBuilderComponent.cpp` with one function that handles every axis via the same
+  technique, not just the vertical one); translate/rotate/scale delta computation built on
+  **initial transform + accumulated delta**, never compounding onto an already-modified transform;
+  generic value/vector snapping.
+- Meshes migrated from `github.com/robinwood3d/UnrealTransformGizmo` (MIT, cloned and inspected
+  directly — confirmed pure Blueprint asset pack, no C++, so nothing but its content is reusable):
+  `Content/Gizmo/Meshes/SM_RotationHandle.uasset`, `SM_ScaleHandle.uasset`,
+  `SM_UniformScaleHandle.uasset` — no runtime-safe torus/scale-handle mesh ships in
+  `/Engine/BasicShapes/`. Attribution recorded in `Content/THIRD_PARTY_NOTICES.md`. The repo's own
+  materials were **not** migrated — this project's existing dynamic-MID coloring system
+  (`ATerraDyneGizmoActor`'s `GizmoBaseMaterial`/`ApplyGizmoColor`) is reused instead.
+  Test: `TerraDyne.Gizmo.*` (`AxisResolution`, `TranslateDelta`, `RotationAngle`, `ScaleDelta`,
+  `PlaneResolutionAndRayIntersect`, `Snapping`) — includes a known-quarter-turn check (measures
+  exactly π/2), a scale-crossing-the-origin check (clamps to a small positive ratio, never
+  negative/zero), and a far-from-world-origin check (same result 1,000,000cm from the origin,
+  standing in for "extreme camera distance" robustness).
+- **Full regression sweep after this increment: 42 tests, 0 regressions** (existing
+  `TerraDyne.Building`/every `TerraDyne.Road*` suite untouched — this phase is pure addition, no
+  rendering or existing-code changes yet).
+
+**Next step**: Phase 2 — `AGizmoActor` (the visual handle set, explicit handle-type tagging per
+component, mode-based visibility+collision toggling). See plan file for the full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
