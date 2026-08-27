@@ -21,7 +21,13 @@ public class RealtimeTerrain : ModuleRules
 			"TerraDyne"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			// RoadXodrExport.cpp builds its OpenDRIVE document as an in-memory FXmlNode tree
+			// (mirroring RoadBuilder's own ExportXodr approach) and serialises it via
+			// FXmlFile::WriteNodeHierarchy -- no disk I/O needed, so the exporter stays a pure,
+			// testable function.
+			"XmlParser"
+		});
 
 		if (Target.bBuildEditor)
 		{

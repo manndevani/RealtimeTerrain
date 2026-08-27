@@ -386,6 +386,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	bool SampleTerrainHeightAtXY(const FVector2D& WorldXY, float& OutHeightZ) const;
 
+#if WITH_EDITOR
+	/**
+	 * Exports this road's current centreline, elevation keys and lane layout as a standalone .xodr
+	 * (OpenDRIVE) file under Saved/Export/ -- an editor-only utility with no runtime or replication
+	 * cost (see RoadXodrExport.h for what is and isn't captured). Never invoked during play.
+	 */
+	UFUNCTION(CallInEditor, Category = "Road|Export")
+	void ExportRoadToXodr();
+#endif
+
 	/**
 	 * Overrides Points' heights, in place, wherever HeightKeys or an auto-detected flyover bridge
 	 * (see bAutoFlyover) covers that stretch -- called from BuildConformedCentreline after terrain-

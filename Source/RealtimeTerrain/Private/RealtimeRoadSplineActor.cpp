@@ -20,6 +20,12 @@
 #include "Net/UnrealNetwork.h"
 #include "Core/TerraDyneManager.h"
 #include "UObject/ConstructorHelpers.h"
+#if WITH_EDITOR
+#include "RoadXodrExport.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/PlatformFileManager.h"
+#endif
 
 ARealtimeRoadSplineActor::ARealtimeRoadSplineActor()
 {
@@ -533,6 +539,86 @@ bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXY(const FVector2D& WorldXY,
 {
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ);
 }
+
+#if WITH_EDITOR
+namespace
+{
+	RoadXodrExport::ELaneExportType ToXodrLaneType(ERealtimeLaneType LaneType)
+	{
+		switch (LaneType)
+		{
+		case ERealtimeLaneType::Driving: return RoadXodrExport::ELaneExportType::Driving;
+		case ERealtimeLaneType::Shoulder: return RoadXodrExport::ELaneExportType::Shoulder;
+		case ERealtimeLaneType::Sidewalk: return RoadXodrExport::ELaneExportType::Sidewalk;
+		case ERealtimeLaneType::Median: return RoadXodrExport::ELaneExportType::Median;
+		default: return RoadXodrExport::ELaneExportType::None;
+		}
+	}
+}
+
+void ARealtimeRoadSplineActor::ExportRoadToXodr()
+{
+	TArray<FVector> Centreline;
+	TArray<double> Distances;
+	if (!BuildConformedCentreline(Centreline, Distances, /*bAllowSpiralFit=*/true) || Centreline.Num() < 2)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ExportRoadToXodr: %s has no valid centreline to export."), *GetActorLabel());
+		return;
+	}
+
+	RoadXodrExport::FRoadExportData ExportData;
+	ExportData.Name = GetActorLabel();
+	ExportData.Id = 0;
+	ExportData.CentrelineXY.Reserve(Centreline.Num());
+	for (const FVector& Point : Centreline)
+	{
+		ExportData.CentrelineXY.Add(FVector2D(Point.X, Point.Y));
+	}
+	ExportData.Distances = Distances;
+	ExportData.HeightKeys = HeightKeys;
+
+	if (StylePreset)
+	{
+		for (const FRoadStyleLaneEntry& Entry : StylePreset->LeftLanes)
+		{
+			ExportData.LeftLanes.Add({ ToXodrLaneType(Entry.LaneType), Entry.Width });
+		}
+		for (const FRoadStyleLaneEntry& Entry : StylePreset->RightLanes)
+		{
+			ExportData.RightLanes.Add({ ToXodrLaneType(Entry.LaneType), Entry.Width });
+		}
+	}
+	else if (RoadType == ERoadType::PavedRoad)
+	{
+		// Mirrors GetDrivingLaneCount()'s own un-styled fallback (2 lanes) -- split evenly across
+		// the known driving half-width, one lane each side of the implied centreline.
+		const double HalfWidth = GetDrivingSurfaceHalfWidth();
+		ExportData.LeftLanes.Add({ RoadXodrExport::ELaneExportType::Driving, HalfWidth });
+		ExportData.RightLanes.Add({ RoadXodrExport::ELaneExportType::Driving, HalfWidth });
+	}
+	else
+	{
+		// Mirrors GetDrivingLaneCount()'s rough-road fallback (1 lane) -- the whole driving surface
+		// as a single lane, no implied centreline split.
+		ExportData.RightLanes.Add({ RoadXodrExport::ELaneExportType::Driving, GetDrivingSurfaceHalfWidth() * 2.0 });
+	}
+
+	const FString Xml = RoadXodrExport::ExportOpenDrive({ ExportData });
+
+	const FString ExportDir = FPaths::ProjectSavedDir() / TEXT("Export");
+	FPlatformFileManager::Get().GetPlatformFile().CreateDirectoryTree(*ExportDir);
+	const FString FilePath = ExportDir / (ExportData.Name + TEXT(".xodr"));
+
+	if (FFileHelper::SaveStringToFile(Xml, *FilePath))
+	{
+		UE_LOG(LogTemp, Log, TEXT("ExportRoadToXodr: %s exported to %s"), *ExportData.Name, *FilePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ExportRoadToXodr: failed to write %s"), *FilePath);
+	}
+}
+#endif
 
 int32 ARealtimeRoadSplineActor::GetDrivingLaneCount() const
 {

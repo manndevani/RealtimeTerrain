@@ -115,12 +115,51 @@ this section tracks current state only, not a running journal.
 - **Full regression sweep after this increment: 33 tests, 0 regressions** (critical here since
   `bUseSpiralCentreline` defaults off — confirms every pre-existing road/test is untouched).
 
-### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
+### Phase 5 — COMPLETE ✅ (OpenDrive/.xodr export)
+- `RoadXodrExport.h`/`.cpp`: self-contained, editor-only, pure module adapted from RoadBuilder's
+  `ExportXodr` methods (`RoadActor.cpp`/`RoadBoundary.cpp`/`RoadLane.cpp`/`RoadScene.cpp`) — no
+  runtime/replication cost, no `FXmlNode` leaked in its public API. Builds an in-memory `FXmlNode`
+  tree the same way RoadBuilder's own exporter does, then serialises it to a UTF-8 XML `FString` via
+  a locally reimplemented `WriteXmlNode` (matching `FXmlFile::WriteNodeHierarchy`'s exact algorithm
+  — that method turned out to be `private`, unreachable from outside the engine's XmlParser module).
+  No disk I/O inside `ExportOpenDrive` itself, so it stays directly testable.
+- Deliberately scoped, documented rather than faked (see the header's class comment): planView
+  geometry exports as a sequence of straight `<line>` records between the road's already-sampled
+  centreline stations (a standard, honest discretization for a spline-authored road, not the exact
+  analytic spiral/arc/line records `RoadSpiral::BuildSpiralCentreline` could in principle produce);
+  elevationProfile exports the road's *authored* `HeightKeys` verbatim, not the runtime auto-flyover
+  bridges (those depend on live terrain sampling, not portable design geometry); lanes export as one
+  laneSection spanning the whole road (no lane-width variation along a road yet); junctions are not
+  exported as XODR `<junction>` elements and junction-spanning roads aren't split into per-arm
+  records the way RoadBuilder's `Slots`/`CutRoadSegments` does.
+- `CalcElevationPolynomial`: a fresh cubic-Hermite-to-power-basis derivation, not a straight port —
+  cross-checking RoadBuilder's own elevation `ExportXodr` call site (`CalcABCD` fed `Dir*0.01`)
+  against its own actively-used height evaluator (`FHeightSegment::Get`, which correctly scales by
+  `Dir*Length`) shows the export call site never multiplies its tangent by the segment length,
+  an apparent unexercised bug in the third-party plugin. This port does the scaling correctly.
+  Test: `TerraDyne.RoadXodrExport.ElevationPolynomialRoundTrip` (the returned polynomial's value and
+  derivative at both endpoints reproduce the inputs exactly).
+- `ARealtimeRoadSplineActor::ExportRoadToXodr()`: `CallInEditor` entry point, `#if WITH_EDITOR`.
+  Builds the road's centreline (spiral-fit if enabled), gathers `HeightKeys` and lane data (from
+  `StylePreset` if set, else `GetDrivingLaneCount()`'s own established 2-lane-paved/1-lane-rough
+  fallback split across `GetDrivingSurfaceHalfWidth()`), and saves to `Saved/Export/<RoadName>.xodr`.
+  Thin glue over already-tested logic, so it has no dedicated test of its own — same precedent as
+  `GeneratePiers`' actor wiring in Phase 3.
+  Test: `TerraDyne.RoadXodrExport.ExportedDocumentStructureAndValues` (re-parses the module's own
+  output and checks real numeric attributes — road length, per-segment x/y/heading/length, the
+  elevation polynomial evaluated at its endpoint, and lane ids/types/widths — against known inputs).
+- **Full regression sweep after this increment: 35 tests, 0 regressions — the final sweep of the
+  entire 5-phase port.**
 
-**Next step**: Phase 5 — port RoadBuilder's `ExportXodr` methods (`RoadActor.cpp`,
-`RoadCurve.cpp`/`RoadBoundary.cpp`/`RoadLane.cpp`/`RoadScene.cpp`) as a self-contained, editor-only
-`.xodr` export utility, adapted to this project's own centreline/lane/elevation data. See plan file
-for full detail.
+## ✅ RoadBuilder port — all 5 phases complete
+
+Boundary/lane graph, junction lane routing + gore markings, elevation/auto-flyover/piers,
+Euler-spiral centreline smoothing, and OpenDRIVE export are all implemented, tested (35 automation
+tests, 0 regressions), committed, and pushed to `road-system-rewrite`. See the plan file
+(`C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`) for the original scope and each
+phase's section above for what was actually built and why. Every new feature defaults to its
+pre-existing behavior when unset (`StylePreset`, `HeightKeys`, `bUseSpiralCentreline` all off/empty
+by default), so no existing road in the project changed behavior as a side effect of this work.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
