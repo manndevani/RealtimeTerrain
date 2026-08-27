@@ -69,6 +69,16 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_SplinePoints, Category = "TerraDyne|Building")
 	TArray<FVector> ReplicatedSplinePoints;
 
+	/**
+	 * Explicit scale replication -- SetReplicateMovement's FRepMovement (Location/Rotation only) has
+	 * no Scale3D field at all, so a gizmo Scale-mode drag would otherwise resize the building only on
+	 * whichever machine actually performed the drag, and every other client would keep watching it at
+	 * its old size forever. NotifyBuildingChanged() keeps this in sync with the real GetActorScale3D()
+	 * on the authority; OnRep_Scale3D applies it back out on every other machine.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_Scale3D, Category = "TerraDyne|Building")
+	FVector ReplicatedScale3D = FVector::OneVector;
+
 	//--- Terrain pad ---
 
 	/** When false the building leaves the ground alone and simply sits wherever it is placed. */
@@ -119,7 +129,9 @@ public:
 
 	/**
 	 * Re-stamps the terrain pad for wherever this building is now, and for wherever it used to be.
-	 * Call after any change to position, footprint, or pad settings.
+	 * Call after any change to position, rotation, scale, footprint, or pad settings. On the
+	 * authority, also resyncs ReplicatedScale3D from the actor's real current scale -- the one
+	 * transform channel Unreal's own movement replication doesn't cover.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building|Terrain")
 	void NotifyBuildingChanged();
@@ -194,6 +206,9 @@ protected:
 
 	UFUNCTION()
 	void OnRep_SplinePoints();
+
+	UFUNCTION()
+	void OnRep_Scale3D();
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;

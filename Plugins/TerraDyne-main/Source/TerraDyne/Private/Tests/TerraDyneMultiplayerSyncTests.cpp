@@ -117,6 +117,55 @@ bool FTerraDyneBuildingPadSyncTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Regression test for a real gap: SetReplicateMovement's FRepMovement (used for
+// bReplicates+SetReplicateMovement(true), ATerraDyneBuildingActor's own replication mechanism) only
+// carries Location and Rotation -- it has no Scale3D field at all. Without an explicit replicated
+// property, a gizmo Scale-mode drag would resize a building only on whichever machine performed the
+// drag; every other client/observer would keep rendering it at its old size forever, with no error
+// or warning anywhere. Checks the authority-side half of the fix -- NotifyBuildingChanged (called
+// from the same commit path ATerraDyneEditController::RequestMoveBuilding uses) keeps
+// ReplicatedScale3D in sync with the real GetActorScale3D() -- the same way this project's other
+// Multiplayer tests verify replicated STATE rather than spinning up a second real network
+// connection. OnRep_Scale3D (the remote-side apply, exercised once that property actually arrives on
+// another machine) is protected like every other OnRep_* handler in this class and so isn't
+// reachable from a test the way the existing OnRep_* handlers here already aren't either -- its own
+// two-line body (apply + NotifyBuildingChanged, the same shape as OnRep_PadSettings) is confirmed by
+// direct code reading instead.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTerraDyneBuildingScaleReplicationTest,
+	"TerraDyne.Multiplayer.BuildingScaleReplication",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneBuildingScaleReplicationTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull(TEXT("World exists"), World);
+	if (!World)
+	{
+		return false;
+	}
+
+	ATerraDyneBuildingActor* Building = World->SpawnActor<ATerraDyneBuildingActor>();
+	TestNotNull(TEXT("Building spawned"), Building);
+	if (!Building)
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("ReplicatedScale3D starts matching the actor's spawn scale"), Building->ReplicatedScale3D.Equals(Building->GetActorScale3D(), 0.01));
+
+	// A real gizmo Scale-mode commit ends by calling SetActorTransform (exercised end-to-end by
+	// TerraDyne.Building.GizmoRotateAndScale) then NotifyBuildingChanged, exactly as
+	// ATerraDyneEditController::RequestMoveBuilding does.
+	Building->SetActorScale3D(FVector(3.0, 3.0, 3.0));
+	TestFalse(TEXT("ReplicatedScale3D has not resynced yet, before NotifyBuildingChanged runs"), Building->ReplicatedScale3D.Equals(FVector(3.0), 0.01));
+	Building->NotifyBuildingChanged();
+	TestTrue(TEXT("NotifyBuildingChanged resyncs ReplicatedScale3D from the real actor scale"), Building->ReplicatedScale3D.Equals(FVector(3.0), 0.01));
+
+	Building->Destroy();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FTerraDyneGlobalNoiseSyncTest,
 	"TerraDyne.Multiplayer.GlobalNoiseSync",

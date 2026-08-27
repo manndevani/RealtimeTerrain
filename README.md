@@ -414,8 +414,59 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   own Rotate/Scale wiring (Phase 7) and in-editor manual drag verification (carried over from Phases
   4-5) remain outstanding.
 
-**Next step**: Phase 7 — building rotate/scale wiring (`SetActorRotation`/`SetActorScale3D` via the
-existing networked RPC pattern). See plan file for the full 10-phase order.
+### Phase 7 — COMPLETE ✅ (building rotate/scale wiring)
+- **The mechanical wiring turned out to already be in place, verified rather than built from
+  scratch**: `RequestMoveBuilding`/`Server_MoveBuilding` already took a whole `FTransform` (not just
+  a location) since Phase 4's migration, and `ATerraDyneBuildingActor`'s footprint is already stored
+  actor-local (`GatherSplinePointsLocal`) with `GetFootprintPolygonWorld`/terrain-pad sampling
+  already correctly transforming through the actor's real rotation and scale. Because
+  `ATerraDyneEditController::UpdateMoveGizmo` already binds buildings through the subsystem's generic
+  `SetTarget` (whole-actor transform), and `UpdateManipulation`'s Rotate/Scale branches never
+  distinguish which consumer is active, Rotate and Scale already worked mechanically as an emergent
+  consequence of Phases 4-5 — nothing needed to change in `TerraDyneEditController.cpp` at all.
+- **A real, concrete multiplayer gap found while checking that emergent behavior actually holds
+  end-to-end, not assumed**: `SetReplicateMovement(true)`'s `FRepMovement` (Unreal's standard actor
+  movement replication, what `ATerraDyneBuildingActor` uses) carries Location and Rotation but has
+  **no `Scale3D` field at all**. A gizmo Scale-mode drag would have resized a building only on
+  whichever machine actually performed the drag — every other client/observer would keep rendering
+  it at its old size forever, silently, with no error anywhere. Fixed with an explicit
+  `ReplicatedScale3D` property (`ReplicatedUsing = OnRep_Scale3D`, mirroring `ReplicatedSplinePoints`'s
+  existing pattern exactly): `NotifyBuildingChanged()` — already called from every real commit path
+  (`RequestMoveBuilding`, the Tick throttle, the cancel handler) — now also resyncs it from the
+  actor's real scale on the authority; `OnRep_Scale3D` applies it back out on every other machine,
+  matching `OnRep_PadSettings`'s shape (reapply + re-stamp the pad, no full mesh regeneration needed
+  since geometry itself never changes with scale, only the actor's overall transform).
+- `TerraDyne.Building.GizmoRotateAndScale` (new): drives a real spawned building through
+  `UGizmoManipulationSubsystem`'s actual `SetTarget`/`BeginManipulation`/`UpdateManipulation`/
+  `EndManipulation` calls — the same calls `ATerraDyneEditController` makes — with hand-verified rays
+  landing on `RotateZ` (ring radius 138, reusing `TerraDyne.Gizmo.DistanceRayToRing`'s geometry) and
+  `ScaleZ` (segment reach 150). Confirms the building-specific piece Phase 3/5's generic subsystem
+  tests couldn't: `GetFootprintPolygonWorld()` — what pad-leveling and everything else downstream
+  actually reads — genuinely rotates every footprint point rigidly around the pivot (every point's
+  distance from it preserved, checked numerically rather than assumed) and genuinely scales
+  correctly (a `ScaleZ` drag measured exactly (1,1,1) → (1,1,2), leaving X/Y untouched). Also caught
+  and fixed a real bug in the test itself, not the product code, while writing it: a vertical grab
+  ray through the gizmo origin can't distinguish `ScaleZ` (whose hit-test segment starts exactly at
+  the origin) from `ScaleUniform` (a point handle also exactly at the origin) — both this file's
+  hand-derivation and a first failing run confirmed it — fixed by approaching `ScaleZ` with a
+  horizontal ray at its far end instead, well clear of the ambiguous zone.
+- `TerraDyne.Multiplayer.BuildingScaleReplication` (new): confirms `NotifyBuildingChanged` actually
+  resyncs `ReplicatedScale3D` from a real scale change, matching this project's existing convention
+  of checking replicated *state* in a single process rather than standing up a second network
+  connection (the same shape `BuildingReplicationAndSplineSync`/`BuildingPadSync` already use).
+  `OnRep_Scale3D` itself is `protected` like every other `OnRep_*` handler in this class, so it isn't
+  reachable from a test any more than the existing ones are — its two-line body is confirmed by
+  direct code reading instead.
+- **Full regression sweep after this increment: 89 tests found, 88 passed, 0 regressions** — the same
+  pre-existing, unrelated `TerraDyne.Raster.Workflow` failure as Phases 4-6.
+- **Known limitation**: in-editor manual drag verification (carried over from Phases 4-6) remains
+  outstanding — headless automation proves the math and the replication-sync bookkeeping, not the
+  real click-and-drag feel or a genuine two-machine network test.
+
+**Next step**: Phase 8 — VR/motion-controller readiness (design-verification only: confirm
+`FGizmoInteractionRay` + the subsystem API are the only things a future controller integration would
+need; no VR plugin/hardware exists in this project to build or test against). See plan file for the
+full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

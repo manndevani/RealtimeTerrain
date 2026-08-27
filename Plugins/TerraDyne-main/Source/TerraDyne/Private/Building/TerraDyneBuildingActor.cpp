@@ -50,6 +50,7 @@ ATerraDyneBuildingActor::ATerraDyneBuildingActor()
 
 	BuildingId = FGuid::NewGuid();
 	SyncSplinePointsToReplication();
+	ReplicatedScale3D = GetActorScale3D();
 }
 
 void ATerraDyneBuildingActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -65,6 +66,7 @@ void ATerraDyneBuildingActor::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(ATerraDyneBuildingActor, DoorSegmentIndex);
 	DOREPLIFETIME(ATerraDyneBuildingActor, BuildingId);
 	DOREPLIFETIME(ATerraDyneBuildingActor, ReplicatedSplinePoints);
+	DOREPLIFETIME(ATerraDyneBuildingActor, ReplicatedScale3D);
 	DOREPLIFETIME(ATerraDyneBuildingActor, bFlattenTerrain);
 	DOREPLIFETIME(ATerraDyneBuildingActor, bAutoPadHeight);
 	DOREPLIFETIME(ATerraDyneBuildingActor, PadTargetWorldZ);
@@ -127,6 +129,16 @@ void ATerraDyneBuildingActor::OnRep_SplinePoints()
 		EnforceLinearTangents();
 	}
 	RegenerateBuilding();
+	NotifyBuildingChanged();
+}
+
+void ATerraDyneBuildingActor::OnRep_Scale3D()
+{
+	// Geometry itself never changes with scale -- it's generated once at its own local size and the
+	// actor's overall transform scales it uniformly like any other actor, so this only needs to
+	// apply the new scale and let the pad catch up (matching OnRep_PadSettings's shape, not
+	// OnRep_SplinePoints'/OnRep_BuildingConfig's RegenerateBuilding() call).
+	SetActorScale3D(ReplicatedScale3D);
 	NotifyBuildingChanged();
 }
 
@@ -376,6 +388,15 @@ void ATerraDyneBuildingActor::NotifyBuildingChanged()
 	if (bIsHolographicPreview)
 	{
 		return;
+	}
+
+	// Ahead of the Manager check below (pad-stamping needs one; this bookkeeping doesn't) -- only
+	// the authority's own writes to a replicated property actually propagate, so a client reading
+	// its own (possibly still-stale, about-to-be-overwritten-by-replication) GetActorScale3D() here
+	// would be harmless but pointless; guarded to skip that wasted work.
+	if (HasAuthority())
+	{
+		ReplicatedScale3D = GetActorScale3D();
 	}
 
 	ATerraDyneManager* Manager = FindManager();
