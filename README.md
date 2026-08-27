@@ -233,10 +233,49 @@ editor and the road-point editor instead of each reimplementing its own drag mat
      exists") — all 6 (RotateX/Y/Z, ScaleX/Y/Z) land within 0.01 of their target axis.
 - **Full regression sweep after this increment: 44 tests, 0 regressions.**
 
-**Next step**: Phase 3 — `UGizmoManipulationSubsystem` (owns the live `ARuntimeGizmoActor` +
-`FGizmoManipulationState`, the clean `SetTarget`/`SetMode`/`Begin`/`Update`/`End`/
-`CancelManipulation` API) plus dedicated mathematical hit-testing (ray-vs-line/plane/ring/box, no
-reliance on physics collision). See plan file for the full 10-phase order.
+### Phase 3 — COMPLETE ✅ (`UGizmoManipulationSubsystem` + mathematical hit-testing)
+- Four new pure hit-test functions in `GizmoManipulationMath.h`/`.cpp` — `DistanceRayToSegment`
+  (translate/scale axes), `DistanceRayToPoint` (Center/ScaleUniform), `DistanceRayToRing` (rotation
+  handles, via plane-intersect-then-radius-check rather than a full quartic ray-torus solve),
+  `DistanceRayToQuad` (plane handles) — each hand-verified against worked geometry before any test
+  ran: a ray straight through a segment's own start is a perfect 0-distance hit at exactly the
+  expected travel distance; the same ray offset 50cm sideways misses by exactly 50; a 3-4-5-triangle
+  scaled by 10 measures exactly 50; a ring's dead-centre click misses by exactly its own radius,
+  while a click on the ring itself is a perfect hit; a quad click 30cm past its edge measures
+  exactly 30. `ResolveTranslateDragPlane`'s own best-facing-plane technique was refactored out into
+  a new `ResolveAxisDragPlane`, so scale and rotate axes reuse the identical, already-tested
+  degenerate-fallback chain instead of a near-duplicate.
+- `ARuntimeGizmoActor::GetHandleReach(EGizmoHandleType)`: the single source of truth for a handle's
+  own size (segment length, ring radius, quad half-size, or a fixed click radius for point-like
+  handles), reading the exact same placement constants the constructor already uses — this is
+  explicitly an **input** to the distance functions above (the handle's own geometry), never a
+  click-tolerance **threshold** on their output; the subsystem keeps a separate `ClickTolerance`
+  constant for that, a distinction easy to get backwards.
+- `UGizmoManipulationSubsystem : UWorldSubsystem` (mirrors the project's existing
+  `UTerraDyneSubsystem` precedent, not a hand-rolled singleton): owns one lazily-spawned
+  `ARuntimeGizmoActor` and the live `FGizmoManipulationState`. Full API: `SetTarget`/`ClearTarget`,
+  `SetMode`/`SetCoordinateSpace`/`SetPivotMode`, `SetSnappingEnabled` +
+  `SetTranslationSnap`/`SetRotationSnap`/`SetScaleSnap`, `UpdateHover`,
+  `BeginManipulation`/`UpdateManipulation`/`EndManipulation`/`CancelManipulation`. Hit-testing
+  (`FindHoveredHandle`) reads the live `ARuntimeGizmoActor`'s own component transforms directly
+  rather than re-deriving geometry from `GizmoMath`'s pure resolve functions — the gizmo actor's
+  transform is kept in sync with the current target/space/pivot on every change, so hit-testing can
+  never disagree with what is actually rendered. Drags use initial-transform-plus-accumulated-delta
+  throughout (never compounding onto an already-modified transform), verified end-to-end by a test
+  that grabs `TranslateX`, drags 50cm, then cancels — the target lands back at its bit-for-bit
+  original transform, not an approximation.
+- Undo integration is delegate-based (`OnManipulationBegin`/`OnManipulationEnd`/
+  `OnManipulationCancel`, plain multicast delegates), **not** Unreal's `FScopedTransaction` — that
+  mechanism is editor-only (bound to `GEditor`'s transaction buffer) and would not survive a
+  packaged build. A calling controller binds its own undo-snapshot recording to these instead,
+  keeping whatever representation actually fits its data (a transform snapshot for a building; the
+  existing point-list snapshot stack for a road).
+- **Full regression sweep after this increment: 51 tests, 0 regressions.**
+
+**Next step**: Phase 4 — migrate `ATerraDyneEditController` (buildings) and
+`URealtimeRoadBuilderComponent` (road points) to drive `UGizmoManipulationSubsystem` instead of
+their own duplicated raycast/plane-intersection/delta-apply code, then delete `ATerraDyneGizmoActor`
+once both are migrated and green. See plan file for the full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.

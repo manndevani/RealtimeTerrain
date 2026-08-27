@@ -154,4 +154,31 @@ bool FGizmoActorHandleOrientationTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// Sanity-checks GetHandleReach's relative ordering at the actor's default (unscaled) size --
+// the exact constants are already covered by the constructor's own placement (visually consistent
+// by construction) and the bounds-extent data already verified in ActorRuntimeAssets/
+// ActorHandleOrientation, so this only needs to confirm the reach values stay sensibly ordered
+// relative to each other, not re-derive each one from scratch.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGizmoActorHandleReachTest, "TerraDyne.Gizmo.ActorHandleReach", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGizmoActorHandleReachTest::RunTest(const FString& Parameters)
+{
+	ARuntimeGizmoActor* Gizmo = NewObject<ARuntimeGizmoActor>();
+	TestNotNull(TEXT("Gizmo constructed"), Gizmo);
+	if (!Gizmo) return false;
+
+	const double TranslateReach = Gizmo->GetHandleReach(EGizmoHandleType::TranslateX);
+	const double ScaleReach = Gizmo->GetHandleReach(EGizmoHandleType::ScaleX);
+	const double PlaneReach = Gizmo->GetHandleReach(EGizmoHandleType::PlaneXY);
+	const double RotateReach = Gizmo->GetHandleReach(EGizmoHandleType::RotateX);
+	const double PointReach = Gizmo->GetHandleReach(EGizmoHandleType::Center);
+
+	AddInfo(FString::Printf(TEXT("Translate=%.2f Scale=%.2f Rotate=%.2f Plane=%.2f Point=%.2f"), TranslateReach, ScaleReach, RotateReach, PlaneReach, PointReach));
+	TestTrue(TEXT("Translate arrows reach further than scale handles"), TranslateReach > ScaleReach);
+	TestTrue(TEXT("Scale handles reach further than the small plane quads"), ScaleReach > PlaneReach);
+	TestTrue(TEXT("Every reach value is positive"), TranslateReach > 0.0 && ScaleReach > 0.0 && PlaneReach > 0.0 && RotateReach > 0.0 && PointReach > 0.0);
+	TestEqual(TEXT("An unrecognized handle type has zero reach"), Gizmo->GetHandleReach(EGizmoHandleType::None), 0.0, 1.0e-9);
+
+	return true;
+}
 #endif // WITH_EDITOR

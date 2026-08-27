@@ -55,6 +55,33 @@ FVector GizmoMath::BestFacingVerticalPlaneNormal(const FVector& CursorDir)
 	return FVector::ForwardVector;
 }
 
+FPlane GizmoMath::ResolveAxisDragPlane(const FVector& Axis, const FVector& GizmoOrigin, const FVector& CursorDir, const FVector& CameraForward)
+{
+	// Generalizes BestFacingVerticalPlaneNormal from "the vertical axis specifically" (the only case
+	// this project's existing code handled) to any axis: among every plane containing this axis's
+	// line, use the one whose normal is CursorDir's own component perpendicular to the axis -- the
+	// best-conditioned choice for any axis, not just a hard-coded vertical one. Shared by every
+	// single-axis-constrained handle -- translate, scale, and rotate axes alike.
+	FVector Normal = CursorDir - Axis * FVector::DotProduct(CursorDir, Axis);
+	if (Normal.IsNearlyZero())
+	{
+		// The camera looks almost exactly along the axis being dragged -- no plane containing this
+		// axis can be well-conditioned against this particular ray. Fall back to a plane built from
+		// the camera's own forward vector, then world Up, then world Right, each only reached if the
+		// previous one was itself degenerate against this exact axis.
+		Normal = FVector::CrossProduct(Axis, CameraForward);
+		if (Normal.IsNearlyZero())
+		{
+			Normal = FVector::CrossProduct(Axis, FVector::UpVector);
+		}
+		if (Normal.IsNearlyZero())
+		{
+			Normal = FVector::CrossProduct(Axis, FVector::RightVector);
+		}
+	}
+	return FPlane(GizmoOrigin, Normal.GetSafeNormal());
+}
+
 FPlane GizmoMath::ResolveTranslateDragPlane(
 	EGizmoHandleType Handle, EGizmoCoordinateSpace Space, const FQuat& TargetRotation,
 	const FVector& GizmoOrigin, const FVector& CursorDir, const FVector& CameraForward)
@@ -64,32 +91,7 @@ FPlane GizmoMath::ResolveTranslateDragPlane(
 	case EGizmoHandleType::TranslateX:
 	case EGizmoHandleType::TranslateY:
 	case EGizmoHandleType::TranslateZ:
-	{
-		const FVector Axis = ResolveAxisDirection(Handle, Space, TargetRotation);
-
-		// Generalizes BestFacingVerticalPlaneNormal from "the vertical axis specifically" (the only
-		// case this project's existing code handled) to any axis: among every plane containing this
-		// axis's line, use the one whose normal is CursorDir's own component perpendicular to the
-		// axis -- the best-conditioned choice for any axis, not just a hard-coded vertical one.
-		FVector Normal = CursorDir - Axis * FVector::DotProduct(CursorDir, Axis);
-		if (Normal.IsNearlyZero())
-		{
-			// The camera looks almost exactly along the axis being dragged -- no plane containing
-			// this axis can be well-conditioned against this particular ray. Fall back to a plane
-			// built from the camera's own forward vector, then world Up, then world Right, each only
-			// reached if the previous one was itself degenerate against this exact axis.
-			Normal = FVector::CrossProduct(Axis, CameraForward);
-			if (Normal.IsNearlyZero())
-			{
-				Normal = FVector::CrossProduct(Axis, FVector::UpVector);
-			}
-			if (Normal.IsNearlyZero())
-			{
-				Normal = FVector::CrossProduct(Axis, FVector::RightVector);
-			}
-		}
-		return FPlane(GizmoOrigin, Normal.GetSafeNormal());
-	}
+		return ResolveAxisDragPlane(ResolveAxisDirection(Handle, Space, TargetRotation), GizmoOrigin, CursorDir, CameraForward);
 	case EGizmoHandleType::PlaneXY:
 	case EGizmoHandleType::PlaneXZ:
 	case EGizmoHandleType::PlaneYZ:
@@ -258,4 +260,102 @@ double GizmoMath::SnapValue(double Value, double Increment)
 FVector GizmoMath::SnapVector(const FVector& Value, double Increment)
 {
 	return FVector(SnapValue(Value.X, Increment), SnapValue(Value.Y, Increment), SnapValue(Value.Z, Increment));
+}
+
+double GizmoMath::DistanceRayToSegment(
+	const FGizmoInteractionRay& Ray, const FVector& SegmentStart, const FVector& SegmentDir,
+	double SegmentLength, double& OutDistanceAlongRay)
+{
+	// Standard closest-point-between-two-lines: line 1 is the ray (Origin + s*Direction), line 2 is
+	// the segment's own infinite line (SegmentStart + t*SegmentDir). Both direction vectors are
+	// assumed unit (Ray.Direction always is by convention in this module; SegmentDir is documented
+	// as such on the header).
+	const FVector& D1 = Ray.Direction;
+	const FVector& D2 = SegmentDir;
+	const FVector W0 = Ray.Origin - SegmentStart;
+
+	const double A = FVector::DotProduct(D1, D1);
+	const double B = FVector::DotProduct(D1, D2);
+	const double C = FVector::DotProduct(D2, D2);
+	const double D = FVector::DotProduct(D1, W0);
+	const double E = FVector::DotProduct(D2, W0);
+	const double Denom = A * C - B * B;
+
+	double T;
+	if (FMath::Abs(Denom) < UE_KINDA_SMALL_NUMBER)
+	{
+		// Parallel lines -- every point on the ray is equidistant from the segment's line in the
+		// direction that matters here, so just solve directly for T.
+		T = (C > UE_KINDA_SMALL_NUMBER) ? (E / C) : 0.0;
+	}
+	else
+	{
+		T = (A * E - B * D) / Denom;
+	}
+
+	T = FMath::Clamp(T, 0.0, SegmentLength);
+	const FVector SegPoint = SegmentStart + D2 * T;
+
+	// Distance from the (now fixed) segment point to the ray's own infinite line -- a small,
+	// standard simplification versus a fully rigorous segment-segment closest point, sufficient for
+	// an interactive hit test.
+	const double AlongRay = FVector::DotProduct(SegPoint - Ray.Origin, D1);
+	OutDistanceAlongRay = AlongRay;
+	const FVector ClosestOnRay = Ray.Origin + D1 * AlongRay;
+	return FVector::Dist(SegPoint, ClosestOnRay);
+}
+
+double GizmoMath::DistanceRayToPoint(const FGizmoInteractionRay& Ray, const FVector& Point, double& OutDistanceAlongRay)
+{
+	const double AlongRay = FVector::DotProduct(Point - Ray.Origin, Ray.Direction);
+	OutDistanceAlongRay = AlongRay;
+	const FVector ClosestOnRay = Ray.Origin + Ray.Direction * AlongRay;
+	return FVector::Dist(Point, ClosestOnRay);
+}
+
+double GizmoMath::DistanceRayToRing(
+	const FGizmoInteractionRay& Ray, const FVector& Origin, const FVector& Axis, double Radius,
+	double& OutDistanceAlongRay)
+{
+	const FPlane RingPlane(Origin, Axis);
+	FVector Intersection;
+	if (!IntersectRayWithPlane(Ray, RingPlane, Intersection))
+	{
+		OutDistanceAlongRay = TNumericLimits<double>::Max();
+		return TNumericLimits<double>::Max();
+	}
+
+	OutDistanceAlongRay = FVector::DotProduct(Intersection - Ray.Origin, Ray.Direction);
+	const double RadialDist = FVector::Dist(Intersection, Origin);
+	return FMath::Abs(RadialDist - Radius);
+}
+
+double GizmoMath::DistanceRayToQuad(
+	const FGizmoInteractionRay& Ray, const FVector& Center, const FVector& AxisU, const FVector& AxisV,
+	double HalfSize, double& OutDistanceAlongRay)
+{
+	const FVector Normal = FVector::CrossProduct(AxisU, AxisV).GetSafeNormal();
+	if (Normal.IsNearlyZero())
+	{
+		OutDistanceAlongRay = TNumericLimits<double>::Max();
+		return TNumericLimits<double>::Max();
+	}
+
+	const FPlane QuadPlane(Center, Normal);
+	FVector Intersection;
+	if (!IntersectRayWithPlane(Ray, QuadPlane, Intersection))
+	{
+		OutDistanceAlongRay = TNumericLimits<double>::Max();
+		return TNumericLimits<double>::Max();
+	}
+
+	OutDistanceAlongRay = FVector::DotProduct(Intersection - Ray.Origin, Ray.Direction);
+
+	const FVector Local = Intersection - Center;
+	const double U = FVector::DotProduct(Local, AxisU);
+	const double V = FVector::DotProduct(Local, AxisV);
+
+	const double DU = FMath::Max(0.0, FMath::Abs(U) - HalfSize);
+	const double DV = FMath::Max(0.0, FMath::Abs(V) - HalfSize);
+	return FMath::Sqrt(DU * DU + DV * DV);
 }

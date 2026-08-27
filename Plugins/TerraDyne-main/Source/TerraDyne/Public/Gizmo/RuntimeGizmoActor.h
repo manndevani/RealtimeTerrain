@@ -46,6 +46,18 @@ public:
 	void SetHighlightedHandle(EGizmoHandleType Handle);
 	EGizmoHandleType GetHighlightedHandle() const { return CurrentHighlight; }
 
+	/**
+	 * A handle's own size, in current world units (already multiplied by this actor's camera-
+	 * distance scale factor) -- segment length for a translate/scale axis, ring radius for a
+	 * rotation handle, quad half-size for a plane handle, or a fixed click radius for a point-like
+	 * handle (Center/ScaleUniform). This is an INPUT to GizmoManipulationMath's distance functions
+	 * (the handle's own geometry), not a click-tolerance threshold on their output -- callers doing
+	 * hit-testing still need their own separate small tolerance to compare the returned distance
+	 * against. Single source of truth: reads the same constants the constructor places handles
+	 * with, so hit-testing geometry can never drift out of sync with what's actually rendered.
+	 */
+	double GetHandleReach(EGizmoHandleType Handle) const;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gizmo")
 	TObjectPtr<USceneComponent> SceneRoot;
 

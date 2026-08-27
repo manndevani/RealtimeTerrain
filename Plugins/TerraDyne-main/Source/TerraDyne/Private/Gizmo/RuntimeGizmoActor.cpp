@@ -19,6 +19,18 @@ namespace
 	constexpr float PlaneHandleOffset = 50.0f;
 	constexpr float RotateRingScale = 1.5f;
 	constexpr float ScreenRingScaleMultiplier = 1.3f;
+
+	// Native ring radius, empirically measured (not guessed) from SM_RotationHandle's actual bounds
+	// extent logged by TerraDyne.Gizmo.ActorRuntimeAssets (Y=Z=92 -- see that test's AddInfo output).
+	constexpr float NativeRingRadius = 92.0f;
+
+	// Cube's native half-size (/Engine/BasicShapes/Cube.Cube is 100 units per side); PlaneScale's
+	// 0.4 XY component (see the constructor) scales that down to this actual plane-handle half-size.
+	constexpr float PlaneHandleHalfSize = 50.0f * 0.4f;
+
+	// Point-like handles (Center, ScaleUniform) have no directional mesh dimension to derive a size
+	// from the way a segment/ring/quad does -- a fixed, generous click radius stands in instead.
+	constexpr float PointHandleReach = 30.0f;
 }
 
 ARuntimeGizmoActor::ARuntimeGizmoActor()
@@ -174,6 +186,37 @@ UPrimitiveComponent* ARuntimeGizmoActor::GetComponentForHandle(EGizmoHandleType 
 		return Found->Get();
 	}
 	return nullptr;
+}
+
+double ARuntimeGizmoActor::GetHandleReach(EGizmoHandleType Handle) const
+{
+	const double ActorScale = GetActorScale3D().X;
+	switch (Handle)
+	{
+	case EGizmoHandleType::TranslateX:
+	case EGizmoHandleType::TranslateY:
+	case EGizmoHandleType::TranslateZ:
+		return TipDistance * ActorScale;
+	case EGizmoHandleType::ScaleX:
+	case EGizmoHandleType::ScaleY:
+	case EGizmoHandleType::ScaleZ:
+		return ScaleHandleDistance * ActorScale;
+	case EGizmoHandleType::RotateX:
+	case EGizmoHandleType::RotateY:
+	case EGizmoHandleType::RotateZ:
+		return NativeRingRadius * RotateRingScale * ActorScale;
+	case EGizmoHandleType::RotateScreen:
+		return NativeRingRadius * RotateRingScale * ScreenRingScaleMultiplier * ActorScale;
+	case EGizmoHandleType::PlaneXY:
+	case EGizmoHandleType::PlaneXZ:
+	case EGizmoHandleType::PlaneYZ:
+		return PlaneHandleHalfSize * ActorScale;
+	case EGizmoHandleType::Center:
+	case EGizmoHandleType::ScaleUniform:
+		return PointHandleReach * ActorScale;
+	default:
+		return 0.0;
+	}
 }
 
 void ARuntimeGizmoActor::ApplyGizmoColor(UMaterialInstanceDynamic* DMI, const FLinearColor& InColor)

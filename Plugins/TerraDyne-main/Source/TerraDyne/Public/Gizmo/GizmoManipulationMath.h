@@ -32,6 +32,13 @@ namespace GizmoMath
 	TERRADYNE_API FVector ResolvePlaneNormal(EGizmoHandleType Handle, EGizmoCoordinateSpace Space, const FQuat& TargetRotation);
 
 	/**
+	 * The best-conditioned plane containing the line through GizmoOrigin along Axis, for
+	 * intersecting a drag ray against any single-axis-constrained handle -- translate, scale, and
+	 * rotate axes alike (see ResolveTranslateDragPlane's own doc comment for the technique itself).
+	 */
+	TERRADYNE_API FPlane ResolveAxisDragPlane(const FVector& Axis, const FVector& GizmoOrigin, const FVector& CursorDir, const FVector& CameraForward);
+
+	/**
 	 * For a translate drag, which plane to intersect the cursor ray against. Axis handles (X/Y/Z)
 	 * use whichever of the two planes containing that axis best faces the camera -- ported from this
 	 * project's existing BestFacingVerticalPlaneNormal fix (a horizontal plane degenerates when the
@@ -107,4 +114,49 @@ namespace GizmoMath
 
 	/** Componentwise SnapValue, for translate deltas and scale ratios. */
 	TERRADYNE_API FVector SnapVector(const FVector& Value, double Increment);
+
+	// --- Hit testing -----------------------------------------------------------------------------
+	// A dedicated mathematical hit-test per handle shape, deliberately not physics-collision-based
+	// (see RuntimeGizmoActor.h's class comment) -- each returns a world-space distance from the ray
+	// to the handle's actual geometry (0 = a perfect hit) plus how far along the ray the closest
+	// approach/intersection occurred (OutDistanceAlongRay), so a caller comparing several candidate
+	// handles can both threshold on "close enough" and break ties by "nearest the camera wins" when
+	// more than one handle's threshold is satisfied at once.
+
+	/**
+	 * Distance from Ray to the line segment from SegmentStart along SegmentDir (a unit vector) for
+	 * SegmentLength world units -- the translate-axis-arrow hit test. Computed via the standard
+	 * closest-point-between-two-lines formula, then clamping the segment parameter into
+	 * [0, SegmentLength] and taking the point-to-line distance from there (a small, standard
+	 * simplification versus a fully rigorous segment-segment closest point, and enough precision for
+	 * an interactive hit test).
+	 */
+	TERRADYNE_API double DistanceRayToSegment(
+		const FGizmoInteractionRay& Ray, const FVector& SegmentStart, const FVector& SegmentDir,
+		double SegmentLength, double& OutDistanceAlongRay);
+
+	/** Distance from Ray to a single world point -- the scale/uniform/centre handle hit test (treated as a small sphere by the caller applying its own radius threshold). */
+	TERRADYNE_API double DistanceRayToPoint(const FGizmoInteractionRay& Ray, const FVector& Point, double& OutDistanceAlongRay);
+
+	/**
+	 * Distance from Ray's intersection with the ring's own plane (through Origin, normal Axis) to
+	 * the ring itself -- |radial distance from Origin - Radius|. A thin ring's true (quartic) ray-
+	 * torus intersection is well approximated by this plane-intersect-then-radius-check technique,
+	 * which is what this hit test uses -- the rotation-axis handle hit test. Returns
+	 * TNumericLimits<double>::Max() (an unmistakable non-hit, not a NaN or garbage value) if the ray
+	 * is near-parallel to the ring's plane.
+	 */
+	TERRADYNE_API double DistanceRayToRing(
+		const FGizmoInteractionRay& Ray, const FVector& Origin, const FVector& Axis, double Radius,
+		double& OutDistanceAlongRay);
+
+	/**
+	 * Distance from Ray's intersection with the quad's own plane (spanned by unit vectors AxisU/
+	 * AxisV, centred at Center) to the quad's own [-HalfSize,HalfSize]^2 bounds -- 0 if the
+	 * intersection falls inside the quad. The plane-handle hit test. Same non-hit sentinel as
+	 * DistanceRayToRing for a near-parallel ray.
+	 */
+	TERRADYNE_API double DistanceRayToQuad(
+		const FGizmoInteractionRay& Ray, const FVector& Center, const FVector& AxisU, const FVector& AxisV,
+		double HalfSize, double& OutDistanceAlongRay);
 }

@@ -201,3 +201,104 @@ bool FGizmoSnappingTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("SnapVector rounds every component independently"), Snapped, FVector(100.0, 200.0, -0.0));
 	return true;
 }
+
+// Verifies DistanceRayToSegment against hand-computed cases: a ray straight down through the exact
+// start of an X-axis segment (a perfect hit, distance 0, at the known travel distance); the same
+// ray/segment pair offset 50 units sideways (a clean miss, distance exactly 50 -- confirming the
+// segment-clamped closest point, not just raw line-line distance, drives the result).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGizmoDistanceRayToSegmentTest, "TerraDyne.Gizmo.DistanceRayToSegment", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGizmoDistanceRayToSegmentTest::RunTest(const FString& Parameters)
+{
+	FGizmoInteractionRay Ray;
+	Ray.Origin = FVector(0.0, 0.0, 1000.0);
+	Ray.Direction = FVector(0.0, 0.0, -1.0);
+
+	{
+		double AlongRay = 0.0;
+		const double Dist = GizmoMath::DistanceRayToSegment(Ray, FVector::ZeroVector, FVector::XAxisVector, 200.0, AlongRay);
+		AddInfo(FString::Printf(TEXT("Hit case: distance=%.4f alongRay=%.4f"), Dist, AlongRay));
+		TestEqual(TEXT("Ray straight through the segment's own start is a perfect hit"), Dist, 0.0, 0.001);
+		TestEqual(TEXT("Travels exactly 1000 units to reach it"), AlongRay, 1000.0, 0.001);
+	}
+	{
+		double AlongRay = 0.0;
+		const double Dist = GizmoMath::DistanceRayToSegment(Ray, FVector(0.0, 50.0, 0.0), FVector::XAxisVector, 200.0, AlongRay);
+		AddInfo(FString::Printf(TEXT("Miss case: distance=%.4f alongRay=%.4f"), Dist, AlongRay));
+		TestEqual(TEXT("A segment offset 50 units sideways misses by exactly 50"), Dist, 50.0, 0.001);
+	}
+	return true;
+}
+
+// Verifies DistanceRayToPoint against a hand-computed 3-4-5-triangle case (scaled by 10, so a
+// 30/40 offset from the ray's own line measures exactly 50).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGizmoDistanceRayToPointTest, "TerraDyne.Gizmo.DistanceRayToPoint", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGizmoDistanceRayToPointTest::RunTest(const FString& Parameters)
+{
+	FGizmoInteractionRay Ray;
+	Ray.Origin = FVector(0.0, 0.0, 1000.0);
+	Ray.Direction = FVector(0.0, 0.0, -1.0);
+
+	double AlongRay = 0.0;
+	const double Dist = GizmoMath::DistanceRayToPoint(Ray, FVector(30.0, 40.0, 0.0), AlongRay);
+	AddInfo(FString::Printf(TEXT("distance=%.4f alongRay=%.4f"), Dist, AlongRay));
+	TestEqual(TEXT("3-4-5 triangle scaled by 10 measures exactly 50"), Dist, 50.0, 0.001);
+	TestEqual(TEXT("Travels exactly 1000 units to reach the point's own Z"), AlongRay, 1000.0, 0.001);
+	return true;
+}
+
+// Verifies DistanceRayToRing: a ray straight through the ring's own centre is 100 units short of
+// the ring itself (the ring has a hole in the middle -- a centre click is a clean miss by exactly
+// the ring's radius); a ray straight through a point already ON the ring is a perfect hit.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGizmoDistanceRayToRingTest, "TerraDyne.Gizmo.DistanceRayToRing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGizmoDistanceRayToRingTest::RunTest(const FString& Parameters)
+{
+	const FVector Origin = FVector::ZeroVector;
+	const FVector Axis = FVector::ZAxisVector;
+	const double Radius = 100.0;
+
+	{
+		FGizmoInteractionRay Ray;
+		Ray.Origin = FVector(0.0, 0.0, 1000.0);
+		Ray.Direction = FVector(0.0, 0.0, -1.0);
+		double AlongRay = 0.0;
+		const double Dist = GizmoMath::DistanceRayToRing(Ray, Origin, Axis, Radius, AlongRay);
+		AddInfo(FString::Printf(TEXT("Centre click: distance=%.4f alongRay=%.4f"), Dist, AlongRay));
+		TestEqual(TEXT("A click dead centre misses the ring by exactly its own radius"), Dist, Radius, 0.001);
+	}
+	{
+		FGizmoInteractionRay Ray;
+		Ray.Origin = FVector(100.0, 0.0, 1000.0);
+		Ray.Direction = FVector(0.0, 0.0, -1.0);
+		double AlongRay = 0.0;
+		const double Dist = GizmoMath::DistanceRayToRing(Ray, Origin, Axis, Radius, AlongRay);
+		AddInfo(FString::Printf(TEXT("On-ring click: distance=%.4f alongRay=%.4f"), Dist, AlongRay));
+		TestEqual(TEXT("A click exactly on the ring's own radius is a perfect hit"), Dist, 0.0, 0.001);
+	}
+	return true;
+}
+
+// Verifies DistanceRayToQuad: a click on the quad's own boundary corner is a perfect (0-distance)
+// hit; a click dead centre is also a perfect hit; a click 30 units past one edge measures exactly
+// 30.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGizmoDistanceRayToQuadTest, "TerraDyne.Gizmo.DistanceRayToQuad", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGizmoDistanceRayToQuadTest::RunTest(const FString& Parameters)
+{
+	const FVector Center(50.0, 50.0, 0.0);
+	const FVector AxisU = FVector::XAxisVector;
+	const FVector AxisV = FVector::YAxisVector;
+	const double HalfSize = 20.0; // quad spans X:[30,70], Y:[30,70]
+
+	auto ClickAt = [&](double X, double Y) -> double
+	{
+		FGizmoInteractionRay Ray;
+		Ray.Origin = FVector(X, Y, 1000.0);
+		Ray.Direction = FVector(0.0, 0.0, -1.0);
+		double AlongRay = 0.0;
+		return GizmoMath::DistanceRayToQuad(Ray, Center, AxisU, AxisV, HalfSize, AlongRay);
+	};
+
+	TestEqual(TEXT("A click on the quad's own corner boundary is a perfect hit"), ClickAt(30.0, 30.0), 0.0, 0.001);
+	TestEqual(TEXT("A click dead centre is a perfect hit"), ClickAt(50.0, 50.0), 0.0, 0.001);
+	TestEqual(TEXT("A click 30 units past the quad's edge measures exactly 30"), ClickAt(100.0, 50.0), 30.0, 0.001);
+	return true;
+}
