@@ -76,6 +76,7 @@ void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 	DOREPLIFETIME(ARealtimeRoadSplineActor, StylePreset);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, HeightKeys);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, PierSettings);
+	DOREPLIFETIME(ARealtimeRoadSplineActor, bUseSpiralCentreline);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ReplicatedWorldPoints);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, JunctionCuts);
 }
@@ -667,7 +668,8 @@ void ARealtimeRoadSplineActor::BuildRuns(
 
 bool ARealtimeRoadSplineActor::BuildConformedCentreline(
 	TArray<FVector>& OutPoints,
-	TArray<double>& OutDistances) const
+	TArray<double>& OutDistances,
+	bool bAllowSpiralFit) const
 {
 	OutPoints.Reset();
 	OutDistances.Reset();
@@ -677,28 +679,82 @@ bool ARealtimeRoadSplineActor::BuildConformedCentreline(
 	if (SplineLength < 10.0) return false;
 
 	const double Step = FMath::Clamp(static_cast<double>(CrossSectionSettings.SegmentStepLength), 40.0, 600.0);
-	const int32 NumSegments = FMath::Max(2, FMath::CeilToInt(SplineLength / Step));
-	const double ActualStep = SplineLength / static_cast<double>(NumSegments);
 
-	OutPoints.Reserve(NumSegments + 1);
-	OutDistances.Reserve(NumSegments + 1);
-
-	for (int32 i = 0; i <= NumSegments; ++i)
+	// Spiral-fit XY comes straight from this road's own control points -- a curvature-continuous
+	// replacement for the spline's raw interpolation below -- but only on the settle pass, since
+	// BuildSpiralCentreline's corner-fit bisection is real per-corner work, not something to repeat
+	// every frame of a drag the way the cheap spline sampling is.
+	if (bAllowSpiralFit && bUseSpiralCentreline)
 	{
-		const double Distance = FMath::Min(i * ActualStep, SplineLength);
-		FVector Position = SplineComponent->GetLocationAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
-
-		if (bConformToTerrainInRealtime)
+		const int32 NumControlPoints = SplineComponent->GetNumberOfSplinePoints();
+		TArray<FVector2D> ControlPointsXY;
+		ControlPointsXY.Reserve(NumControlPoints);
+		for (int32 i = 0; i < NumControlPoints; ++i)
 		{
-			float GroundZ = 0.0f;
-			if (SampleTerrainHeightAtXY(FVector2D(Position.X, Position.Y), GroundZ))
-			{
-				Position.Z = GroundZ;
-			}
+			const FVector World = SplineComponent->GetLocationAtSplinePoint(i, ESplineCoordinateSpace::World);
+			ControlPointsXY.Add(FVector2D(World.X, World.Y));
 		}
 
-		OutPoints.Add(Position);
-		OutDistances.Add(Distance);
+		TArray<FVector2D> SpiralXY;
+		TArray<double> SpiralDistances;
+		RoadSpiral::BuildSpiralCentreline(
+			ControlPointsXY,
+			static_cast<double>(SpiralCornerMaxRadius),
+			static_cast<double>(SpiralCurvatureBlend),
+			Step,
+			SpiralXY, SpiralDistances);
+
+		if (SpiralXY.Num() >= 2)
+		{
+			OutPoints.Reserve(SpiralXY.Num());
+			OutDistances.Reserve(SpiralXY.Num());
+			for (int32 i = 0; i < SpiralXY.Num(); ++i)
+			{
+				FVector Position(SpiralXY[i].X, SpiralXY[i].Y, 0.0);
+				if (bConformToTerrainInRealtime)
+				{
+					float GroundZ = 0.0f;
+					if (SampleTerrainHeightAtXY(FVector2D(Position.X, Position.Y), GroundZ))
+					{
+						Position.Z = GroundZ;
+					}
+				}
+				OutPoints.Add(Position);
+				OutDistances.Add(SpiralDistances[i]);
+			}
+		}
+	}
+
+	// Either the spiral fit is off, or (a degenerate control-point layout) it produced nothing --
+	// fall back to the spline's own raw interpolation, exactly as every road has always used.
+	if (OutPoints.Num() < 2)
+	{
+		OutPoints.Reset();
+		OutDistances.Reset();
+
+		const int32 NumSegments = FMath::Max(2, FMath::CeilToInt(SplineLength / Step));
+		const double ActualStep = SplineLength / static_cast<double>(NumSegments);
+
+		OutPoints.Reserve(NumSegments + 1);
+		OutDistances.Reserve(NumSegments + 1);
+
+		for (int32 i = 0; i <= NumSegments; ++i)
+		{
+			const double Distance = FMath::Min(i * ActualStep, SplineLength);
+			FVector Position = SplineComponent->GetLocationAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
+
+			if (bConformToTerrainInRealtime)
+			{
+				float GroundZ = 0.0f;
+				if (SampleTerrainHeightAtXY(FVector2D(Position.X, Position.Y), GroundZ))
+				{
+					Position.Z = GroundZ;
+				}
+			}
+
+			OutPoints.Add(Position);
+			OutDistances.Add(Distance);
+		}
 	}
 
 	if (bConformToTerrainInRealtime)
@@ -935,7 +991,7 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 	TArray<double> Distances;
 	TArray<FRoadRun> Runs;
 
-	if (BuildConformedCentreline(Centreline, Distances))
+	if (BuildConformedCentreline(Centreline, Distances, bUpdateCollision))
 	{
 		BuildRuns(Centreline, Distances, Runs);
 	}

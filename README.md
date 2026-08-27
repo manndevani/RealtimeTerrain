@@ -76,11 +76,50 @@ this section tracks current state only, not a running journal.
   Test: `TerraDyne.RoadPierPlacement.ElevatedStretchOnly` (piers land only within a synthetic
   500–1500cm elevated stretch, each spanning the full 500cm deck height; a flat road gets none).
 - **Full regression sweep after this increment: 30 tests, 0 regressions.**
-### Phase 4 — NOT STARTED (spiral/clothoid centreline smoothing)
+
+### Phase 4 — COMPLETE ✅ (Euler-spiral/clothoid centreline smoothing)
+- `RoadSpiral.h`/`.cpp`: `GetSpiralPos`/`GetSpiralRadian`/`ComputeSpiralLength` ported near-verbatim
+  from RoadBuilder's `Spiral.h`/`Spiral.cpp`, including its full Fresnel sine/cosine integral
+  numeric library (Chebyshev/asymptotic-series approximations) — not a simplified re-derivation,
+  since a wrong Fresnel coefficient is exactly the kind of bug a "looks plausible" approximation
+  would hide. Every internal helper (`fresnel_sin`, `Power_Series_S`, etc.) made `static` file-scope
+  to avoid symbol collisions under Unreal's unity builds; only the 3 functions above plus
+  `BuildSpiralCentreline` are externally visible, all under `namespace RoadSpiral`.
+  Tests: `TerraDyne.RoadSpiral.StraightAndArcClosedForm` (the two degenerate closed-form branches:
+  a straight line and a circular arc, verified against exact geometry — arc points land exactly
+  1/curvature from the arc's centre), `TerraDyne.RoadSpiral.ClothoidConsistency` (the general
+  Fresnel-integral branch: `ComputeSpiralLength`'s algebraic inverse round-trips through
+  `GetSpiralRadian` to 1e-9, and `GetSpiralPos`'s numeric tangent — central difference — matches
+  `GetSpiralRadian`'s heading to 3 decimals, confirming the ported Fresnel numerics actually
+  integrate the heading they claim to).
+- `RoadSpiral::BuildSpiralCentreline`: new code (not a RoadBuilder port, though it walks the same
+  algorithm as `ARoadActor::UpdateCurve`'s corner-fit loop) — fits a spiral-arc-spiral transition at
+  every interior point of a control polyline, bisecting on curvature until the transition's midpoint
+  lands on the corner's own position, exactly mirroring RoadBuilder's own bisection. `MaxRadius`
+  caps how tight a fitted arc may get; `CurvatureBlend` splits each corner between spiral portions
+  and a constant-curvature arc (0 = pure arc, 1 = pure spiral), matching RoadBuilder's own
+  `RoadPoint.CurvatureBlend` semantics. Resamples the whole fitted path into a dense point/distance
+  array — a drop-in replacement for the XY half of `BuildConformedCentreline`'s existing spline-
+  sampling loop.
+  Test: `TerraDyne.RoadSpiral.CentrelineCornerIsContinuous` (a 500-radius 90° corner: path departs/
+  arrives exactly along the incoming/outgoing arm directions, no sample-to-sample heading jump
+  exceeds a few degrees — the actual curvature-continuity property a raw polyline corner lacks —
+  and the fitted length, 1761.85cm, is meaningfully shorter than the sharp 2000cm corner it rounds).
+- `ARealtimeRoadSplineActor`: `bUseSpiralCentreline` (off by default — every existing road's XY
+  shape is provably unchanged), `SpiralCornerMaxRadius`, `SpiralCurvatureBlend`. Wired into
+  `BuildConformedCentreline` via a new `bAllowSpiralFit` parameter, gated to the settle pass only
+  (`bUpdateCollision == true`) — live-drag always keeps the cheap raw spline sampling, matching
+  every other settle-only feature on this actor (scatter, piers, terrain pad). Falls back to the
+  plain spline sampling if the spiral fit produces fewer than 2 points (a degenerate control-point
+  layout), so turning the feature on can never leave a road with no centreline at all.
+- **Full regression sweep after this increment: 33 tests, 0 regressions** (critical here since
+  `bUseSpiralCentreline` defaults off — confirms every pre-existing road/test is untouched).
+
 ### Phase 5 — NOT STARTED (OpenDrive/.xodr export)
 
-**Next step**: Phase 4 — port `Spiral.h`'s Euler-spiral math for settle-pass centreline smoothing
-(live-drag preview keeps the cheap polyline). Then Phase 5 (OpenDrive/.xodr export). See plan file
+**Next step**: Phase 5 — port RoadBuilder's `ExportXodr` methods (`RoadActor.cpp`,
+`RoadCurve.cpp`/`RoadBoundary.cpp`/`RoadLane.cpp`/`RoadScene.cpp`) as a self-contained, editor-only
+`.xodr` export utility, adapted to this project's own centreline/lane/elevation data. See plan file
 for full detail.
 
 

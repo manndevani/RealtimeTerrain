@@ -8,6 +8,7 @@
 #include "RoadTypes.h"
 #include "RoadElevationProfile.h"
 #include "RoadPierPlacement.h"
+#include "RoadSpiral.h"
 #include "RealtimeRoadSplineActor.generated.h"
 
 class USplineComponent;
@@ -119,6 +120,26 @@ public:
 	/** Support piers instanced under any stretch this road's final height clears above raw terrain. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Elevation")
 	FRoadPierSettings PierSettings;
+
+	//--- CENTRELINE SMOOTHING ---
+
+	/**
+	 * Settle-pass only (see SettleDelaySeconds): fit curvature-continuous spiral-arc-spiral corners
+	 * through this road's own control points (RoadSpiral::BuildSpiralCentreline) instead of taking
+	 * XY from the spline's own raw interpolation. Off by default -- every existing road's XY shape
+	 * is provably unchanged until a road opts in. Live-drag keeps the cheap spline sampling either
+	 * way, so dragging stays smooth regardless of this setting.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Centreline")
+	bool bUseSpiralCentreline = false;
+
+	/** Caps how tight a spiral-fit corner's arc may get; a sharper control-point corner is bevelled by shortening the transition instead of exceeding it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Centreline", meta = (EditCondition = "bUseSpiralCentreline", ClampMin = "50.0"))
+	float SpiralCornerMaxRadius = 2000.0f;
+
+	/** 0 = pure circular-arc corner (curvature jumps at both ends); 1 = pure spiral corner (curvature ramps to a peak and back to 0, no constant-radius arc in the middle). Matches RoadBuilder's own CurvatureBlend semantics. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Centreline", meta = (EditCondition = "bUseSpiralCentreline", ClampMin = "0.0", ClampMax = "1.0"))
+	float SpiralCurvatureBlend = 0.5f;
 
 	//--- TERRAIN CONFORMING ---
 
@@ -436,8 +457,13 @@ protected:
 	/**
 	 * Stations along the route with terrain-conformed, smoothed heights, plus each station's
 	 * distance along the spline so junction cuts can be located against it.
+	 *
+	 * bAllowSpiralFit gates whether XY comes from RoadSpiral::BuildSpiralCentreline (curvature-
+	 * continuous spiral-fit corners, see bUseSpiralCentreline) instead of the spline's own raw
+	 * interpolation -- callers pass bUpdateCollision's value, since the spiral fit is only worth its
+	 * extra cost on the settle pass, matching every other settle-only feature on this actor.
 	 */
-	bool BuildConformedCentreline(TArray<FVector>& OutPoints, TArray<double>& OutDistances) const;
+	bool BuildConformedCentreline(TArray<FVector>& OutPoints, TArray<double>& OutDistances, bool bAllowSpiralFit) const;
 
 	/** Splits the stations into the runs between junction cuts and pins each run's exposed ends. */
 	void BuildRuns(const TArray<FVector>& Points, const TArray<double>& Distances, TArray<FRoadRun>& OutRuns) const;
