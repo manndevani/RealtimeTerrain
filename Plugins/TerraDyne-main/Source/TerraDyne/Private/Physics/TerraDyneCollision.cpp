@@ -116,8 +116,16 @@ bool UTerraDyneCollisionLib::IsLocationTraceable(UDynamicMeshComponent* MeshComp
 		double WorldSizeY = Bounds.Max.Y - Bounds.Min.Y;
 		if (WorldSizeX <= 0.0 || WorldSizeY <= 0.0) return;
 
-		// Top surface vertex count = total / 2 (mesh has top + bottom surfaces)
-		int32 TopVerts = Mesh.VertexCount() / 2;
+		// The chunk mesh this is built against (ATerraDyneChunk::RebuildMesh) generates a single top
+		// surface only -- no bottom slab (see that function's own comment) -- so the full vertex
+		// count IS the top-surface grid's vertex count, not half of it. Dividing by 2 here used to
+		// silently compute a grid resolution smaller than the mesh's real one by a factor of
+		// sqrt(2), which fed a wrong TriBase into the triangle-ID lookup below -- not a safe no-op,
+		// since the resulting (too-small) ExpectedTopTris estimate was still comfortably under the
+		// mesh's real triangle count, so the "layout mismatch, assume traceable" guard never caught
+		// it either. The lookup would silently check an unrelated cell's MaterialID instead of the
+		// one actually queried.
+		int32 TopVerts = Mesh.VertexCount();
 		int32 Resolution = FMath::RoundToInt(FMath::Sqrt((double)TopVerts));
 		if (Resolution < 2) return;
 

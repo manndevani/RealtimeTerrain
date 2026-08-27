@@ -1174,11 +1174,23 @@ void BuildSpiralCentreline(
 			}
 			if (ProjectedDist < 0.0)
 			{
-				if (Iter == 0)
+				// Cos == Cos(Diff/2) approaches 0 as Diff approaches +/-PI (a near-180-degree hairpin
+				// turn), which would make Size += ProjectedDist / Cos divide toward zero and send Size
+				// toward +/-infinity. A tiny epsilon on Cos alone isn't a safe guard here: at 179.99
+				// degrees Cos(Diff/2) is only ~8.7e-5, comfortably above any near-zero epsilon, yet
+				// still large enough a divisor to send the corrected Size into the millions -- finite,
+				// but physically nonsensical for a corner whose own arms are ~1000cm long. So the guard
+				// instead bounds the CANDIDATE result against the corner's own geometry: only trust the
+				// single-division fast path when it lands within the arms' own length, otherwise fall
+				// through to the bisection loop's own already-correct handling (used on every later
+				// Iter anyway), which can't overshoot like this because it only ever bisects within
+				// [MinC, MaxC].
+				const double CandidateSize = Size + ProjectedDist / Cos;
+				if (Iter == 0 && CandidateSize >= 0.0 && CandidateSize <= FMath::Max(PrevSize, NextSize))
 				{
 					// Even the gentlest allowed curvature (MinC) overshoots the corner at this entry
 					// distance -- pull the transition's start closer instead of bisecting further.
-					Size += ProjectedDist / Cos;
+					Size = CandidateSize;
 					StartPos = ControlPoints[i] - PrevDir * Size;
 					break;
 				}

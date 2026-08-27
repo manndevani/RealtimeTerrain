@@ -238,8 +238,14 @@ FString RoadXodrExport::ExportOpenDrive(const TArray<FRoadExportData>& Roads)
 		return FString();
 	}
 
-	// Bounding box (metres, OpenDRIVE's Y-negated convention) across every exported road's
-	// centreline -- required by the <header> element's north/south/east/west attributes.
+	// Bounding box (metres) across every exported road's centreline, required by the <header>
+	// element's north/south/east/west attributes. This project's roads are anchored to a
+	// CesiumGeoreference tangent plane using East-South-Up axes (+X = East, +Y = South, +Z = Up --
+	// the same ESU convention ATerraDyneEditPawn's horizon leveling already establishes), NOT the
+	// more common East-North-Up. +Y being South, not North, is exactly why it gets negated below:
+	// -Point.Y converts "how far South" into "how far North", so BoundsMax/Min of the negated axis
+	// land correctly on OpenDRIVE's north/south (X needs no such conversion, since East already
+	// matches both conventions). Deliberate, not a north/south-vs-east/west mixup.
 	FVector2D BoundsMin(0.0, 0.0);
 	FVector2D BoundsMax(0.0, 0.0);
 	bool bHasAnyPoint = false;

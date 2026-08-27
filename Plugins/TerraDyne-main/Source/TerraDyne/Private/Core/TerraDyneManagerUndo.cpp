@@ -35,9 +35,13 @@ void ATerraDyneManager::BeginStroke(FVector WorldLocation, float Radius, APlayer
 {
 	if (PendingStroke.IsSet() && PendingStrokeOwner != Controller)
 	{
+		// PendingStrokeOwner can be stale (its controller disconnected mid-stroke without ever
+		// calling CommitStroke) -- IsValid() before dereferencing, not just a null check, since a
+		// TWeakObjectPtr to a destroyed-but-not-yet-GC'd actor is non-null but unsafe to use.
+		const FString PreviousOwnerName = PendingStrokeOwner.IsValid() ? PendingStrokeOwner->GetName() : TEXT("<disconnected controller>");
 		UE_LOG(LogTemp, Warning,
 			TEXT("BeginStroke: overwriting pending stroke from %s with stroke from %s — previous stroke discarded"),
-			*PendingStrokeOwner->GetName(), *Controller->GetName());
+			*PreviousOwnerName, *GetNameSafe(Controller));
 	}
 	PendingStroke.Reset();
 	PendingStrokeOwner = Controller;

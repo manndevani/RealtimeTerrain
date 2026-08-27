@@ -988,10 +988,17 @@ private:
 	// --- Undo/Redo ---
 	// NOTE: Undo/redo entries referencing unloaded (streamed-out) chunks are silently skipped.
 	// A future improvement could persist undo snapshots alongside chunk cache data.
-	TMap<APlayerController*, TArray<FTerraDyneUndoEntry>> UndoStacks;
-	TMap<APlayerController*, TArray<FTerraDyneUndoEntry>> RedoStacks;
+	//
+	// Weak, not raw, pointers: a player disconnecting mid-stroke (or between BeginStroke and
+	// CommitStroke for any other reason) leaves these referencing a controller that can be destroyed
+	// out from under them. A raw APlayerController* map key risks a NEW controller later being
+	// allocated at the same address and silently inheriting a stale entry; PendingStrokeOwner used to
+	// be dereferenced directly in a warning log with no validity check at all, a genuine
+	// use-after-free the very next BeginStroke call from a different, still-connected player would hit.
+	TMap<TWeakObjectPtr<APlayerController>, TArray<FTerraDyneUndoEntry>> UndoStacks;
+	TMap<TWeakObjectPtr<APlayerController>, TArray<FTerraDyneUndoEntry>> RedoStacks;
 	TOptional<FTerraDyneUndoEntry> PendingStroke;
-	APlayerController* PendingStrokeOwner = nullptr;
+	TWeakObjectPtr<APlayerController> PendingStrokeOwner;
 
 	void LoadMaterials();
 	void SetupLighting();

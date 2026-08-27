@@ -261,7 +261,11 @@ EGizmoHandleType UGizmoManipulationSubsystem::FindHoveredHandle(const FGizmoInte
 			break;
 		}
 
-		if (Dist <= Tolerance && AlongRay < BestAlongRay)
+		// AlongRay >= 0 rejects a hit whose closest approach lies behind the ray's own origin --
+		// none of the DistanceRayTo* functions clamp this themselves (a plane/segment/point can sit
+		// on either side of Origin along the ray's infinite line), so without this a handle
+		// geometrically positioned behind the camera could still register as grabbable.
+		if (Dist <= Tolerance && AlongRay >= 0.0 && AlongRay < BestAlongRay)
 		{
 			Best = Handle;
 			BestAlongRay = AlongRay;

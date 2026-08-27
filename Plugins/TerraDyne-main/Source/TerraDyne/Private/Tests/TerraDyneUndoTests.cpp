@@ -156,4 +156,50 @@ bool FTerraDyneUndoRoundTripTest::RunTest(const FString& Parameters)
     return true;
 }
 
+// Regression test: PendingStrokeOwner/UndoStacks/RedoStacks used to be keyed by raw APlayerController*.
+// A controller that disconnects (or is otherwise destroyed) between BeginStroke and CommitStroke left
+// PendingStrokeOwner dangling; the very next BeginStroke call from a DIFFERENT, still-connected
+// controller dereferenced it directly in a warning log with no validity check -- a real
+// use-after-free, not just stale state. Now TWeakObjectPtr-keyed with an IsValid() check before that
+// dereference; this confirms the whole path is actually safe end-to-end, not just that the types
+// compile.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneBeginStrokeSurvivesDisconnectedOwnerTest,
+    "TerraDyne.Undo.BeginStrokeSurvivesDisconnectedOwner",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneBeginStrokeSurvivesDisconnectedOwnerTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+    TestNotNull(TEXT("World exists"), World);
+    if (!World) return false;
+
+    ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
+    TestNotNull(TEXT("Manager spawned"), Manager);
+    if (!Manager) return false;
+
+    APlayerController* ControllerA = World->SpawnActor<APlayerController>();
+    APlayerController* ControllerB = World->SpawnActor<APlayerController>();
+    TestNotNull(TEXT("Controller A spawned"), ControllerA);
+    TestNotNull(TEXT("Controller B spawned"), ControllerB);
+    if (!ControllerA || !ControllerB) return false;
+
+    // Controller A opens a stroke and then disconnects without ever calling CommitStroke --
+    // PendingStrokeOwner is left referencing a controller about to be destroyed.
+    Manager->BeginStroke(FVector::ZeroVector, 0.f, ControllerA);
+    TestTrue(TEXT("Stroke pending for Controller A"), Manager->HasPendingStroke(ControllerA));
+
+    ControllerA->Destroy();
+
+    // Controller B beginning a stroke while A's is still pending must not crash (the old code
+    // dereferenced PendingStrokeOwner unconditionally right here), and must correctly discard A's
+    // abandoned stroke and take ownership instead.
+    Manager->BeginStroke(FVector::ZeroVector, 0.f, ControllerB);
+    TestTrue(TEXT("Stroke pending for Controller B after taking over from the disconnected owner"), Manager->HasPendingStroke(ControllerB));
+
+    Manager->CommitStroke(ControllerB);
+    TestEqual(TEXT("Controller B's stroke committed normally afterwards"), Manager->GetUndoDepth(ControllerB), 1);
+
+    return true;
+}
+
 #endif // WITH_EDITOR

@@ -178,4 +178,56 @@ bool FGizmoSubsystemInvertSnapTest::RunTest(const FString& Parameters)
 	Subsystem->CancelManipulation();
 	return true;
 }
+
+// Regression test: none of the DistanceRayTo* functions clamp OutDistanceAlongRay to be non-negative
+// (a segment/point/ring/quad can sit on either side of Origin along the ray's own infinite line), so
+// FindHoveredHandle's own accept condition has to reject a negative AlongRay itself -- otherwise a
+// handle positioned geometrically "behind" the ray's origin (e.g. behind the camera) could still be
+// hovered and grabbed. Same TranslateX geometry TerraDyne.Gizmo.SubsystemBeginUpdateEnd already
+// hand-verifies, aimed the opposite way so the ray's closest approach falls at a negative distance
+// along the ray, with a positive-direction control case proving the fix doesn't just reject every hit.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGizmoSubsystemRejectsBehindRayTest, "TerraDyne.Gizmo.SubsystemRejectsHandleBehindRay", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FGizmoSubsystemRejectsBehindRayTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull(TEXT("World exists"), World);
+	if (!World) return false;
+
+	UGizmoManipulationSubsystem* Subsystem = World->GetSubsystem<UGizmoManipulationSubsystem>();
+	TestNotNull(TEXT("Subsystem exists"), Subsystem);
+	if (!Subsystem) return false;
+
+	const FVector TestLocation(300.0, 600.0, 0.0);
+	AStaticMeshActor* TargetActor = World->SpawnActor<AStaticMeshActor>(TestLocation, FRotator::ZeroRotator);
+	TestNotNull(TEXT("Target actor spawned"), TargetActor);
+	if (!TargetActor) return false;
+
+	Subsystem->SetTarget(TargetActor->GetRootComponent());
+	const FVector CameraForward(0.0, 0.0, -1.0);
+
+	// TranslateX's segment runs from Origin to Origin + (200,0,0). A ray at
+	// TestLocation + (100,0,1000) pointing further UP (away from the segment, which sits 1000 units
+	// below) has its closest approach to that segment at AlongRay = -1000 -- geometrically behind
+	// this ray's own origin.
+	FGizmoInteractionRay BehindRay;
+	BehindRay.Origin = TestLocation + FVector(100.0, 0.0, 1000.0);
+	BehindRay.Direction = FVector(0.0, 0.0, 1.0);
+	const EGizmoHandleType BehindHandle = Subsystem->BeginManipulation(BehindRay, CameraForward);
+	AddInfo(FString::Printf(TEXT("Ray aimed away from the handle (behind-ray case) grabbed: %d"), static_cast<int32>(BehindHandle)));
+	TestEqual(TEXT("A handle geometrically behind the ray's origin must not be grabbable"), BehindHandle, EGizmoHandleType::None);
+	TestFalse(TEXT("Not manipulating after the rejected grab"), Subsystem->IsManipulating());
+
+	// Control: the exact same geometry with Direction reversed (pointing DOWN, toward the segment)
+	// gives AlongRay = +1000 -- a perfectly ordinary hit that must still succeed, proving the fix
+	// above didn't just reject every hit outright.
+	FGizmoInteractionRay InFrontRay;
+	InFrontRay.Origin = TestLocation + FVector(100.0, 0.0, 1000.0);
+	InFrontRay.Direction = FVector(0.0, 0.0, -1.0);
+	const EGizmoHandleType InFrontHandle = Subsystem->BeginManipulation(InFrontRay, CameraForward);
+	AddInfo(FString::Printf(TEXT("Same ray origin, pointing toward the handle instead, grabbed: %d"), static_cast<int32>(InFrontHandle)));
+	TestEqual(TEXT("The identical geometry pointed at the handle instead grabs TranslateX normally"), InFrontHandle, EGizmoHandleType::TranslateX);
+
+	Subsystem->CancelManipulation();
+	return true;
+}
 #endif // WITH_EDITOR

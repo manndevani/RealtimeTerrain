@@ -41,6 +41,12 @@ namespace RoadWidthProfile
 		const FRoadWidthKey& Start = Keys[Index];
 		const FRoadWidthKey& End = Keys[Index + 1];
 		const double SegmentLength = End.Dist - Start.Dist;
+		// Same zero-length-segment guard as RoadElevationProfile::EvaluateHeight -- two keys authored
+		// at the same Dist would otherwise divide by zero and contaminate the road width with NaN.
+		if (SegmentLength <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			return Start.WidthMultiplier;
+		}
 		const double S = Dist - Start.Dist;
 		return FMath::CubicInterp(Start.WidthMultiplier, Start.Slope * SegmentLength, End.WidthMultiplier, End.Slope * SegmentLength, S / SegmentLength);
 	}

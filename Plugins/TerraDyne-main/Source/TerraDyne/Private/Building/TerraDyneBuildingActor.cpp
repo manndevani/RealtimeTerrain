@@ -295,9 +295,17 @@ float ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const
 
 	// Use the peak height within the footprint so the building sits cleanly on top of
 	// mountain peaks and slopes without any terrain poking through the floor.
+	//
+	// Deliberately does NOT also write PadTargetWorldZ here (that used to happen via a const_cast,
+	// since this whole function is const and PadTargetWorldZ isn't a mutable cache field the way
+	// CachedPadTargetWorldZ/bPadTargetCached are). PadTargetWorldZ is replicated, and every non-
+	// SnapToPadHeight caller of this function (e.g. TerraDyneManager's pad-stamping code) only wants
+	// to READ the resolved height, not silently commit-and-replicate it to every client as a side
+	// effect of what looks like a pure query. SnapToPadHeight already makes its own explicit
+	// PadTargetWorldZ assignment right after calling this, so removing this one changes nothing for
+	// the one caller that actually needs the value committed.
 	CachedPadTargetWorldZ = (MaxGroundZ > -MAX_FLT) ? MaxGroundZ : static_cast<float>(Sum / Samples);
 	bPadTargetCached = true;
-	const_cast<ATerraDyneBuildingActor*>(this)->PadTargetWorldZ = CachedPadTargetWorldZ;
 	return CachedPadTargetWorldZ;
 }
 

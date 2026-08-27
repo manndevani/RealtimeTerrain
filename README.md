@@ -610,6 +610,72 @@ relying on this system for anything player-facing.
 
 The full 10-phase runtime transform gizmo system, as scoped and approved, is complete.
 
+## 🔍 Antigravity findings triage — COMPLETE ✅
+
+A third-party audit tool ("Antigravity") flagged 7 findings across the codebase. Each was verified
+against the actual code before any fix landed, per this project's own established discipline of never
+trusting an external claim without direct verification — 6 held up (2 High, 1 upgraded to Medium, 3
+Medium/Low as originally rated) and 1 was a false positive, rejected with reasoning rather than
+"fixed" into a regression.
+
+1. **Gizmo handles behind the camera were grabbable (High)** — `FindHoveredHandle` accepted any hit
+   within tolerance regardless of which side of the ray's origin it fell on. Fixed with an
+   `AlongRay >= 0.0` guard in
+   [GizmoManipulationSubsystem.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Gizmo/GizmoManipulationSubsystem.cpp).
+   Tested: `TerraDyne.Gizmo.SubsystemRejectsHandleBehindRay`.
+2. **`IsLocationTraceable` assumed a 2-sided mesh (High, worse than originally described)** — it
+   divided the mesh's vertex count by 2 to estimate the top-surface grid resolution, but
+   `ATerraDyneChunk::RebuildMesh` only ever builds a single top surface (no bottom slab), so every
+   resolution/index computation downstream was wrong. Fixed in
+   [TerraDyneCollision.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Physics/TerraDyneCollision.cpp)
+   by using the full vertex count. Tested: `TerraDyne.Physics.IsLocationTraceableFindsTheRightCell`.
+3. **OpenDRIVE header north/south vs. east/west (rejected — false positive)** — the finding assumed
+   Unreal's +Y axis is North, but this project's Cesium georeferencing uses the East-South-Up (ESU)
+   tangent-plane convention, where +Y is South. `-Point.Y` for the North bound is therefore the
+   *correct* South→North conversion, not an axis mixup. Left as-is in
+   [RoadXodrExport.cpp](Source/RealtimeTerrain/Private/RoadXodrExport.cpp), with a comment explaining
+   why; the existing structure test now locks in the verified-correct values.
+4. **Raw `APlayerController*` risked a dangling pointer (Medium)** — `UndoStacks`/`RedoStacks`/
+   `PendingStrokeOwner` in `ATerraDyneManager` stored raw controller pointers; a controller destroyed
+   mid-stroke (e.g. a player disconnecting) would leave a dangling `PendingStrokeOwner`. Fixed by
+   switching to `TWeakObjectPtr<APlayerController>` in
+   [TerraDyneManager.h](Plugins/TerraDyne-main/Source/TerraDyne/Public/Core/TerraDyneManager.h) /
+   [TerraDyneManagerUndo.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Core/TerraDyneManagerUndo.cpp).
+   Tested: `TerraDyne.Undo.BeginStrokeSurvivesDisconnectedOwner`.
+5. **Zero-length segments produced NaN (Medium)** — `RoadElevationProfile::EvaluateHeight` and
+   `RoadWidthProfile::EvaluateWidth` divided by `SegmentLength` without checking for two keys authored
+   at (or merged to within tolerance of) the same distance, producing 0/0 = NaN. Fixed with an
+   `UE_DOUBLE_SMALL_NUMBER` guard in both
+   [RoadElevationProfile.cpp](Source/RealtimeTerrain/Private/RoadElevationProfile.cpp) and
+   [RoadWidthProfile.cpp](Source/RealtimeTerrain/Private/RoadWidthProfile.cpp). Tested: new cases in
+   `TerraDyne.RoadElevationProfile.HeightMath` and `TerraDyne.RoadWidthProfile.WidthMath`.
+6. **Division by (near-)zero for near-180° hairpin corners (Low/edge case)** — `RoadSpiral.cpp`'s
+   corner-fitting bisection divided by `Cos(Diff/2)`, which shrinks toward 0 as a corner's turn angle
+   approaches ±180°. A literal near-zero epsilon on `Cos` alone wasn't a sufficient guard (at 179.99°,
+   `Cos(Diff/2) ≈ 8.7e-5` — well above any reasonable near-zero threshold, yet still large enough a
+   divisor to send the corrected value into the millions). Fixed by bounding the *candidate result*
+   against the corner's own arm length instead of gating on `Cos` directly, falling through to the
+   already-correct bisection loop when the single-division shortcut would be unreasonable. Tested:
+   `TerraDyne.RoadSpiral.HairpinCornerStaysFinite` — note that for this specific pathological input
+   (1000cm arms, a near-full reversal, capped at a 500cm max radius) the mathematically correct answer
+   is a path that collapses to a tiny curve at the corner apex (finite and bounded, just not a
+   "nicely-proportioned" S-curve) — the test only requires a valid, finite, bounded path, not a
+   substantial one.
+7. **`const_cast` mutated a replicated property inside a const getter (Low/architectural, worse than
+   originally described)** — `ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const` used
+   `const_cast` to write the *replicated* `PadTargetWorldZ` on every call, not just a `mutable` cache
+   field. This meant calling what looked like an innocuous query silently triggered network
+   replication traffic and `OnRep_*` side effects on every client, on every caller — redundant for
+   `SnapToPadHeight` (which already commits explicitly) and actively harmful for every other caller.
+   Fixed by removing the write in
+   [TerraDyneBuildingActor.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Building/TerraDyneBuildingActor.cpp);
+   the `mutable` cache fields remain untouched. Tested:
+   `TerraDyne.Multiplayer.ResolvePadTargetWorldZHasNoSideEffect`.
+
+**Full regression sweep**: 94 automation tests found, 93 passed — the only failure is the same
+pre-existing, unrelated `TerraDyne.Raster.Workflow` GIS-import test noted throughout this README.
+
+---
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
 

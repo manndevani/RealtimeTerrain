@@ -69,6 +69,17 @@ bool FRoadXodrExportStructureTest::RunTest(const FString& Parameters)
 	if (HeaderNode)
 	{
 		TestEqual(TEXT("header revMajor"), HeaderNode->GetAttribute(TEXT("revMajor")), FString(TEXT("1")));
+
+		// Regression pin for a claimed north/south-vs-east/west swap: verified NOT a bug (this
+		// project's roads use Cesium's East-South-Up tangent plane, so +Y being negated for
+		// north/south is the correct South->North conversion, not a mixup -- see this exporter's own
+		// comment above the header block). CentrelineXY spans X:[0,1000]cm, Y:[0,2000]cm --
+		// east/west come straight from X (east=10m, west=0m); north/south come from -Y (north=0m at
+		// Y=0, south=-20m at Y=2000cm), since more-negative-Y is further South under ESU.
+		TestEqual(TEXT("header east = 10m (max X)"), FCString::Atod(*HeaderNode->GetAttribute(TEXT("east"))), 10.0, 0.001);
+		TestEqual(TEXT("header west = 0m (min X)"), FCString::Atod(*HeaderNode->GetAttribute(TEXT("west"))), 0.0, 0.001);
+		TestEqual(TEXT("header north = 0m (least-South point)"), FCString::Atod(*HeaderNode->GetAttribute(TEXT("north"))), 0.0, 0.001);
+		TestEqual(TEXT("header south = -20m (most-South point, Y=2000cm)"), FCString::Atod(*HeaderNode->GetAttribute(TEXT("south"))), -20.0, 0.001);
 	}
 
 	const FXmlNode* RoadNode = RootNode->FindChildNode(TEXT("road"));

@@ -58,5 +58,18 @@ bool FRoadWidthProfileMathTest::RunTest(const FString& Parameters)
 		const double QuarterPoint = RoadWidthProfile::EvaluateWidth(Bulge, 500.0);
 		TestTrue(TEXT("Bulge quarter-point is not linear (starts flat, so it lags the straight-line value of 1.5)"), QuarterPoint < 1.5);
 	}
+	{
+		// Regression: same zero-length-segment guard as RoadElevationProfile.HeightMath -- two width
+		// keys authored at the same Dist (e.g. two gizmo Scale-mode writes landing within the 0.5cm
+		// merge tolerance of each other from different points) used to divide 0/0 into NaN.
+		TArray<FRoadWidthKey> DuplicateDist;
+		DuplicateDist.Add({ 0.0, 1.0, 0.0 });
+		DuplicateDist.Add({ 1000.0, 2.5, 0.0 });
+		DuplicateDist.Add({ 1000.0, 2.5, 0.0 });
+		DuplicateDist.Add({ 2000.0, 1.0, 0.0 });
+		const double AtDuplicate = RoadWidthProfile::EvaluateWidth(DuplicateDist, 1000.0);
+		TestTrue(TEXT("Zero-length segment does not produce NaN"), FMath::IsFinite(AtDuplicate));
+		TestEqual(TEXT("Zero-length segment evaluates to the segment's own (equal) multiplier"), AtDuplicate, 2.5, 0.01);
+	}
 	return true;
 }

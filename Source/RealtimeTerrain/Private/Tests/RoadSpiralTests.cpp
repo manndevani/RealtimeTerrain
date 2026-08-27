@@ -151,3 +151,59 @@ bool FRoadSpiralCentrelineCornerTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// Regression test: the corner-fitting loop's "even the gentlest curvature overshoots" recovery
+// branch divides by Cos(Diff/2), which approaches 0 as the corner's turn angle Diff approaches
+// +/-PI (a near-180-degree hairpin, e.g. a mountain-road switchback) -- an unguarded near-zero
+// denominator sends Size toward +/-infinity, corrupting the whole corner's geometry. A 179.99-degree
+// turn (deliberately short of the fully-degenerate 180-degree case BuildSpiralCentreline already
+// skips outright via its own Dir.IsNearlyZero() check) exercises this without crashing or hanging,
+// and every produced sample must still be finite.
+//
+// NOTE on what "correct" looks like here: with only 1000cm arms, a near-full 179.99-degree reversal
+// forces Radius = Size / |Tan(Diff/2)| down to a small fraction of a centimetre even at the full
+// (unhalved, since this corner is both the path's first and last) Size -- the fix keeps that finite
+// and bounded, but it also means both straight run segments either side of the corner legitimately
+// shrink to nothing (CutSize == PrevSize - LastSize - Size == 0) and the whole path collapses to
+// just the corner's own microscopic curve. That's a correct, if extreme, answer to a physically
+// pathological input -- not the nicely-proportioned S-curve the 90-degree corner test above
+// exercises -- so this test only requires a valid (non-empty, bounded, finite) path, not a
+// "substantial" one.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRoadSpiralHairpinCornerTest, "TerraDyne.RoadSpiral.HairpinCornerStaysFinite", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRoadSpiralHairpinCornerTest::RunTest(const FString& Parameters)
+{
+	// Incoming heading 0 (along +X); outgoing heading 179.99 degrees -- Cos(Diff/2) = Cos(89.995 deg)
+	// = sin(0.005 deg) ~= 8.7e-5, close enough to zero to have overflowed Size before the fix.
+	const double OutgoingHeadingRad = FMath::DegreesToRadians(179.99);
+	const FVector2D P0(0.0, 0.0);
+	const FVector2D P1(1000.0, 0.0);
+	const FVector2D P2 = P1 + FVector2D(FMath::Cos(OutgoingHeadingRad), FMath::Sin(OutgoingHeadingRad)) * 1000.0;
+
+	TArray<FVector2D> ControlPoints = { P0, P1, P2 };
+	const double MaxRadius = 500.0;
+	const double CurvatureBlend = 0.5;
+	const double SampleStep = 25.0;
+
+	TArray<FVector2D> Points;
+	TArray<double> Distances;
+	RoadSpiral::BuildSpiralCentreline(ControlPoints, MaxRadius, CurvatureBlend, SampleStep, Points, Distances);
+
+	TestTrue(TEXT("A near-180-degree hairpin still produces a valid path (start and end point)"), Points.Num() >= 2);
+
+	bool bAllFinite = true;
+	double MaxAbsCoord = 0.0;
+	for (const FVector2D& P : Points)
+	{
+		if (!FMath::IsFinite(P.X) || !FMath::IsFinite(P.Y))
+		{
+			bAllFinite = false;
+			break;
+		}
+		MaxAbsCoord = FMath::Max(MaxAbsCoord, FMath::Max(FMath::Abs(P.X), FMath::Abs(P.Y)));
+	}
+	AddInfo(FString::Printf(TEXT("Hairpin corner: %d points, max |coord| = %.2f (control points span ~1000-2000cm)"), Points.Num(), MaxAbsCoord));
+	TestTrue(TEXT("Every sample point is finite (no NaN/Inf from dividing by a near-zero Cos)"), bAllFinite);
+	TestTrue(TEXT("No sample point blew up to a wildly out-of-scale position"), MaxAbsCoord < 100000.0);
+
+	return true;
+}

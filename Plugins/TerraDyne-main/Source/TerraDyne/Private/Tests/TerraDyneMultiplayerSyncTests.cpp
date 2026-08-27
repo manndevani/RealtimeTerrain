@@ -117,6 +117,81 @@ bool FTerraDyneBuildingPadSyncTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Regression test: ResolvePadTargetWorldZ is a const "query the resolved pad height" function, but
+// used to also write the result into the replicated PadTargetWorldZ property via a const_cast --
+// a real, unwanted side effect for every caller that just wants to READ the value (e.g.
+// ATerraDyneManager's own pad-stamping code), since on the authority that write is exactly what
+// triggers replication out to every client. SnapToPadHeight already makes its own explicit
+// PadTargetWorldZ assignment right after calling this function, so the fix (removing the const_cast
+// write) costs that one real caller nothing while stopping every other caller from silently
+// committing-and-replicating a change nobody asked for.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTerraDyneResolvePadTargetIsPureQueryTest,
+	"TerraDyne.Multiplayer.ResolvePadTargetWorldZHasNoSideEffect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneResolvePadTargetIsPureQueryTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull(TEXT("World exists"), World);
+	if (!World) return false;
+
+	ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
+	TestNotNull(TEXT("Manager spawned"), Manager);
+	if (!Manager) return false;
+
+	Manager->GlobalChunkSize = 5000.0f;
+
+	ATerraDyneChunk* Chunk = World->SpawnActor<ATerraDyneChunk>();
+	TestNotNull(TEXT("Chunk spawned"), Chunk);
+	if (!Chunk) return false;
+
+	Chunk->GridCoordinate = FIntPoint(0, 0);
+	Chunk->WorldSize = 5000.0f;
+	Chunk->Resolution = 2;
+	// BaseBuffer at 1.0 (SculptBuffer/DetailBuffer at 0.0) gives GetNaturalHeightAtLocation a
+	// uniform, clearly-non-zero natural height everywhere in the chunk -- distinguishable from
+	// PadTargetWorldZ's 0.0f default, so an unwanted mutation is easy to detect.
+	Chunk->BaseBuffer.Init(1.0f, 4);
+	Chunk->SculptBuffer.Init(0.0f, 4);
+	Chunk->DetailBuffer.Init(0.0f, 4);
+
+	UTerraDyneSubsystem* Subsystem = World->GetSubsystem<UTerraDyneSubsystem>();
+	if (Subsystem)
+	{
+		Subsystem->RegisterManager(Manager);
+	}
+	Manager->RegisterChunk(Chunk);
+	Manager->RebuildChunkMap();
+
+	ATerraDyneBuildingActor* Building = World->SpawnActor<ATerraDyneBuildingActor>(
+		ATerraDyneBuildingActor::StaticClass(),
+		FTransform(FVector(0.0f, 0.0f, 0.0f)));
+	TestNotNull(TEXT("Building spawned"), Building);
+	if (!Building) return false;
+
+	Building->bAutoPadHeight = true;
+	TestEqual(TEXT("PadTargetWorldZ starts at its 0.0f default"), Building->PadTargetWorldZ, 0.0f);
+
+	const float Resolved = Building->ResolvePadTargetWorldZ();
+	AddInfo(FString::Printf(TEXT("ResolvePadTargetWorldZ() returned %.3f; PadTargetWorldZ is now %.3f"), Resolved, Building->PadTargetWorldZ));
+	TestTrue(TEXT("The resolved height reflects the real (non-zero) sampled terrain"), Resolved > 0.5f);
+	TestEqual(TEXT("Calling the query alone does not mutate the replicated PadTargetWorldZ"), Building->PadTargetWorldZ, 0.0f);
+
+	// Calling it again (now cached) must still be side-effect-free.
+	const float ResolvedAgain = Building->ResolvePadTargetWorldZ();
+	TestEqual(TEXT("The cached path returns the same value"), ResolvedAgain, Resolved, 0.001f);
+	TestEqual(TEXT("The cached path also does not mutate PadTargetWorldZ"), Building->PadTargetWorldZ, 0.0f);
+
+	// Control: SnapToPadHeight is the one caller that's actually supposed to commit the change, and
+	// still does.
+	Building->SnapToPadHeight();
+	TestEqual(TEXT("SnapToPadHeight itself still commits PadTargetWorldZ, unaffected by the fix"), Building->PadTargetWorldZ, Resolved, 0.001f);
+
+	Building->Destroy();
+	return true;
+}
+
 // Regression test for a real gap: SetReplicateMovement's FRepMovement (used for
 // bReplicates+SetReplicateMovement(true), ATerraDyneBuildingActor's own replication mechanism) only
 // carries Location and Rotation -- it has no Scale3D field at all. Without an explicit replicated

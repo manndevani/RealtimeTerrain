@@ -46,6 +46,21 @@ bool FRoadElevationProfileMathTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Three-key profile: back to ground at the far end"), RoadElevationProfile::EvaluateHeight(ClimbHoldDescend, 2000.0), 0.0, 0.01);
 		TestTrue(TEXT("Three-key profile: partway up the climb is between ground and deck height"), RoadElevationProfile::EvaluateHeight(ClimbHoldDescend, 500.0) > 0.0 && RoadElevationProfile::EvaluateHeight(ClimbHoldDescend, 500.0) < 1500.0);
 	}
+	{
+		// Regression: two keys authored at the exact same Dist (a duplicate/degenerate key, e.g. two
+		// separately-authored points that both landed on the same station) used to divide 0/0,
+		// contaminating the result with NaN -- a single non-finite height silently discards every
+		// mesh triangle touching that vertex with no error. Bracketing this degenerate pair between
+		// two real keys also confirms the fix doesn't just special-case a 2-key list.
+		TArray<FRoadHeightKey> DuplicateDist;
+		DuplicateDist.Add({ 0.0, 0.0, 0.0 });
+		DuplicateDist.Add({ 1000.0, 500.0, 0.0 });
+		DuplicateDist.Add({ 1000.0, 500.0, 0.0 });
+		DuplicateDist.Add({ 2000.0, 800.0, 0.0 });
+		const double AtDuplicate = RoadElevationProfile::EvaluateHeight(DuplicateDist, 1000.0);
+		TestTrue(TEXT("Zero-length segment does not produce NaN"), FMath::IsFinite(AtDuplicate));
+		TestEqual(TEXT("Zero-length segment evaluates to the segment's own (equal) height"), AtDuplicate, 500.0, 0.01);
+	}
 	return true;
 }
 

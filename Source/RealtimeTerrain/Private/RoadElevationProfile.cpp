@@ -16,6 +16,14 @@ namespace RoadElevationProfile
 		const FRoadHeightKey& Start = Keys[Index];
 		const FRoadHeightKey& End = Keys[Index + 1];
 		const double SegmentLength = End.Dist - Start.Dist;
+		// Two keys authored at (or rounded to) the same Dist give SegmentLength == 0 -- S/SegmentLength
+		// would then be 0/0 (Dist == Start.Dist here too) or worse for Dist fractionally off Start.Dist,
+		// and a single NaN height silently discards every triangle touching that vertex with no error
+		// (the exact failure mode RebuildMesh's own height sanitization exists to catch elsewhere).
+		if (SegmentLength <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			return Start.Height;
+		}
 		const double S = Dist - Start.Dist;
 		return FMath::CubicInterp(Start.Height, Start.Slope * SegmentLength, End.Height, End.Slope * SegmentLength, S / SegmentLength);
 	}
