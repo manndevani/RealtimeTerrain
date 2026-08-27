@@ -82,6 +82,7 @@ void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 	DOREPLIFETIME(ARealtimeRoadSplineActor, StylePreset);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, HeightKeys);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, PierSettings);
+	DOREPLIFETIME(ARealtimeRoadSplineActor, WidthKeys);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, bUseSpiralCentreline);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, ReplicatedWorldPoints);
 	DOREPLIFETIME(ARealtimeRoadSplineActor, JunctionCuts);
@@ -704,6 +705,7 @@ void ARealtimeRoadSplineActor::BuildRuns(
 	FRoadRun Current;
 	Current.StartPinJunction = StartJunction;
 	Current.StartPinLeg = StartJunctionLegIndex;
+	Current.StartDistance = Distances.IsValidIndex(Station) ? Distances[Station] : 0.0;
 
 	for (const FRoadJunctionCut& Cut : Ordered)
 	{
@@ -731,6 +733,8 @@ void ARealtimeRoadSplineActor::BuildRuns(
 		{
 			++Station;
 		}
+
+		Current.StartDistance = Distances.IsValidIndex(Station) ? Distances[Station] : (Distances.Num() ? Distances.Last() : 0.0);
 	}
 
 	while (Station < Points.Num())
@@ -919,6 +923,41 @@ void ARealtimeRoadSplineActor::ApplyElevationProfile(TArray<FVector>& Points, co
 		}
 		Points[i].Z = RoadElevationProfile::EvaluateHeight(EffectiveKeys, Distance);
 	}
+}
+
+void ARealtimeRoadSplineActor::SetWidthMultiplierAtDistance(double Dist, double NewMultiplier)
+{
+	// A collapsed or inverted road has no meaningful geometry -- WidthScalePerFrame is a plain
+	// multiplication of Lateral, not a signed offset, so this floor is what keeps the sweep sane.
+	NewMultiplier = FMath::Max(0.05, NewMultiplier);
+
+	for (FRoadWidthKey& Key : WidthKeys)
+	{
+		if (FMath::IsNearlyEqual(Key.Dist, Dist, 0.5))
+		{
+			Key.WidthMultiplier = NewMultiplier;
+			RequestRebuild();
+			return;
+		}
+	}
+
+	FRoadWidthKey NewKey;
+	NewKey.Dist = Dist;
+	NewKey.WidthMultiplier = NewMultiplier;
+	WidthKeys.Add(NewKey);
+	WidthKeys.Sort();
+	RequestRebuild();
+}
+
+double ARealtimeRoadSplineActor::GetWidthMultiplierAtDistance(double Dist) const
+{
+	if (WidthKeys.Num() == 0)
+	{
+		return 1.0;
+	}
+	TArray<FRoadWidthKey> Sorted = WidthKeys;
+	Sorted.Sort();
+	return RoadWidthProfile::EvaluateWidth(Sorted, Dist);
 }
 
 void ARealtimeRoadSplineActor::ComputeCrossSlopeRoll(const TArray<RoadMesh::FFrame>& Frames, TArray<double>& OutRoll) const
@@ -1133,6 +1172,13 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 		}
 	}
 
+	// Sorted once, outside the per-run loop below -- WidthKeys is a directly user-editable UPROPERTY
+	// (not just gizmo-written), so it isn't guaranteed sorted the way SetWidthMultiplierAtDistance's
+	// own writes keep it, the same defensive-sort reasoning ApplyElevationProfile already applies to
+	// HeightKeys.
+	TArray<FRoadWidthKey> SortedWidthKeys = WidthKeys;
+	SortedWidthKeys.Sort();
+
 	const FTransform WorldToLocal = RoadMeshComponent->GetComponentTransform().Inverse();
 
 	// Deferring the collision cook is what makes dragging a point interactive; the settle pass
@@ -1161,6 +1207,21 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 
 			RoadMesh::ComputeBandScaleFromCurvature(
 				Frames, RequestedBandWidth, RoadMesh::BandRadiusSafetyFactor, Options.BandScalePerFrame);
+
+			// Rebuilt fresh every run -- Options is reused across all runs in this loop, and a run's
+			// own local Frame::DistanceAlong (reset to 0 at every run's start) has to be re-based to
+			// Run.StartDistance to land in the same global-distance convention WidthKeys is authored
+			// against (the same one HeightKeys/ApplyElevationProfile already use).
+			Options.WidthScalePerFrame.Reset();
+			if (SortedWidthKeys.Num() > 0)
+			{
+				Options.WidthScalePerFrame.Reserve(Frames.Num());
+				for (const RoadMesh::FFrame& Frame : Frames)
+				{
+					const double GlobalDist = Run.StartDistance + Frame.DistanceAlong;
+					Options.WidthScalePerFrame.Add(static_cast<float>(RoadWidthProfile::EvaluateWidth(SortedWidthKeys, GlobalDist)));
+				}
+			}
 
 			RoadMesh::SweepSection(Mesh, Section, Frames, WorldToLocal, Options);
 			RunFrames.Add(MoveTemp(Frames));

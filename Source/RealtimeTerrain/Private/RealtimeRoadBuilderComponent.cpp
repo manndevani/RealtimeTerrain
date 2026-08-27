@@ -321,18 +321,44 @@ void URealtimeRoadBuilderComponent::UpdatePointGizmo()
 				FVector Location = RoadWeak->GetSplinePointWorldLocation(PointIndex);
 				// The visible handle sphere is lifted by EditOverlay->VerticalOffset (ShowRoad) so
 				// it reads clearly against the road surface; the gizmo has to match that lift or it
-				// sits visibly below the handle it's supposed to be centered on.
+				// sits visibly below the handle it's supposed to be centered on. Set (below) removes
+				// the same offset before writing back -- without that symmetry, every drag would
+				// permanently ratchet the point's real Z upward by VerticalOffset.
 				if (SelfWeak.IsValid() && SelfWeak->EditOverlay)
 				{
 					Location.Z += SelfWeak->EditOverlay->VerticalOffset;
 				}
-				return FTransform(Location);
+
+				// Scale mode's only meaning for a single spline point: the road's authored width
+				// multiplier at this point's own distance along the route (RoadWidthProfile.h).
+				const double DistanceAlong = RoadWeak->SplineComponent
+					? RoadWeak->SplineComponent->GetDistanceAlongSplineAtSplinePoint(PointIndex)
+					: 0.0;
+				const double WidthMultiplier = RoadWeak->GetWidthMultiplierAtDistance(DistanceAlong);
+				return FTransform(FQuat::Identity, Location, FVector(WidthMultiplier));
 			}),
-			FGizmoSetTransform::CreateLambda([RoadWeak, PointIndex](const FTransform& NewTransform)
+			FGizmoSetTransform::CreateLambda([RoadWeak, SelfWeak, PointIndex](const FTransform& NewTransform)
 			{
-				if (RoadWeak.IsValid())
+				if (!RoadWeak.IsValid()) return;
+
+				FVector Location = NewTransform.GetLocation();
+				if (SelfWeak.IsValid() && SelfWeak->EditOverlay)
 				{
-					RoadWeak->MovePointRealtime(PointIndex, NewTransform.GetLocation());
+					Location.Z -= SelfWeak->EditOverlay->VerticalOffset;
+				}
+				RoadWeak->MovePointRealtime(PointIndex, Location);
+
+				// Gated on Scale mode specifically -- Translate/Rotate drags leave Scale3D exactly as
+				// Get returned it, but the point's distance-along-spline changes every frame of a
+				// Translate drag, so writing unconditionally here would spam WidthKeys with a fresh,
+				// effectively-junk entry at the point's ever-changing position instead of only
+				// recording an actual authored width change.
+				if (SelfWeak.IsValid() && SelfWeak->GizmoSubsystem && SelfWeak->GizmoSubsystem->GetMode() == EGizmoMode::Scale)
+				{
+					const double DistanceAlong = RoadWeak->SplineComponent
+						? RoadWeak->SplineComponent->GetDistanceAlongSplineAtSplinePoint(PointIndex)
+						: 0.0;
+					RoadWeak->SetWidthMultiplierAtDistance(DistanceAlong, NewTransform.GetScale3D().X);
 				}
 			}),
 			SelectedRoadActor->SplineComponent);

@@ -101,6 +101,16 @@ namespace RoadMesh
 		 * BandInnerHalfWidth left at 0) means unscaled -- every station sweeps the full band width.
 		 */
 		TArray<float> BandScalePerFrame;
+
+		/**
+		 * Per frame (parallel to Frames), multiplies EVERY section vertex's Lateral before
+		 * BandScalePerFrame's narrowing is even considered -- unlike that array, this is not limited
+		 * to the outer band beyond BandInnerHalfWidth, since an authored width change (see
+		 * RoadWidthProfile.h) is meant to widen or narrow the whole road, road surface included, not
+		 * just its curb/footpath trim. Empty (default) means unscaled, exactly as before this option
+		 * existed.
+		 */
+		TArray<float> WidthScalePerFrame;
 	};
 
 	/** How much wider than the band a turn's local radius has to be before the band stays well formed. */

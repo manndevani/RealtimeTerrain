@@ -7,6 +7,7 @@
 #include "Engine/TimerHandle.h"
 #include "RoadTypes.h"
 #include "RoadElevationProfile.h"
+#include "RoadWidthProfile.h"
 #include "RoadPierPlacement.h"
 #include "RoadSpiral.h"
 #include "RealtimeRoadSplineActor.generated.h"
@@ -120,6 +121,40 @@ public:
 	/** Support piers instanced under any stretch this road's final height clears above raw terrain. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Elevation")
 	FRoadPierSettings PierSettings;
+
+	//--- WIDTH PROFILE ---
+
+	/**
+	 * Authored width-multiplier keys (see RoadWidthProfile.h), evaluated independently at every
+	 * swept station. Empty by default (RoadMesh::FSweepOptions::WidthScalePerFrame left empty too),
+	 * leaving every existing road's width exactly as authored by CrossSectionSettings/StylePreset --
+	 * this is purely additive, on top of that authored width, not a replacement for it.
+	 *
+	 * Written by the road-point gizmo's Scale mode (URealtimeRoadBuilderComponent) via
+	 * SetWidthMultiplierAtDistance -- dragging a selected point's Scale handle keys a multiplier at
+	 * that point's own distance-along-spline, the same way an elevation key would be authored for
+	 * height if a per-point gizmo existed for it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_RoadConfig, Category = "Road|Width")
+	TArray<FRoadWidthKey> WidthKeys;
+
+	/**
+	 * Writes (or replaces) the WidthKeys entry at exactly Dist with NewMultiplier, keeping the array
+	 * sorted -- the road-point gizmo's Scale-mode write path. Clamped away from zero/negative: a
+	 * multiplier of 0 would collapse the road to a zero-width line, and the sweep math has no
+	 * meaningful "negative width" (RoadMesh::FSweepOptions::WidthScalePerFrame is a plain
+	 * multiplication, not a signed offset).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Road|Width")
+	void SetWidthMultiplierAtDistance(double Dist, double NewMultiplier);
+
+	/**
+	 * Current effective width multiplier at Dist (see RoadWidthProfile::EvaluateWidth) -- the
+	 * gizmo's Scale-mode read path, so a fresh selection starts the handle at whatever width is
+	 * already authored there instead of always resetting to 1.0.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Road|Width")
+	double GetWidthMultiplierAtDistance(double Dist) const;
 
 	//--- CENTRELINE SMOOTHING ---
 
@@ -441,6 +476,14 @@ protected:
 		int32 StartPinLeg = INDEX_NONE;
 		ARealtimeRoadJunctionActor* EndPinJunction = nullptr;
 		int32 EndPinLeg = INDEX_NONE;
+
+		/**
+		 * This run's own Points[0] distance along the WHOLE road's pre-split centreline (the same
+		 * global Distances array BuildRuns walks, and what WidthKeys/HeightKeys are authored
+		 * against) -- RoadMesh::FFrame::DistanceAlong resets to 0 at every run's own start, so this
+		 * is what converts a frame's local distance back to that shared global convention.
+		 */
+		double StartDistance = 0.0;
 	};
 
 	void RebuildInternal(bool bUpdateCollision);

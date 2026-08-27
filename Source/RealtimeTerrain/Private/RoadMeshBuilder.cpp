@@ -468,11 +468,13 @@ void SweepSection(
 		const FFrame& Frame = Frames[f];
 		const float BandScale = Options.BandScalePerFrame.IsValidIndex(f) ? Options.BandScalePerFrame[f] : 1.0f;
 
+		const float WidthScale = Options.WidthScalePerFrame.IsValidIndex(f) ? Options.WidthScalePerFrame[f] : 1.0f;
+
 		for (int32 s = 0; s < NumSection; ++s)
 		{
-			double Lateral = Section[s].Lateral;
+			double Lateral = Section[s].Lateral * WidthScale;
 
-			// Only the outer band -- curb, footpath -- ever scales. The core road surface, inside
+			// Only the outer band -- curb, footpath -- ever scales further from here. The core road surface, inside
 			// BandInnerHalfWidth, stays at its authored width at every station regardless: a curve
 			// tight enough to need a narrower band is not tight enough to need a narrower road.
 			if (Options.BandInnerHalfWidth > 0.0)

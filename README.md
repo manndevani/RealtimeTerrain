@@ -357,8 +357,65 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   interactive feel (dragging every handle type, confirming the Shift/Ctrl/C/G hotkeys don't fight any
   other input in practice) — headless automation cannot exercise real mouse/keyboard interaction.
 
-**Next step**: Phase 6 — road-point width scaling, giving the road tool's Scale mode a real, useful
-meaning (Rotate has none for a single spline point). See plan file for the full 10-phase order.
+### Phase 6 — COMPLETE ✅ (road-point width scaling)
+- `RoadWidthProfile.h`/`.cpp` (new): `FRoadWidthKey` (Dist/WidthMultiplier/Slope), mirroring
+  `RoadElevationProfile.h`'s `FRoadHeightKey` shape exactly, plus `EvaluateWidth`. Deliberately
+  **not** identical to `EvaluateHeight`'s contract, for a real reason found while designing this
+  phase rather than blindly copying: an elevation profile is only ever meaningful bracketed in
+  pairs (a bridge's start and end), but the gizmo's Scale handle produces a single, un-bracketed key
+  as its very first, most common gesture — treating that as "not enough keys, do nothing" (matching
+  `EvaluateHeight`'s own convention) would make the very first drag on the very first point visibly
+  do nothing. `EvaluateWidth` instead handles 0/1/2+ keys as three complete answers: 0 → unscaled
+  1.0 everywhere; 1 → 1.0 outside a 500cm falloff radius, smoothly blending (cubic smoothstep, not
+  linear — a linear blend creases visibly at the key) to the key's own multiplier inside it; 2+ →
+  the same cubic-Hermite bracketing `EvaluateHeight` uses, clamped to 1.0 outside the authored range
+  (folded into the function itself, so callers need no outside-range guard of their own).
+- `RoadMesh::FSweepOptions::WidthScalePerFrame` (new, parallel to the existing `BandScalePerFrame`):
+  multiplies every section vertex's `Lateral` — road surface included, not just the curb/footpath
+  band beyond `BandInnerHalfWidth` the way `BandScalePerFrame` is limited to — applied first, with
+  `BandScalePerFrame`'s own turn-narrowing then running against the already-widened value. Confirmed
+  by a hand-derived test (`TerraDyne.RoadMesh.WidthScaleAppliesToWholeSection`) with both options set
+  together: an inner vertex widened just enough to cross `BandInnerHalfWidth` correctly starts
+  picking up band-narrowing too, pinning down the documented composition order, not just that each
+  option works alone.
+- `ARealtimeRoadSplineActor::WidthKeys` (new, `ReplicatedUsing = OnRep_RoadConfig` — same
+  replication convention as `HeightKeys`), `SetWidthMultiplierAtDistance`/
+  `GetWidthMultiplierAtDistance` (updates an existing key in place within 0.5cm rather than
+  accumulating near-duplicates, since the gizmo calls the setter every frame of a drag). A genuine
+  architectural gap found while wiring the sweep loop, not anticipated by the plan: `RoadMesh::FFrame::DistanceAlong`
+  resets to 0 at the start of every `FRoadRun` (a road split at junctions becomes several runs), but
+  `WidthKeys`/`HeightKeys` are authored against the whole road's pre-split distance — fixed by adding
+  `FRoadRun::StartDistance` (each run's own first station's distance in that shared global
+  convention), populated in `BuildRuns` at both places a run starts, and added to a frame's local
+  `DistanceAlong` before evaluating the profile.
+- **A real, silently-compounding bug found and fixed while re-touching this exact code for Scale
+  mode**: the road-point gizmo's transform-accessor `Get` added `EditOverlay->VerticalOffset` to the
+  point's location (so the gizmo lines up with the visually-lifted handle sphere), but `Set` wrote
+  `NewTransform.GetLocation()` straight through to `MovePointRealtime` with no matching subtraction —
+  every completed drag permanently baked the offset into the point's real stored Z, and a second,
+  separate drag on the same point would compound a second copy on top of the first. Fixed by
+  subtracting the same offset in `Set`, restoring the Get/Set symmetry the "initial transform plus
+  accumulated delta" model depends on.
+- Scale mode's write is gated on the subsystem's mode actually being `EGizmoMode::Scale` — the point's
+  distance-along-spline changes every frame of an ordinary Translate drag, and writing unconditionally
+  would have spammed `WidthKeys` with a fresh, junk 1.0-multiplier entry at the point's ever-shifting
+  position on every such drag instead of only recording an actual authored width change.
+- **Full regression sweep after this increment: 87 tests found, 86 passed, 0 regressions** — the same
+  pre-existing, unrelated `TerraDyne.Raster.Workflow` failure as Phases 4-5. New tests:
+  `TerraDyne.RoadWidthProfile.WidthMath`, `TerraDyne.RoadMesh.WidthScaleAppliesToWholeSection`,
+  `TerraDyne.RoadSplineActor.WidthKeyWidensMeshAtItsOwnDistance` (spawns a real road, measures actual
+  mesh width in world space before/after a Scale-mode-equivalent write — a 2x key measured 1170 →
+  2277.3 at its own station and exactly 1170 → 1170 unchanged 1900cm away, matching the falloff math
+  by hand).
+- **Known limitation**: width keys are anchored to a fixed distance-along-road, the same way
+  `HeightKeys` already are — moving a road point via Translate after giving it a width key does not
+  carry that key along to the point's new position (an accepted, precedented limitation inherited
+  from the elevation-profile design this mirrors, not a new gap this phase introduces). Building's
+  own Rotate/Scale wiring (Phase 7) and in-editor manual drag verification (carried over from Phases
+  4-5) remain outstanding.
+
+**Next step**: Phase 7 — building rotate/scale wiring (`SetActorRotation`/`SetActorScale3D` via the
+existing networked RPC pattern). See plan file for the full 10-phase order.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
