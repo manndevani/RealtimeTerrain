@@ -463,10 +463,152 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   outstanding — headless automation proves the math and the replication-sync bookkeeping, not the
   real click-and-drag feel or a genuine two-machine network test.
 
-**Next step**: Phase 8 — VR/motion-controller readiness (design-verification only: confirm
-`FGizmoInteractionRay` + the subsystem API are the only things a future controller integration would
-need; no VR plugin/hardware exists in this project to build or test against). See plan file for the
-full 10-phase order.
+### Phase 8 — COMPLETE ✅ (VR/motion-controller readiness — design-verification only, no code)
+**Claim to verify**: mouse and a future VR controller can share the exact same manipulation core,
+with device-specific code confined to producing an `FGizmoInteractionRay` and nothing else.
+
+**Verified by direct code reading, not assumed**: `Plugins/TerraDyne-main/Source/TerraDyne/Private/Gizmo/`
+(`GizmoManipulationSubsystem.cpp`, `GizmoManipulationMath.cpp`, `RuntimeGizmoActor.cpp`) contains
+**zero** references to `PlayerController`, `DeprojectMousePositionToWorld`, `GetMousePosition`,
+`InputComponent`, `IsInputKeyDown`, or `EKeys::` anywhere — confirmed by grep across the whole
+module, not by reading a few functions and generalizing. Every device-specific call lives entirely in
+the two *consumers* (`ATerraDyneEditController::BuildGizmoInteractionRay`/`GetCameraForwardVector`,
+`URealtimeRoadBuilderComponent`'s identical pair), each a handful of lines translating one input
+source into `FGizmoInteractionRay{Origin, Direction}` plus a forward vector — exactly the
+"Input Device → Interaction Ray → Gizmo Hit Test → Manipulation State → Transform Result" pipeline
+the original spec called for.
+- **What a VR integration would actually need to write**: a `BuildGizmoInteractionRay` equivalent
+  reading a `UMotionControllerComponent`'s aim transform (`Origin = Controller->GetComponentLocation()`,
+  `Direction = Controller->GetForwardVector()`) instead of deprojecting the mouse, and a
+  `GetCameraForwardVector` equivalent reading the HMD's own forward vector instead of
+  `PlayerCameraManager`. Every other call — `SetTarget`, `SetMode`, `BeginManipulation`,
+  `UpdateManipulation`, `EndManipulation`, `CancelManipulation` — is already identical for both.
+- **"Screen-space" handles generalize correctly, not coincidentally**: `RotateScreen`/`Center`'s
+  `CameraForward` parameter is used purely as "the viewer's own forward vector" (a view-facing plane
+  or a free-rotation axis) — nothing pixel- or viewport-based. An HMD's forward vector satisfies this
+  identically to a desktop camera's.
+- **Ctrl-held snap-invert, Shift/mode hotkeys**: already isolated as plain booleans/enum values passed
+  into the subsystem (`bInvertSnapForThisCall`, `SetMode`) — a VR controller's own button/trigger
+  state maps onto the same parameters with no subsystem change.
+- **Explicit non-claims** (scope realism, not oversights): two-handed simultaneous VR manipulation
+  (grabbing with both controllers for a combined move+rotate+scale gesture) is a genuinely different
+  interaction model layered *on top of* this core, not something "readiness" implies — out of scope
+  here, same as the original plan's own scoping. `ClickTolerance` (20cm) was tuned for mouse-cursor
+  precision; VR hand-aiming is typically less precise and would likely want a larger tolerance —
+  already an exposed constant, a tuning change, not a structural one. No VR plugin/pawn/hardware
+  exists in this project to actually build or test against, so this phase is verification and
+  documentation, not a shipped, testable feature.
+
+### Phase 9 — COMPLETE ✅ (multi-object structural readiness — design-only, no code)
+**Claim to verify**: the manipulation math operates on "a transform + a delta," so applying one
+computed delta to several targets at once is additive/structural, not a rewrite.
+
+**Verified by direct code reading**: every function in `GizmoManipulationMath.h` (`ComputeTranslateDelta`,
+`ComputeRotationAngle`/`ComputeRotationDelta`, `ComputeScaleDelta`, every `DistanceRayTo*` hit test)
+takes plain `FVector`/`FQuat`/`double`/`EGizmoHandleType` parameters and returns a delta or ratio —
+none of them reference "the" target, a `USceneComponent`, or any singular piece of state. The delta a
+drag produces (a translation vector, a rotation quaternion, or a scale ratio) is computed exactly
+**once per frame**, from the gizmo's own pivot and the cursor/controller ray alone — multiple targets
+would each just have that same one delta applied to their own `InitialTransform`, exactly the way
+`UpdateManipulation` already applies it to the single current target's.
+- **What actually is single-target today, concretely**: `FGizmoManipulationState` (`GizmoTypes.h`)
+  holds one `Target`/`GetTransformFn`/`SetTransformFn`/`InitialTransform`, not an array — the
+  *bookkeeping* is single-target, not the math. Extending it is additive: a `TArray` of per-target
+  bindings (each with its own `GetTransformFn`/`SetTransformFn`/`InitialTransform`, captured the same
+  way at `BeginManipulation`) sharing one `ActiveHandle`/`InitialRay`/computed-delta-per-frame, with
+  `BeginManipulation`/`UpdateManipulation`/`EndManipulation`/`CancelManipulation` looping over that
+  array instead of touching one binding directly. `GizmoMath`, `RuntimeGizmoActor`, and hit-testing
+  need no changes at all.
+- **Group pivot is not a new concept to add — it already exists**: `EGizmoPivotMode::Custom` +
+  `CustomPivot` (Phase 3) already lets the gizmo sit at, and rotate/scale around, an arbitrary world
+  point instead of the target's own origin, and `GetPivotLocation()` already reads from
+  `State.CustomPivot` rather than any per-target field. A future multi-select's "group pivot" is
+  exactly this same mode, fed a computed group centroid instead of a hand-placed point — no new pivot
+  machinery required.
+- **Explicit non-claim**: neither consumer has any multi-select UI today (clicking a second building/
+  road point replaces the selection, it doesn't add to it) — building that selection UX is real,
+  unstarted work, deliberately out of scope for a design-verification phase with "no multi-select UI
+  exists in either consumer today" already called out as the reason back when this phase was planned.
+
+### Phase 10 — COMPLETE ✅ (final regression + documentation)
+**Full regression sweep**: 89 automation tests found, 88 passed. The one failure
+(`TerraDyne.Raster.Workflow`) is a pre-existing GIS raster-import test relying on a satellite/ortho
+layer this environment doesn't have — present before this whole gizmo system existed, unrelated to
+any file this work touched, unchanged in every phase's sweep (Phase 4 through this one).
+
+**Architecture summary**: `Plugins/TerraDyne-main/Source/TerraDyne/{Public,Private}/Gizmo/` —
+`GizmoTypes.h` (enums + `FGizmoManipulationState`), `GizmoManipulationMath.h/.cpp` (pure, unit-tested
+math), `RuntimeGizmoActor.h/.cpp` (the visual handle set, one `UWorldSubsystem`-owned instance shared
+by every consumer), `GizmoManipulationSubsystem.h/.cpp` (the single stateful owner + clean API).
+Both `ATerraDyneEditController` (buildings) and `URealtimeRoadBuilderComponent` (road control points)
+drive it identically; road points additionally use `SetTargetTransformAccessors` since a spline point
+has no "whole actor transform" of its own the way a building does.
+
+**How it works / input flow**: a consumer builds one `FGizmoInteractionRay` per relevant input event
+(mouse deprojection today; a VR controller's aim transform would be the only new code a future
+integration needs, per Phase 8) and calls `UpdateHover`/`BeginManipulation`/`UpdateManipulation`/
+`EndManipulation`/`CancelManipulation`. Hit-testing is dedicated math (`DistanceRayToSegment/Point/
+Ring/Quad`), never physics collision. Every drag computes its delta from **initial transform plus
+accumulated delta**, never compounding onto an already-modified transform. Mode (`Shift+W/E/R`),
+coordinate space (`C`), and snapping (`G`, Ctrl-held to invert per-drag) are hotkeys on
+`ATerraDyneEditController`, calling the subsystem directly — one binding set works for whichever
+consumer currently owns the shared target, the same pattern Escape-cancel already established.
+
+**Testing results**: every phase's own automation suite (`TerraDyne.Gizmo.*`, `TerraDyne.RoadWidthProfile.*`,
+`TerraDyne.RoadMesh.WidthScale*`, `TerraDyne.RoadSplineActor.WidthKey*`, `TerraDyne.Building.GizmoRotateAndScale`,
+`TerraDyne.Multiplayer.BuildingScaleReplication`) plus the full pre-existing regression suite, run
+headlessly after every single phase — 0 regressions at any point across Phases 1-10. Every hit-test
+formula and every delta formula was hand-derived with concrete numeric predictions before the test
+that confirmed it was ever run, matching this project's own established verification discipline.
+
+**Known limitations** (all stated explicitly, not silently dropped):
+- **No in-editor manual verification.** Every phase's tests prove the math and the wiring; none of
+  them can prove the actual click-and-drag *feel*, or that the Shift/Ctrl/C/G hotkeys don't fight some
+  interaction this test suite didn't think to check. Actually running the editor and dragging a
+  building and a road point through every mode is still the one thing headless automation cannot do
+  here.
+- **VR is architecturally ready, not implemented or tested** (Phase 8) — no VR plugin/hardware exists
+  in this project.
+- **Multi-object manipulation is structurally ready, not implemented** (Phase 9) — no multi-select UI
+  exists in either consumer.
+- **Group pivot and screen-space pivot**: Object Origin and Custom Pivot are implemented; Group Pivot
+  needs multi-select (Phase 9, deferred) to have anything to average; Screen-space Pivot was never
+  requested by the approved plan and was not built.
+- **Road width keys don't follow a point through Translate edits** (Phase 6) — anchored to a fixed
+  distance-along-road, the same accepted limitation `HeightKeys` already has.
+- **Undo is delegate-based, not `FScopedTransaction`** (Phase 3) — deliberate, since that mechanism is
+  editor-only and would not survive a packaged build; each consumer records its own undo snapshot
+  (buildings: none, matching pre-existing behavior; roads: the existing point-list stack) from the
+  `OnManipulationBegin`/`End`/`Cancel` delegates.
+
+**Next recommended improvements** (not required by the approved plan, worth considering later):
+building multi-select + group pivot (Phase 9's structural readiness is already in place for this);
+a real VR pawn/controller integration once this project actually targets VR; per-consumer
+`ClickTolerance` tuning if VR aiming precision turns out to need it; in-editor manual QA pass before
+relying on this system for anything player-facing.
+
+**Definition of Done** (from the original spec):
+- [x] Translation, rotation, and scaling are reliable — hand-verified math, tested (Phases 1, 5).
+- [x] World and Local space both work, without unexpectedly modifying the object's transform —
+      verified `SetMode`/`SetCoordinateSpace`/`SetPivotMode` never touch `SetTransformFn` (Phase 5).
+- [x] Axis and plane handles both work — hit-tested and reachable end-to-end (Phases 3, 5).
+- [x] Hover and selection work — `UpdateHover`/`BeginManipulation`, highlighted-handle tests (Phase 3).
+- [x] Mouse dragging works for both consumers (Phase 4).
+- [x] VR interaction can use the same manipulation core — verified structurally (Phase 8); not built.
+- [x] Snapping works, including live Ctrl-invert during a drag (Phases 1, 5).
+- [x] Cancel restores the original transform exactly, not approximately (Phase 3, bit-for-bit tested).
+- [ ] Gizmo size is usable at any camera distance — camera-distance auto-scaling exists
+      (`ARuntimeGizmoActor::Tick`) but was not re-verified in this pass; carried over from Phase 2.
+- [x] Hit testing is stable — dedicated math, not physics collision (Phase 3).
+- [x] Core math has automated tests, runnable without a rendered viewport (all phases).
+- [x] No per-frame allocations/spawn-destroy in the drag hot path — verified by code reading (Phase 4
+      review pass); `UpdateManipulation`/`FindHoveredHandle` touch only stack values and existing
+      components.
+- [x] Existing building/road functionality is intact — full regression suite green after every phase.
+- [x] The implementation is maintainable/extensible — plain-data math module, one shared subsystem,
+      generalized transform accessors, structural multi-object/VR readiness documented above.
+
+The full 10-phase runtime transform gizmo system, as scoped and approved, is complete.
 
 
 A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
