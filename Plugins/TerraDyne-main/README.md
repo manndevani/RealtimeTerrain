@@ -27,7 +27,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
        │                 Runtime Chunk Framework                 │
        ├─────────────────────────────────────────────────────────┤
        │ • High-Speed FDynamicMesh3 & Dynamic Collisions         │
-       │ • Cesium DynamicPawn (WGS84, ESU Horizon, Zoom, TopView)│
+       │ • Cesium DynamicPawn (WGS84, ESU Horizon, Spd, TopView) │
        │ • Procedural Spline Roads & Junction Networks           │
        │ • Modular Spline Buildings & Dynamic-Step Pad Leveling  │
        │ • Full Undo/Redo (Ctrl+Z/Y) & Disk Persistence          │
@@ -48,9 +48,9 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **WGS84 Georeferencing**: Live Longitude, Latitude, and Height coordinate tracking.
   * **ESU Horizon Leveling**: Computes true East-South-Up orientation, eliminating horizon skew and gimbal lock across planetary distances.
   * **Ellipsoid-Aligned Flight**: `MoveUp_World` automatically follows the true geodetic surface normal.
-  * **Smooth Altitude-Scaled Zoom**: Mouse wheel zoom exponentially scales with camera altitude ($100\text{ m}$ ground level to $500\text{ km}$ orbit) — scaled from the pawn's real WGS84 height, not raw Unreal Z, so it stays correct far from the `CesiumGeoreference` origin (e.g. after flying to a Tiled Cesium Import footprint on another part of the globe), where Unreal Z alone no longer means "altitude".
   * **Top-Down Map Framing (`F` / `Home` / HUD Button)**: Instantly computes active dataset bounds and frames the entire terrain footprint.
-  * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($\text{Altitude} \times 2.5$) for effortless navigation from centimeters to regional scales, same real-WGS84-height basis as zoom.
+  * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($\text{Altitude} \times 2.5$) for effortless navigation from centimeters to regional scales — scaled from the pawn's real WGS84 height, not raw Unreal Z, so it stays correct far from the `CesiumGeoreference` origin (e.g. after flying to a Tiled Cesium Import footprint on another part of the globe), where Unreal Z alone no longer means "altitude".
+  * **Mouse Wheel Speed Control**: Scroll adjusts a flight-speed multiplier ($0.1\times$–$10\times$, exponential per notch) on top of the automatic altitude scaling above, instead of zooming/dollying the camera.
   * **Sculpt Isolation**: Left-click drag is dedicated to terrain editing and spline drawing; right-click drag orbits freely without fighting camera controls.
   * **World Bounds Checks disabled at startup**: `AWorldSettings::bEnableWorldBoundsChecks` is forced off in `UTerraDyneSubsystem::Initialize` (before any actor's `BeginPlay`). Left on — Unreal's default — it's incompatible with Cesium's origin rebasing: a rebase shifts every actor's absolute Z, so an airborne pawn can spuriously read as having fallen below `KillZ`, get destroyed, and respawn at the default `PlayerStart` — visible as the camera snapping back mid-flight to wherever it started.
 
@@ -81,6 +81,8 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Placeable on Tiled Cesium Import terrain**: TerraDyne's own chunk heightfield doesn't cover a locally-imported Cesium tile (see §9), so height sampling (`RoadMesh::SampleGroundHeight`) falls back to a $\pm 200\text{ km}$ line trace against the tile's real collision geometry whenever no TerraDyne chunk is under a station — same mechanism the ground raytrace above already used, just now able to tell TerraDyne terrain and "some other collidable ground" apart.
 * **Gentle cross-slope banking over Cesium tile terrain**: rough roads have always banked to the terrain's lateral slope; paved roads stayed deliberately flat, since a flat road reads as correctly engineered on Sandbox/GDAL-imported terrain. Over a locally-imported Cesium tile specifically — real-world terrain that can be steep enough for a rigidly flat road to look wrong — a paved road now banks gently too (`MaxPavedCrossSlopeDegrees`, default $8°$), gated on the same fallback signal above so Sandbox/GDAL paved roads are completely unaffected.
 * **Focus button**: frames the camera on the currently selected road (or road point) from the Roads panel section.
+* **Delete Point removes the whole road once nothing's left**: a road can't render below two points, so deleting the last one deletes the road itself (re-solving any junction it was pinned to) instead of silently refusing — previously there was no way to remove a two-point stub road at all.
+* **Junctions clean up after themselves**: deleting a connected road makes the junction re-solve from whatever's left; once fewer than two roads remain, the junction actor removes itself and un-pins the last survivor (if any) back to a normal, uncut road, instead of leaving stale, disconnected geometry behind. A freshly-placed junction with no roads drawn to it yet is unaffected — only one that had previously solved from real roads and then lost its connections is treated as orphaned.
 
 ### 6. Modular Spline Buildings & Dynamic Terraforming
 * Arbitrary polygon footprint definition using spline nodes.
@@ -145,7 +147,7 @@ To compile the project via Unreal Build Tool (UBT):
 | :--- | :--- |
 | **Orbit / Look** | Right Mouse Button + Drag |
 | **Fly Movement** | `W` (Forward), `S` (Backward), `A` (Left), `D` (Right), `E` (Up), `Q` (Down) |
-| **Altitude Zoom** | Mouse Wheel Scroll Up / Down |
+| **Flight Speed Adjust** | Mouse Wheel Scroll Up / Down |
 | **Frame Whole Map (Top View)** | `F` or `Home` |
 | **Terrain Sculpting** | Left Mouse Button + Drag on terrain |
 | **Road Spline Authoring** | Left Click on terrain in Road mode |

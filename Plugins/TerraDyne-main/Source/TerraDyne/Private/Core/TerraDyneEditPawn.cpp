@@ -61,8 +61,8 @@ void ATerraDyneEditPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 	PlayerInputComponent->BindAxis("TerraDyneMoveRight", this, &ATerraDyneEditPawn::MoveRight);
 	PlayerInputComponent->BindAxis("TerraDyneMoveUp", this, &ATerraDyneEditPawn::MoveUp_World);
 
-	// Mouse Wheel Zoom: scroll to zoom in/out smoothly across ground-to-orbit altitudes
-	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ATerraDyneEditPawn::OnMouseWheelZoom);
+	// Mouse Wheel: adjust the flight speed multiplier instead of zooming/dollying the camera.
+	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ATerraDyneEditPawn::OnMouseWheelSpeedAdjust);
 
 	// Frame entire map hotkeys (F or Home)
 	PlayerInputComponent->BindKey(EKeys::F, IE_Pressed, this, &ATerraDyneEditPawn::FocusOnMap);
@@ -95,26 +95,20 @@ void ATerraDyneEditPawn::OnLookPitch(float Value)
 	}
 }
 
-void ATerraDyneEditPawn::OnMouseWheelZoom(float Value)
+void ATerraDyneEditPawn::OnMouseWheelSpeedAdjust(float Value)
 {
 	if (FMath::IsNearlyZero(Value))
 	{
 		return;
 	}
 
-	// Scale zoom rate from the pawn's real WGS84 height (metres -> Unreal cm), not raw Unreal Z --
-	// Z only means "altitude" near the CesiumGeoreference's own origin, where the local East-South-Up
-	// tangent plane lines up with Unreal's axes. Far from the origin (e.g. after flying to a tiled
-	// import's footprint, which can be a different part of the globe entirely from wherever the
-	// origin currently sits), the ellipsoid has curved enough that Z stops correlating with true
-	// altitude, and zoom silently collapses to the 1000 cm floor regardless of how high up the camera
-	// actually is -- this is what "zoom stopped working" after flying somewhere far away looks like.
-	const double HeightMeters = GetCurrentLongitudeLatitudeHeight().Z;
-	const float Altitude = FMath::Max(1000.0f, FMath::Abs((float)(HeightMeters * 100.0)));
-	const float ZoomDelta = Altitude * 0.35f * Value;
-	const FVector Direction = GetActorForwardVector();
-
-	AddActorWorldOffset(Direction * ZoomDelta, /*bSweep=*/false);
+	// Multiplicative step, not additive: the automatic altitude-based base speed (see Tick) already
+	// spans several orders of magnitude between ground level and orbit, so a fixed additive step
+	// would be imperceptible zoomed out and wildly coarse zoomed in. A proportional step feels the
+	// same regardless of where the multiplier currently sits.
+	constexpr float StepFactor = 1.15f;
+	FlightSpeedMultiplier = FMath::Clamp(
+		FlightSpeedMultiplier * FMath::Pow(StepFactor, Value), 0.1f, 10.0f);
 }
 
 void ATerraDyneEditPawn::FocusOnMap()
@@ -180,13 +174,14 @@ void ATerraDyneEditPawn::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	// Dynamically adjust flight speed so the user can navigate across hundreds of km as easily as 100m.
-	// Same real-WGS84-height reasoning as OnMouseWheelZoom -- raw Unreal Z stops meaning "altitude"
-	// far from the georeference origin.
+	// Same real-WGS84-height reasoning as before -- raw Unreal Z stops meaning "altitude" far from
+	// the georeference origin. FlightSpeedMultiplier (mouse wheel) scales this base up or down
+	// without disturbing the altitude scaling itself.
 	if (UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(GetMovementComponent()))
 	{
 		const double HeightMeters = GetCurrentLongitudeLatitudeHeight().Z;
 		const float Altitude = FMath::Max(100.0f, FMath::Abs((float)(HeightMeters * 100.0)));
-		Movement->MaxSpeed = FMath::Clamp(Altitude * 2.5f, 12000.0f, 50000000.0f);
+		Movement->MaxSpeed = FMath::Clamp(Altitude * 2.5f, 12000.0f, 50000000.0f) * FlightSpeedMultiplier;
 		Movement->Acceleration = Movement->MaxSpeed * 3.0f;
 		Movement->Deceleration = Movement->MaxSpeed * 3.0f;
 	}

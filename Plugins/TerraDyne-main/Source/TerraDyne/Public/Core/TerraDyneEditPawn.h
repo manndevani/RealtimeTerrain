@@ -16,7 +16,7 @@
  * While retaining TerraDyne's editing controls:
  *   - Left-drag: terrain sculpting / road editing only (camera pinned)
  *   - Right-drag: orbit / look
- *   - Mouse wheel: smooth altitude-scaled zoom
+ *   - Mouse wheel: adjust the flight speed multiplier, on top of the automatic altitude scaling
  *   - F / Home key: frame entire GeoTIFF or sandbox map
  *   - Dynamic altitude speed scaling for effortless navigation from 100m to 500km
  */
@@ -35,6 +35,14 @@ public:
 	/** Invert vertical look while right-dragging. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Input")
 	bool bInvertPitch = false;
+
+	/**
+	 * Multiplier applied on top of the automatic altitude-based flight speed (see Tick), adjusted
+	 * by the mouse wheel -- scroll up to move faster, down to move slower, replacing what used to
+	 * be scroll-to-zoom. Left at 1.0, flight speed is exactly the altitude-scaled default.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Input", meta = (ClampMin = "0.1", ClampMax = "10.0"))
+	float FlightSpeedMultiplier = 1.0f;
 
 	/** True while the right mouse button is held. Look input is ignored unless this is set. */
 	UFUNCTION(BlueprintPure, Category = "TerraDyne|Input")
@@ -89,5 +97,5 @@ private:
 	void OnOrbitStop();
 	void OnLookYaw(float Value);
 	void OnLookPitch(float Value);
-	void OnMouseWheelZoom(float Value);
+	void OnMouseWheelSpeedAdjust(float Value);
 };
