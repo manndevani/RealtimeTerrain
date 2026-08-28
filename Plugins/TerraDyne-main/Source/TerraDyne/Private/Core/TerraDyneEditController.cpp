@@ -344,14 +344,19 @@ void ATerraDyneEditController::OnLeftClickStart()
 		}
 	}
 
-	// Check if user clicked on a placed model actor to select it
-	FHitResult Hit;
-	if (TraceUnderCursor(Hit) && Hit.bBlockingHit)
+	// Selecting a placed model is gated on a model tool being active. This used to run a full
+	// 500 km trace on every left click in every mode, so clicking a model while sculpting silently
+	// abandoned the brush stroke and selected it instead.
+	if (ToolUI && IsModelToolMode(ToolUI->CurrentTool))
 	{
-		if (ATerraDynePlacedModelActor* HitModel = Cast<ATerraDynePlacedModelActor>(Hit.GetActor()))
+		FHitResult ModelHit;
+		if (TraceUnderCursor(ModelHit) && ModelHit.bBlockingHit)
 		{
-			SelectModelActor(HitModel);
-			return;
+			if (ATerraDynePlacedModelActor* HitModel = Cast<ATerraDynePlacedModelActor>(ModelHit.GetActor()))
+			{
+				SelectModelActor(HitModel);
+				return;
+			}
 		}
 	}
 
@@ -1823,6 +1828,15 @@ void ATerraDyneEditController::HandleModelClick()
 
 	FHitResult Hit;
 	if (!TraceUnderCursor(Hit) || !Hit.bBlockingHit) return;
+
+	// A click that reaches here in Select mode landed on something that was not a model (the model
+	// case already returned from OnLeftClickStart), so it means "deselect" -- the same way clicking
+	// bare terrain under the building Select tool drops the selected building.
+	if (ToolUI->CurrentTool == ETerraDyneToolMode::SelectModel)
+	{
+		ClearModelSelection();
+		return;
+	}
 
 	if (ToolUI->CurrentTool != ETerraDyneToolMode::PlaceModel)
 	{

@@ -13,6 +13,10 @@
 #include "Components/DynamicMeshComponent.h"
 #include "CollisionQueryParams.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "Core/TerraDyneManager.h"
+#include "Core/TerraDyneSaveGame.h"
+#include "Kismet/GameplayStatics.h"
+#include "ImageUtils.h"
 
 #if WITH_EDITOR
 #include "Tests/AutomationEditorCommon.h"
@@ -609,6 +613,274 @@ bool FTerraDyneModelImportFBXHandednessTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("A source +Z vertex must map to +Y in Unreal (left-handed Z-up)"), Bounds.Max.Y > KINDA_SMALL_NUMBER);
 	TestTrue(TEXT("No vertex may land on -Y -- that is the mirrored, right-handed result"), Bounds.Min.Y >= -KINDA_SMALL_NUMBER);
+
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 10: Library dedupe and explicit asset ids
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneModelLibraryDedupeTest, "TerraDyne.ModelImport.LibraryDedupe",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneModelLibraryDedupeTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	if (!World) return false;
+	UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+	TestNotNull(TEXT("Asset library must exist"), AssetLib);
+	if (!AssetLib) return false;
+
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestModelImport"));
+	IFileManager::Get().MakeDirectory(*TestDir, true);
+	const FString ObjPath = FPaths::Combine(TestDir, TEXT("DedupeTri.obj"));
+	FFileHelper::SaveStringToFile(
+		FString(TEXT("v 0 0 0\nv 10 0 0\nv 0 10 0\nf 1 2 3\n")), *ObjPath);
+
+	FString Error;
+	const FGuid First = AssetLib->ImportModelFromFile(ObjPath, Error);
+	TestTrue(TEXT("First import succeeds"), First.IsValid());
+	TestEqual(TEXT("Library holds one entry"), AssetLib->GetAssets().Num(), 1);
+
+	// Importing the same file again must reuse the entry, including via a differently-spelled path.
+	const FGuid Second = AssetLib->ImportModelFromFile(ObjPath, Error);
+	TestEqual(TEXT("Re-importing the same path returns the same id"), Second, First);
+	TestEqual(TEXT("Library still holds one entry"), AssetLib->GetAssets().Num(), 1);
+
+	const FGuid Third = AssetLib->ImportModelFromFile(ObjPath.ToUpper(), Error);
+	TestEqual(TEXT("Path comparison is case-insensitive"), Third, First);
+	TestEqual(TEXT("Library still holds one entry after a case variant"), AssetLib->GetAssets().Num(), 1);
+
+	// An explicit id is what lets a save game restore its catalog under the ids its placements
+	// already reference.
+	AssetLib->ClearLibrary();
+	const FGuid Forced(0x11111111, 0x22222222, 0x33333333, 0x44444444);
+	const FGuid Restored = AssetLib->ImportModelFromFile(ObjPath, Error, Forced);
+	TestEqual(TEXT("An explicit asset id is honoured"), Restored, Forced);
+	TestNotNull(TEXT("The forced id resolves"), AssetLib->FindAsset(Forced));
+
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 11: ResolveOrImport -- the path a replicated placement takes on a client that
+// never ran the original import. Previously OnRep_AssetId looked the id up in the local
+// catalog and gave up on a miss, so such a client drew an empty actor forever.
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneModelResolveOrImportTest, "TerraDyne.ModelImport.ResolveOrImport",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneModelResolveOrImportTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	if (!World) return false;
+	UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+	if (!AssetLib) return false;
+	AssetLib->ClearLibrary();
+
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestModelImport"));
+	IFileManager::Get().MakeDirectory(*TestDir, true);
+	const FString ObjPath = FPaths::Combine(TestDir, TEXT("RemoteTri.obj"));
+	FFileHelper::SaveStringToFile(
+		FString(TEXT("v 0 0 0\nv 10 0 0\nv 0 10 0\nf 1 2 3\n")), *ObjPath);
+
+	const FGuid RemoteId(0xAAAAAAAA, 0xBBBBBBBB, 0xCCCCCCCC, 0xDDDDDDDD);
+	TestNull(TEXT("The catalog starts without the remote id"), AssetLib->FindAsset(RemoteId));
+
+	FString Error;
+	const FTerraDyneImportedModelAsset* Resolved = AssetLib->ResolveOrImport(RemoteId, ObjPath, Error);
+	TestNotNull(TEXT("ResolveOrImport imports an unseen model on demand"), Resolved);
+	if (Resolved)
+	{
+		TestEqual(TEXT("It is stored under the replicated id, not a fresh one"), Resolved->AssetId, RemoteId);
+		TestEqual(TEXT("Geometry actually came through"), Resolved->TriangleCount, 1);
+	}
+
+	// A path this machine does not have must fail cleanly with a reason, not crash or half-register.
+	FString MissingError;
+	const FGuid MissingId(1, 2, 3, 4);
+	TestNull(TEXT("A missing source file resolves to nothing"),
+		AssetLib->ResolveOrImport(MissingId, FPaths::Combine(TestDir, TEXT("does_not_exist.obj")), MissingError));
+	TestTrue(TEXT("...and explains why"), !MissingError.IsEmpty());
+
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 12: Save/load round trip through the manager
+//
+// Imported geometry belongs to no package, so a save can only carry source paths and re-import on
+// load. This asserts the whole chain end to end: catalog ids survive, placements come back at the
+// transforms they were saved at, and their geometry actually resolves rather than restoring as
+// empty actors.
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneModelPersistenceTest, "TerraDyne.ModelImport.Persistence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneModelPersistenceTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	if (!World) return false;
+
+	ATerraDyneManager* Manager = World->SpawnActor<ATerraDyneManager>();
+	TestNotNull(TEXT("Manager must spawn"), Manager);
+	UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+	TestNotNull(TEXT("Asset library must exist"), AssetLib);
+	if (!Manager || !AssetLib) return false;
+	AssetLib->ClearLibrary();
+
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestModelImport"));
+	IFileManager::Get().MakeDirectory(*TestDir, true);
+	const FString ObjPath = FPaths::Combine(TestDir, TEXT("PersistTri.obj"));
+	FFileHelper::SaveStringToFile(
+		FString(TEXT("v 0 0 0\nv 50 0 0\nv 0 50 0\nf 1 2 3\n")), *ObjPath);
+
+	FString Error;
+	const FGuid AssetId = AssetLib->ImportModelFromFile(ObjPath, Error);
+	TestTrue(TEXT("Import for persistence succeeds"), AssetId.IsValid());
+	const FTerraDyneImportedModelAsset* Asset = AssetLib->FindAsset(AssetId);
+	if (!Asset) return false;
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	const FTransform TransformA(FRotator(0.0, 45.0, 0.0), FVector(500.0, -250.0, 120.0), FVector(2.0, 2.0, 2.0));
+	const FTransform TransformB(FRotator::ZeroRotator, FVector(-800.0, 300.0, 40.0), FVector::OneVector);
+
+	ATerraDynePlacedModelActor* ModelA = World->SpawnActor<ATerraDynePlacedModelActor>(
+		ATerraDynePlacedModelActor::StaticClass(), TransformA, SpawnParams);
+	ATerraDynePlacedModelActor* ModelB = World->SpawnActor<ATerraDynePlacedModelActor>(
+		ATerraDynePlacedModelActor::StaticClass(), TransformB, SpawnParams);
+	if (!ModelA || !ModelB) return false;
+	ModelA->SetModelAsset(*Asset);
+	ModelB->SetModelAsset(*Asset);
+	ModelA->CustomLabel = TEXT("First Placement");
+
+	UTerraDyneSaveGame* SaveInst = Manager->BuildSaveGameInstance();
+	TestNotNull(TEXT("Save game instance built"), SaveInst);
+	if (!SaveInst) return false;
+
+	TestEqual(TEXT("Catalog is saved"), SaveInst->ModelLibrary.Num(), 1);
+	TestEqual(TEXT("Both placements are saved"), SaveInst->PlacedModels.Num(), 2);
+	TestEqual(TEXT("Saved catalog entry keeps its source path"),
+		FPaths::GetCleanFilename(SaveInst->ModelLibrary[0].SourceFilePath), FString(TEXT("PersistTri.obj")));
+
+	Manager->ApplyLoadedSaveGame(SaveInst, TEXT("TestModelPersistence"));
+
+	// Catalog: same ids, or every restored placement would dangle.
+	TestEqual(TEXT("Catalog restored to one entry"), AssetLib->GetAssets().Num(), 1);
+	TestNotNull(TEXT("Restored catalog keeps the original asset id"), AssetLib->FindAsset(AssetId));
+
+	TArray<AActor*> Restored;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDynePlacedModelActor::StaticClass(), Restored);
+	TestEqual(TEXT("Both placements restored, and the originals were not duplicated"), Restored.Num(), 2);
+
+	bool bFoundA = false;
+	for (AActor* Actor : Restored)
+	{
+		ATerraDynePlacedModelActor* Model = Cast<ATerraDynePlacedModelActor>(Actor);
+		if (!Model) continue;
+
+		TestTrue(TEXT("Every restored model resolved real geometry"),
+			Model->DynamicMeshComponent && Model->DynamicMeshComponent->GetMesh()->TriangleCount() == 1);
+		TestEqual(TEXT("Every restored model kept its asset id"), Model->AssetId, AssetId);
+
+		if (Model->CustomLabel == TEXT("First Placement"))
+		{
+			bFoundA = true;
+			TestTrue(TEXT("Restored location matches what was saved"),
+				Model->GetActorLocation().Equals(TransformA.GetLocation(), 0.1));
+			TestTrue(TEXT("Restored rotation matches what was saved"),
+				Model->GetActorRotation().Equals(TransformA.Rotator(), 0.1f));
+			TestTrue(TEXT("Restored scale matches what was saved -- FRepMovement carries no Scale3D"),
+				Model->GetActorScale3D().Equals(TransformA.GetScale3D(), 0.01));
+		}
+	}
+	TestTrue(TEXT("The labelled placement came back"), bFoundA);
+
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 13: Imported material textures survive garbage collection
+//
+// FTerraDyneImportedModelAsset::Materials had no UPROPERTY, so the collector never walked into it
+// and every imported texture was collected while the catalog still held a TObjectPtr to it. Models
+// placed before a GC kept their look (the material instance held its own reference); anything
+// placed afterwards came up untextured.
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneModelTextureGCTest, "TerraDyne.ModelImport.MaterialTextureSurvivesGC",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneModelTextureGCTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	if (!World) return false;
+	UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+	if (!AssetLib) return false;
+	AssetLib->ClearLibrary();
+
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestModelImport"));
+	IFileManager::Get().MakeDirectory(*TestDir, true);
+
+	// A real 4x4 PNG for the material to point at. PNGCompressImageArray rather than FImage::Init,
+	// which lives in ImageCore and would mean a new module dependency for one test fixture.
+	TArray<FColor> Pixels;
+	Pixels.Init(FColor(200, 80, 40, 255), 16);
+	TArray64<uint8> PngData;
+	FImageUtils::PNGCompressImageArray(4, 4, Pixels, PngData);
+	if (PngData.Num() == 0)
+	{
+		AddError(TEXT("Could not encode the test PNG."));
+		return false;
+	}
+	const FString PngPath = FPaths::Combine(TestDir, TEXT("GCTexture.png"));
+	FFileHelper::SaveArrayToFile(PngData, *PngPath);
+
+
+	FFileHelper::SaveStringToFile(
+		FString(TEXT("newmtl GCMat\nKd 0.8 0.3 0.15\nmap_Kd GCTexture.png\n")),
+		*FPaths::Combine(TestDir, TEXT("GCModel.mtl")));
+	const FString ObjPath = FPaths::Combine(TestDir, TEXT("GCModel.obj"));
+	FFileHelper::SaveStringToFile(
+		FString(TEXT("mtllib GCModel.mtl\nv 0 0 0\nv 10 0 0\nv 0 10 0\nusemtl GCMat\nf 1 2 3\n")), *ObjPath);
+
+	FString Error;
+	const FGuid AssetId = AssetLib->ImportModelFromFile(ObjPath, Error);
+	TestTrue(TEXT("Textured model imports"), AssetId.IsValid());
+
+	const FTerraDyneImportedModelAsset* Asset = AssetLib->FindAsset(AssetId);
+	TestNotNull(TEXT("Textured model is in the catalog"), Asset);
+	if (!Asset) return false;
+	// By name, not by index: ImportOBJ always seeds slot 0 with a synthesised "DefaultMaterial", so
+	// the one parsed from the .mtl lands at 1.
+	auto FindTexturedSlot = [](const FTerraDyneImportedModelAsset& InAsset) -> const FTerraDyneImportedMaterial*
+	{
+		return InAsset.Materials.FindByPredicate(
+			[](const FTerraDyneImportedMaterial& Mat) { return Mat.MaterialName == TEXT("GCMat"); });
+	};
+
+	const FTerraDyneImportedMaterial* SlotBefore = FindTexturedSlot(*Asset);
+	TestNotNull(TEXT("The .mtl's material slot was parsed"), SlotBefore);
+	if (!SlotBefore) return false;
+	TestNotNull(TEXT("The diffuse texture loaded"), SlotBefore->DiffuseTexture.Get());
+	if (!SlotBefore->DiffuseTexture.Get()) return false;
+
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
+
+	// Re-fetch through the catalog rather than reusing the old pointer: if the texture had been
+	// collected, the reflected TObjectPtr is what would have been nulled out.
+	const FTerraDyneImportedModelAsset* AfterGC = AssetLib->FindAsset(AssetId);
+	TestNotNull(TEXT("The catalog entry survives GC"), AfterGC);
+	if (!AfterGC) return false;
+
+	const FTerraDyneImportedMaterial* SlotAfter = FindTexturedSlot(*AfterGC);
+	TestNotNull(TEXT("The material slot survives GC"), SlotAfter);
+	if (SlotAfter)
+	{
+		TestNotNull(TEXT("The diffuse texture survives GC -- it is reachable through a UPROPERTY"),
+			SlotAfter->DiffuseTexture.Get());
+	}
 
 	return true;
 }

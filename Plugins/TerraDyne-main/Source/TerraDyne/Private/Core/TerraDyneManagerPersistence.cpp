@@ -31,6 +31,9 @@
 #include "Settings/TerraDyneSettings.h"
 #include "World/TerraDyneChunk.h"
 #include "Building/TerraDyneBuildingActor.h"
+#include "Building/TerraDynePlacedModelActor.h"
+#include "Core/TerraDyneAssetLibrarySubsystem.h"
+#include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 #include "Misc/FileHelper.h"
@@ -80,6 +83,30 @@ UTerraDyneSaveGame* ATerraDyneManager::BuildSaveGameInstance()
 		if (ATerraDyneBuildingActor* Building = Entry.Get())
 		{
 			SaveInst->Buildings.Add(Building->ToData());
+		}
+	}
+
+	// Imported models: the catalog (source paths only -- runtime geometry belongs to no package and
+	// cannot be serialised) and every placed instance, found by iteration since placed models have
+	// no registry of their own the way buildings do.
+	SaveInst->ModelLibrary.Reset();
+	SaveInst->PlacedModels.Reset();
+	if (UWorld* World = GetWorld())
+	{
+		if (UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>())
+		{
+			SaveInst->ModelLibrary = AssetLib->ExportLibrary();
+		}
+
+		for (TActorIterator<ATerraDynePlacedModelActor> It(World); It; ++It)
+		{
+			if (ATerraDynePlacedModelActor* Model = *It)
+			{
+				if (!Model->IsActorBeingDestroyed())
+				{
+					SaveInst->PlacedModels.Add(Model->ToData());
+				}
+			}
 		}
 	}
 
@@ -286,6 +313,51 @@ void ATerraDyneManager::ApplyLoadedSaveGame(UTerraDyneSaveGame* LoadInst, const 
 		if (Building)
 		{
 			Building->Destroy();
+		}
+	}
+
+	// Destroy placed models and rebuild the catalog before respawning, mirroring how buildings are
+	// torn down above. Restoring the library first matters: each placement resolves its geometry
+	// through the catalog, so the entries have to be back under their saved ids before any of them
+	// spawn, or every model would come up empty.
+	if (UWorld* ModelWorld = GetWorld())
+	{
+		TArray<ATerraDynePlacedModelActor*> ModelsToDestroy;
+		for (TActorIterator<ATerraDynePlacedModelActor> It(ModelWorld); It; ++It)
+		{
+			ModelsToDestroy.Add(*It);
+		}
+		for (ATerraDynePlacedModelActor* Model : ModelsToDestroy)
+		{
+			if (Model && !Model->IsActorBeingDestroyed())
+			{
+				Model->Destroy();
+			}
+		}
+
+		if (UTerraDyneAssetLibrarySubsystem* AssetLib = ModelWorld->GetSubsystem<UTerraDyneAssetLibrarySubsystem>())
+		{
+			const int32 Restored = AssetLib->RestoreLibrary(LoadInst->ModelLibrary);
+			if (Restored < LoadInst->ModelLibrary.Num())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("TerraDyne: restored %d of %d model catalog entries; the rest could not be re-imported from their saved paths."),
+					Restored, LoadInst->ModelLibrary.Num());
+			}
+		}
+
+		if (HasAuthority())
+		{
+			for (const FTerraDynePlacedModelData& MData : LoadInst->PlacedModels)
+			{
+				FActorSpawnParameters ModelSpawnParams;
+				ModelSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				ATerraDynePlacedModelActor* NewModel = ModelWorld->SpawnActor<ATerraDynePlacedModelActor>(
+					ATerraDynePlacedModelActor::StaticClass(), MData.WorldTransform, ModelSpawnParams);
+				if (NewModel)
+				{
+					NewModel->ApplyData(MData);
+				}
+			}
 		}
 	}
 

@@ -5,6 +5,7 @@
 #include "GameFramework/SaveGame.h"
 #include "Core/TerraDyneWorldTypes.h"
 #include "Building/TerraDyneBuildingTypes.h"
+#include "Building/TerraDyneModelTypes.h"
 #include "TerraDyneSaveGame.generated.h"
 
 USTRUCT(BlueprintType)
@@ -252,6 +253,17 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
 	TArray<FTerraDyneBuildingData> Buildings;
+
+	/**
+	 * The imported-model catalog and every placed instance. Both absent on saves written before
+	 * 3D model import existed, which load as empty arrays and restore nothing -- the same
+	 * graceful-degradation the layered chunk buffers already rely on.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	TArray<FTerraDyneModelLibraryEntryData> ModelLibrary;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
+	TArray<FTerraDynePlacedModelData> PlacedModels;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraDyne")
 	TMap<FIntPoint, FTerraDyneChunkData> Chunks;

@@ -32,6 +32,17 @@ public:
 	UPROPERTY(ReplicatedUsing = OnRep_ModelName, VisibleAnywhere, BlueprintReadOnly, Category = "Model")
 	FString ModelName;
 
+	/**
+	 * Where this model was imported from, replicated alongside AssetId.
+	 *
+	 * Imported geometry lives in no package and cannot travel over the wire, and AssetId alone is
+	 * meaningless on a machine that never ran the import -- such a client resolved nothing and drew
+	 * an empty actor. With the path, it can import the file for itself under the same id. It still
+	 * needs the file to exist locally; that limitation is shared with the GeoTIFF import path.
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_SourceFilePath, VisibleAnywhere, BlueprintReadOnly, Category = "Model")
+	FString SourceFilePath;
+
 	UPROPERTY(ReplicatedUsing = OnRep_CustomLabel, VisibleAnywhere, BlueprintReadOnly, Category = "Model")
 	FString CustomLabel;
 
@@ -56,12 +67,27 @@ public:
 	/** Synchronizes local scale changes to replicated scale property. */
 	void NotifyScaleChanged();
 
+	/**
+	 * Binds this actor's geometry from the local asset library, importing SourceFilePath under
+	 * AssetId first if this machine has not seen it. Safe to call repeatedly; no-ops once bound.
+	 */
+	void ResolveModelAsset();
+
+	//--- Serialization ---
+	FTerraDynePlacedModelData ToData() const;
+	void ApplyData(const FTerraDynePlacedModelData& Data);
+
 protected:
+	virtual void BeginPlay() override;
+
 	UFUNCTION()
 	void OnRep_Scale3D();
 
 	UFUNCTION()
 	void OnRep_AssetId();
+
+	UFUNCTION()
+	void OnRep_SourceFilePath();
 
 	UFUNCTION()
 	void OnRep_ModelName();

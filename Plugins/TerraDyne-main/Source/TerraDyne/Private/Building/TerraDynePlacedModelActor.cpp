@@ -38,14 +38,26 @@ void ATerraDynePlacedModelActor::GetLifetimeReplicatedProps(TArray<FLifetimeProp
 
 	DOREPLIFETIME(ATerraDynePlacedModelActor, AssetId);
 	DOREPLIFETIME(ATerraDynePlacedModelActor, ModelName);
+	DOREPLIFETIME(ATerraDynePlacedModelActor, SourceFilePath);
 	DOREPLIFETIME(ATerraDynePlacedModelActor, CustomLabel);
 	DOREPLIFETIME(ATerraDynePlacedModelActor, ReplicatedScale3D);
+}
+
+void ATerraDynePlacedModelActor::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// A client can finish spawning this actor before either replicated property has landed, and can
+	// equally receive both before BeginPlay. Resolving here as well as from both OnReps covers every
+	// ordering; ResolveModelAsset no-ops once the geometry is bound.
+	ResolveModelAsset();
 }
 
 void ATerraDynePlacedModelActor::SetModelAsset(const FTerraDyneImportedModelAsset& Asset)
 {
 	AssetId = Asset.AssetId;
 	ModelName = Asset.AssetName;
+	SourceFilePath = Asset.SourceFilePath;
 	if (CustomLabel.IsEmpty())
 	{
 		CustomLabel = Asset.AssetName;
@@ -122,22 +134,74 @@ void ATerraDynePlacedModelActor::OnRep_Scale3D()
 	SetActorScale3D(ReplicatedScale3D);
 }
 
+void ATerraDynePlacedModelActor::ResolveModelAsset()
+{
+	if (!AssetId.IsValid() || !DynamicMeshComponent)
+	{
+		return;
+	}
+
+	// Already bound -- nothing to do. This is what makes the call safe from BeginPlay and both
+	// OnReps without re-uploading geometry each time another property lands.
+	if (DynamicMeshComponent->GetMesh() && DynamicMeshComponent->GetMesh()->TriangleCount() > 0)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	UTerraDyneAssetLibrarySubsystem* AssetLib = World ? World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>() : nullptr;
+	if (!AssetLib)
+	{
+		return;
+	}
+
+	FString Error;
+	if (const FTerraDyneImportedModelAsset* Found = AssetLib->ResolveOrImport(AssetId, SourceFilePath, Error))
+	{
+		SetModelAsset(*Found);
+	}
+	else if (!Error.IsEmpty())
+	{
+		UE_LOG(LogTerraDyne, Warning, TEXT("TerraDyne: placed model '%s' could not resolve its geometry here: %s"),
+			*ModelName, *Error);
+	}
+}
+
 void ATerraDynePlacedModelActor::OnRep_AssetId()
 {
-	if (UWorld* World = GetWorld())
-	{
-		if (UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>())
-		{
-			if (const FTerraDyneImportedModelAsset* Found = AssetLib->FindAsset(AssetId))
-			{
-				SetModelAsset(*Found);
-			}
-		}
-	}
+	ResolveModelAsset();
+}
+
+void ATerraDynePlacedModelActor::OnRep_SourceFilePath()
+{
+	ResolveModelAsset();
 }
 
 void ATerraDynePlacedModelActor::OnRep_ModelName()
 {
+}
+
+FTerraDynePlacedModelData ATerraDynePlacedModelActor::ToData() const
+{
+	FTerraDynePlacedModelData Data;
+	Data.AssetId = AssetId;
+	Data.SourceFilePath = SourceFilePath;
+	Data.CustomLabel = CustomLabel;
+	Data.WorldTransform = GetActorTransform();
+	Data.bVisibleInScene = bIsVisibleInScene;
+	return Data;
+}
+
+void ATerraDynePlacedModelActor::ApplyData(const FTerraDynePlacedModelData& Data)
+{
+	AssetId = Data.AssetId;
+	SourceFilePath = Data.SourceFilePath;
+	CustomLabel = Data.CustomLabel;
+	SetActorTransform(Data.WorldTransform);
+	ReplicatedScale3D = Data.WorldTransform.GetScale3D();
+
+	ResolveModelAsset();
+	SetVisibleInScene(Data.bVisibleInScene);
 }
 
 void ATerraDynePlacedModelActor::OnRep_CustomLabel()

@@ -247,10 +247,26 @@ private:
 	void RefreshModelAssetList();
 	TSharedPtr<class SVerticalBox> ModelAssetListBox;
 
+	/**
+	 * Brushes backing the palette's thumbnails. SImage::Image() stores a raw FSlateBrush* and never
+	 * takes ownership, so these must outlive Construct -- they were previously raw-new'd per tile
+	 * and leaked on every rebuild, which the newly-automatic refresh would have made continuous.
+	 */
+	TArray<TSharedPtr<struct FSlateImageBrush>> ModelThumbnailBrushes;
+
 	// Scene Outliner
 	TSharedRef<SWidget> MakeOutlinerRow(AActor* Actor, const FString& Label, const FString& TypeTag, const struct FSlateFontInfo& LabelFont, const struct FSlateFontInfo& MicroFont, const FLinearColor& HudText, const FLinearColor& HudDim, const FLinearColor& HudCyan);
 	void RefreshOutlinerList();
 	TSharedPtr<class SVerticalBox> OutlinerListBox;
+
+	/**
+	 * Cheap poll so the outliner keeps up with the world on its own instead of only when its
+	 * Refresh button is pressed. Rebuilding rows every frame would be wasteful, so Tick recomputes
+	 * a per-type count signature twice a second and rebuilds only when it actually differs.
+	 */
+	float TimeSinceOutlinerPoll = 0.0f;
+	int32 LastOutlinerSignature = INDEX_NONE;
+	int32 ComputeOutlinerSignature() const;
 	FText GetOutlinerHeaderCountText() const;
 	FReply OnSelectOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr);
 	FReply OnFocusOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr);

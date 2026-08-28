@@ -36,7 +36,14 @@ enum class ETerraDyneToolMode : uint8
 	 */
 	PlaceJunction UMETA(Hidden),
 	/** Clicks select and drag existing road control points instead of drawing new road. */
-	SelectRoad
+	SelectRoad,
+
+	/**
+	 * Clicks select an already-placed 3D model instead of placing another.
+	 *
+	 * Appended rather than slotted next to PlaceModel so no existing serialised value shifts.
+	 */
+	SelectModel
 };
 
 /** Building tools take a single click; sculpt tools apply continuously while held. */
@@ -47,7 +54,7 @@ inline bool IsBuildingToolMode(ETerraDyneToolMode Mode)
 
 inline bool IsModelToolMode(ETerraDyneToolMode Mode)
 {
-	return Mode == ETerraDyneToolMode::PlaceModel;
+	return Mode == ETerraDyneToolMode::PlaceModel || Mode == ETerraDyneToolMode::SelectModel;
 }
 
 inline bool IsRoadToolMode(ETerraDyneToolMode Mode)

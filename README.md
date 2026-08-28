@@ -880,11 +880,50 @@ channel `TraceUnderCursor` uses — actually hits the actor) and
 `TerraDyne.ModelImport.FBXHandedness` (a fixture declaring Y-up right-handed source axes with one
 non-zero source-Z vertex, asserting it lands on **+Y**; under the old setting it landed on -Y).
 
-**Still open**: placed models and the library are not persisted in `UTerraDyneSaveGame`;
-`OnRep_AssetId` resolves against the *local* library so a client that never imported the file
-renders nothing; thumbnails are sidecar-PNG only with no generated fallback; the library does not
-dedupe by source path; the outliner refreshes only on demand; and the model-selection trace in
-`OnLeftClickStart` runs on every left click in every tool mode.
+#### Gaps closed (2026-08-28)
+
+* **Persistence.** `UTerraDyneSaveGame` now carries `ModelLibrary` and `PlacedModels`. Runtime
+  geometry belongs to no package and cannot be serialised, so the save stores source paths and
+  re-imports on load — the same approach `FTerraDyneGeoTIFFImportState` takes with its `.tif`. The
+  catalog is restored **under its saved asset ids** before any placement spawns; minting fresh ids
+  would leave every restored placement dangling. Saves written before this load as empty arrays.
+* **Client-side asset resolution.** `ATerraDynePlacedModelActor` replicates `SourceFilePath`
+  alongside `AssetId`, and `ResolveModelAsset()` (called from `BeginPlay` and both `OnRep`s, so no
+  property-arrival order can miss it) falls back to
+  `UTerraDyneAssetLibrarySubsystem::ResolveOrImport`, importing the file locally under the
+  replicated id. A machine that never ran the original import previously drew an empty actor.
+  *Limitation*: the file must exist on that machine, exactly as with GeoTIFF import.
+* **Generated thumbnails.** `FTerraDyneModelThumbnail` renders the geometry with a
+  `USceneCaptureComponent2D` and caches the result as a PNG under
+  `Saved/TerraDyne/ModelThumbnails/`, keyed by a hash of the full source path so two different
+  `chair.obj` files cannot collide. A companion PNG beside the model still wins. Capture uses
+  `SCS_BaseColor` so no light needs to be spawned into the live scene, and every entry point checks
+  `FApp::CanEverRender()` and returns null headlessly rather than caching a black tile.
+* **Library dedupe.** Re-importing a path already in the catalog returns the existing id instead of
+  a duplicate entry; comparison is on the full path, case-insensitively.
+* **Live outliner.** The panel polls a per-type count signature twice a second and rebuilds only
+  when it changes, instead of waiting for the Refresh button.
+* **Model selection is gated on a model tool.** A new `SelectModel` mode joins `PlaceModel`, with
+  Place/Select buttons matching the Roads and Buildings sections. The selection trace previously ran
+  a 500 km line trace on *every* left click in *every* mode, so clicking a model mid-sculpt silently
+  abandoned the brush stroke.
+* **Thumbnail brush leak.** The palette raw-`new`'d an `FSlateImageBrush` per tile and never freed
+  it; `SImage` does not take ownership. Now panel-owned and rebuilt with the list — which the
+  automatic refresh above would otherwise have turned into a continuous leak.
+* **Imported textures no longer collected.** `FTerraDyneImportedMaterial` is a `USTRUCT` and
+  `FTerraDyneImportedModelAsset::Materials` is a `UPROPERTY`, so the collector can reach the diffuse
+  textures. Previously they were collected while the catalog still held `TObjectPtr`s to them:
+  models placed before a GC kept their look via the material instance's own reference, anything
+  placed afterwards came up untextured.
+
+Verified by `TerraDyne.ModelImport.Persistence` (a real `BuildSaveGameInstance` →
+`ApplyLoadedSaveGame` round trip asserting ids, transforms, scale and resolved geometry),
+`.LibraryDedupe`, `.ResolveOrImport` and `.MaterialTextureSurvivesGC`. Full suite: **106/107**, the
+sole failure being the pre-existing `TerraDyne.Raster.Workflow` fixture gap.
+
+**Still open**: multiplayer needs the model file present on each machine (inherent to replicating a
+path rather than geometry); generated thumbnails need a real RHI and have not been inspected
+visually, only proven to no-op safely headless.
 
 ---
 

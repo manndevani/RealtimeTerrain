@@ -5,17 +5,34 @@
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "Engine/Texture2D.h"
+#include "TerraDyneModelImporter.generated.h"
 
 using UE::Geometry::FDynamicMesh3;
 
 /**
  * Material slot description extracted from an imported 3D model (e.g. OBJ/MTL).
+ *
+ * Deliberately a USTRUCT with a reflected DiffuseTexture. These live on in
+ * UTerraDyneAssetLibrarySubsystem's asset catalog, and a TObjectPtr inside a plain struct is
+ * invisible to the garbage collector -- every imported texture was being collected out from under
+ * the library, so any model placed after the next GC came up untextured while ones placed earlier
+ * survived by way of the material instance holding its own reference.
  */
+USTRUCT()
 struct TERRADYNE_API FTerraDyneImportedMaterial
 {
+	GENERATED_BODY()
+
+	UPROPERTY()
 	FString MaterialName;
+
+	UPROPERTY()
 	FLinearColor DiffuseColor = FLinearColor::White;
+
+	UPROPERTY()
 	FString DiffuseTexturePath;
+
+	UPROPERTY()
 	TObjectPtr<UTexture2D> DiffuseTexture = nullptr;
 };
 

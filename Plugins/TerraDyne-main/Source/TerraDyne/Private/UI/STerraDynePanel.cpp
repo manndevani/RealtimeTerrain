@@ -781,6 +781,32 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				.HAlign(HAlign_Center)
 			]
 		]
+		// Place / Select, mirroring the Roads and Buildings sections. Selection is gated on one of
+		// these being active -- otherwise clicking a model while sculpting would abandon the stroke.
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 1)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("ModePlaceModel", "Place"))
+				.ToolTipText(LOCTEXT("ModePlaceModelTip", "Click the terrain to drop the selected library asset"))
+				.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::PlaceModel); })
+				.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::PlaceModel)
+				.HAlign(HAlign_Center)
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("ModeSelectModel", "Select"))
+				.ToolTipText(LOCTEXT("ModeSelectModelTip", "Click a placed model to select it and attach the transform gizmo"))
+				.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::SelectModel); })
+				.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::SelectModel)
+				.HAlign(HAlign_Center)
+			]
+		]
 		// Asset Palette Subheader
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 2)
 		[
@@ -1201,6 +1227,57 @@ EVisibility STerraDynePanel::GetGeoTIFFSectionVisibility() const
 void STerraDynePanel::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+	// Keep the outliner honest without rebuilding widgets every frame. Placing, deleting or loading
+	// anything used to leave the list stale until its Refresh button was pressed.
+	TimeSinceOutlinerPoll += InDeltaTime;
+	if (TimeSinceOutlinerPoll >= 0.5f)
+	{
+		TimeSinceOutlinerPoll = 0.0f;
+		const int32 Signature = ComputeOutlinerSignature();
+		if (Signature != LastOutlinerSignature)
+		{
+			LastOutlinerSignature = Signature;
+			RefreshOutlinerList();
+		}
+	}
+}
+
+int32 STerraDynePanel::ComputeOutlinerSignature() const
+{
+	UWorld* World = nullptr;
+	if (OwnerWidget.IsValid())
+	{
+		World = OwnerWidget->GetWorld();
+	}
+	else if (ATerraDyneManager* Mgr = GetManager())
+	{
+		World = Mgr->GetWorld();
+	}
+
+	if (!World)
+	{
+		return 0;
+	}
+
+	// Counts per type rather than a full identity hash: cheap enough to run twice a second, and it
+	// catches every add and remove. A rename, or one actor swapped for another of the same type
+	// inside a single 0.5s window, still needs the manual Refresh -- an acceptable trade for not
+	// walking every actor's state on a timer.
+	TArray<AActor*> PlacedActors;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDynePlacedModelActor::StaticClass(), PlacedActors);
+
+	TArray<AActor*> BuildingActors;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDyneBuildingActor::StaticClass(), BuildingActors);
+
+	TArray<AActor*> RoadActors;
+	if (UClass* SplineRoadClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadSplineActor")))
+	{
+		UGameplayStatics::GetAllActorsOfClass(World, SplineRoadClass, RoadActors);
+	}
+
+	return HashCombine(HashCombine(GetTypeHash(PlacedActors.Num()), GetTypeHash(BuildingActors.Num())),
+		GetTypeHash(RoadActors.Num()));
 }
 
 FCursorReply STerraDynePanel::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
@@ -2735,6 +2812,16 @@ FReply STerraDynePanel::SetToolMode(ETerraDyneToolMode NewMode)
 			}
 		}
 
+		// Same reasoning for models: leaving a model tool should not leave its gizmo and selection
+		// outline hanging on screen while a completely different tool is active.
+		if (IsModelToolMode(OwnerWidget->CurrentTool) && !IsModelToolMode(NewMode))
+		{
+			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+			{
+				PC->ClearModelSelection();
+			}
+		}
+
 		OwnerWidget->CurrentTool = NewMode;
 		return FReply::Handled();
 	}
@@ -3170,8 +3257,11 @@ TSharedRef<SWidget> STerraDynePanel::MakeModelAssetTile(
 	TSharedPtr<SWidget> ThumbnailWidget;
 	if (Asset.ThumbnailTexture)
 	{
-		FSlateImageBrush* ThumbBrush = new FSlateImageBrush(Asset.ThumbnailTexture, FVector2D(42, 42));
-		ThumbnailWidget = SNew(SImage).Image(ThumbBrush);
+		// Owned by the panel, not raw-new'd per tile: SImage does not take ownership of the brush,
+		// so every rebuild used to leak one.
+		TSharedPtr<FSlateImageBrush> ThumbBrush = MakeShared<FSlateImageBrush>(Asset.ThumbnailTexture, FVector2D(42, 42));
+		ModelThumbnailBrushes.Add(ThumbBrush);
+		ThumbnailWidget = SNew(SImage).Image(ThumbBrush.Get());
 	}
 	else
 	{
@@ -3279,6 +3369,8 @@ void STerraDynePanel::RefreshModelAssetList()
 	}
 
 	ModelAssetListBox->ClearChildren();
+	// The SImages referencing these went out with ClearChildren, so the brushes can go now too.
+	ModelThumbnailBrushes.Reset();
 
 	UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem();
 	if (!AssetLib || AssetLib->GetAssets().Num() == 0)
