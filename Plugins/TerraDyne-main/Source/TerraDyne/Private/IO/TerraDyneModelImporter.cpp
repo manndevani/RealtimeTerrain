@@ -688,7 +688,11 @@ UTexture2D* FTerraDyneModelImporter::LoadTextureFromMemory(const uint8* BufferDa
 bool FTerraDyneModelImporter::ImportFBX(const FString& FilePath, FTerraDyneImportModelResult& OutResult)
 {
 	ufbx_load_opts opts = { 0 };
-	opts.target_axes = ufbx_axes_right_handed_z_up;
+	// Unreal is LEFT-handed Z-up. Targeting right-handed Z-up handed back mirrored geometry with
+	// reversed winding, so every FBX rendered inside-out. ufbx flips face winding itself as part of
+	// the handedness conversion (handedness_conversion_retain_winding defaults to false), so this
+	// one change fixes both the mirroring and the winding.
+	opts.target_axes = ufbx_axes_left_handed_z_up;
 	opts.target_unit_meters = 1.0f;
 	opts.generate_missing_normals = true;
 

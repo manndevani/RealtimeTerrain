@@ -10,6 +10,9 @@
 #include "Gizmo/GizmoManipulationSubsystem.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
+#include "Components/DynamicMeshComponent.h"
+#include "CollisionQueryParams.h"
+#include "PhysicsEngine/BodySetup.h"
 
 #if WITH_EDITOR
 #include "Tests/AutomationEditorCommon.h"
@@ -419,6 +422,193 @@ bool FTerraDynePlacedModelGizmoTest::RunTest(const FString& Parameters)
 
 		PlacedActor->Destroy();
 	}
+
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 8: Placed actor really receives geometry AND becomes traceable
+//
+// Test 7 above spawns a bare actor and only flips gizmo mode enums -- it never calls
+// SetModelAsset, which is why two separate runtime defects survived a fully green suite:
+//   * ApplyMaterials used ConstructorHelpers::FObjectFinder outside a constructor. That is Fatal
+//     (ConstructorHelpers::CheckIfIsInConstructor, UObjectGlobals.cpp), so the first model ever
+//     placed crashed the process. Reaching the end of SetModelAsset IS the regression assertion.
+//   * The UDynamicMeshComponent never enabled complex collision, and ContainsPhysicsTriMeshData
+//     gates entirely on that flag, so placed models had no collision geometry whatsoever and were
+//     invisible to ATerraDyneEditController::TraceUnderCursor -- unclickable, unselectable.
+//
+// So this asserts the actual downstream contract the editor depends on (a world line trace on the
+// same channel TraceUnderCursor uses hits the actor), not merely "import did not crash".
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDynePlacedModelCollisionTest, "TerraDyne.ModelImport.PlacedActorCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDynePlacedModelCollisionTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+	TestNotNull(TEXT("World must be valid"), World);
+	if (!World) return false;
+
+	UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+	TestNotNull(TEXT("Asset library subsystem must be valid"), AssetLib);
+	if (!AssetLib) return false;
+
+	// A closed 200x200x200 box. Deliberately a solid rather than a single quad: a flat, infinitely
+	// thin face makes the result depend on backface handling, whereas a ray through a closed solid
+	// must cross a face no matter which way the winding runs -- and a solid is what a real imported
+	// model looks like anyway. OBJ positions are taken verbatim (ImportOBJ applies no axis or unit
+	// conversion), so a straight-down trace through the origin must cross the top and bottom faces.
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestModelImport"));
+	IFileManager::Get().MakeDirectory(*TestDir, true);
+	const FString ObjPath = FPaths::Combine(TestDir, TEXT("CollisionBox.obj"));
+	const FString ObjContent =
+		TEXT("v -100.0 -100.0 0.0\n")
+		TEXT("v 100.0 -100.0 0.0\n")
+		TEXT("v 100.0 100.0 0.0\n")
+		TEXT("v -100.0 100.0 0.0\n")
+		TEXT("v -100.0 -100.0 200.0\n")
+		TEXT("v 100.0 -100.0 200.0\n")
+		TEXT("v 100.0 100.0 200.0\n")
+		TEXT("v -100.0 100.0 200.0\n")
+		TEXT("f 1 3 2\n") TEXT("f 1 4 3\n")
+		TEXT("f 5 6 7\n") TEXT("f 5 7 8\n")
+		TEXT("f 1 2 6\n") TEXT("f 1 6 5\n")
+		TEXT("f 2 3 7\n") TEXT("f 2 7 6\n")
+		TEXT("f 3 4 8\n") TEXT("f 3 8 7\n")
+		TEXT("f 4 1 5\n") TEXT("f 4 5 8\n");
+	FFileHelper::SaveStringToFile(ObjContent, *ObjPath);
+
+	FString OutError;
+	const FGuid AssetId = AssetLib->ImportModelFromFile(ObjPath, OutError);
+	TestTrue(TEXT("Box import must succeed"), AssetId.IsValid());
+	const FTerraDyneImportedModelAsset* Asset = AssetLib->FindAsset(AssetId);
+	TestNotNull(TEXT("Imported box must be in the library"), Asset);
+	if (!Asset) return false;
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ATerraDynePlacedModelActor* Placed = World->SpawnActor<ATerraDynePlacedModelActor>(
+		ATerraDynePlacedModelActor::StaticClass(), FTransform(FVector::ZeroVector), SpawnParams);
+	TestNotNull(TEXT("Placed model actor must spawn"), Placed);
+	if (!Placed) return false;
+
+	// Was Fatal before the ApplyMaterials fix -- surviving this line is the regression guard.
+	Placed->SetModelAsset(*Asset);
+	AddInfo(TEXT("SetModelAsset returned without a fatal error."));
+
+	UDynamicMeshComponent* MeshComp = Placed->DynamicMeshComponent;
+	TestNotNull(TEXT("DynamicMeshComponent must exist"), MeshComp);
+	if (!MeshComp) return false;
+
+	TestEqual(TEXT("Component mesh must carry the box's 12 triangles"), MeshComp->GetMesh()->TriangleCount(), 12);
+	TestTrue(TEXT("Component must report complex physics geometry"), MeshComp->ContainsPhysicsTriMeshData(true));
+
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(TerraDyneModelCollisionTest), /*bInTraceComplex*/ true);
+	const bool bHit = World->LineTraceSingleByChannel(
+		Hit, FVector(0.0, 0.0, 500.0), FVector(0.0, 0.0, -500.0), ECC_WorldStatic, Params);
+	AddInfo(FString::Printf(TEXT("Downward trace hit=%d actor=%s"),
+		bHit ? 1 : 0, Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("none")));
+
+	if (UBodySetup* BS = MeshComp->GetBodySetup())
+	{
+		// Cooked triangle geometry is what the trace actually consumes; without the collision fix
+		// this is 0 and every trace passes through the model.
+		AddInfo(FString::Printf(TEXT("BodySetup TriMeshGeometries=%d bCreatedPhysicsMeshes=%d"),
+			BS->TriMeshGeometries.Num(), BS->bCreatedPhysicsMeshes ? 1 : 0));
+		TestTrue(TEXT("BodySetup must hold cooked triangle geometry"), BS->TriMeshGeometries.Num() > 0);
+	}
+
+	TestTrue(TEXT("A downward trace must hit the placed model -- click-selection depends on it"), bHit);
+	TestTrue(TEXT("The trace must hit the placed model actor itself"), Hit.GetActor() == Placed);
+
+	Placed->Destroy();
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 9: FBX handedness
+//
+// Unreal is LEFT-handed Z-up. ufbx's two Z-up presets differ only in their `front` axis
+// (ufbx_axes_right_handed_z_up = -Y, ufbx_axes_left_handed_z_up = +Y), so targeting the
+// right-handed one mirrored every imported FBX through the Y plane and reversed its winding --
+// models rendered inside-out. Test 4 above cannot see this: it asserts only TriangleCount >= 1,
+// which holds either way, and its fixture is flat in Z so both presets produce identical output.
+//
+// This fixture declares its source axes explicitly (Y-up, right-handed: the FBX standard) and
+// gives one vertex a non-zero source Z, which is the only component the two presets disagree on.
+// Source +Z must land on +Y in Unreal. Under the old setting it landed on -Y instead, so the
+// bounds assertion below flips sign and fails. Magnitudes are deliberately not asserted -- they
+// depend on FBX UnitScaleFactor -- only the sign, which is what encodes handedness.
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneModelImportFBXHandednessTest, "TerraDyne.ModelImport.FBXHandedness",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneModelImportFBXHandednessTest::RunTest(const FString& Parameters)
+{
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestModelImport"));
+	IFileManager::Get().MakeDirectory(*TestDir, true);
+
+	const FString FbxPath = FPaths::Combine(TestDir, TEXT("HandednessTriangle.fbx"));
+	const FString FbxContent =
+		TEXT("; FBX 7.4.0 project file\n")
+		TEXT("FBXHeaderExtension: {\n")
+		TEXT("    FBXHeaderVersion: 1003\n")
+		TEXT("    FBXVersion: 7400\n")
+		TEXT("}\n")
+		TEXT("GlobalSettings: {\n")
+		TEXT("    Version: 1000\n")
+		TEXT("    Properties70: {\n")
+		TEXT("        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n")
+		TEXT("        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n")
+		TEXT("        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n")
+		TEXT("        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n")
+		TEXT("        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n")
+		TEXT("        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n")
+		TEXT("        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",1\n")
+		TEXT("    }\n")
+		TEXT("}\n")
+		TEXT("Definitions: {\n")
+		TEXT("    Count: 2\n")
+		TEXT("    ObjectType: \"Model\" { Count: 1 }\n")
+		TEXT("    ObjectType: \"Geometry\" { Count: 1 }\n")
+		TEXT("}\n")
+		TEXT("Objects: {\n")
+		TEXT("    Geometry: 1000, \"Geometry::Mesh\", \"Mesh\" {\n")
+		// v0 (0,0,0), v1 (+X), v2 (+Z in source space) -- v2 is the discriminating vertex.
+		TEXT("        Vertices: *9 {\n")
+		TEXT("            a: 0,0,0,10,0,0,0,0,10\n")
+		TEXT("        }\n")
+		TEXT("        PolygonVertexIndex: *3 {\n")
+		TEXT("            a: 0,1,-3\n")
+		TEXT("        }\n")
+		TEXT("    }\n")
+		TEXT("    Model: 2000, \"Model::TestMesh\", \"Mesh\" {\n")
+		TEXT("        Version: 232\n")
+		TEXT("    }\n")
+		TEXT("}\n")
+		TEXT("Connections: {\n")
+		TEXT("    C: \"OO\",1000,2000\n")
+		TEXT("    C: \"OO\",2000,0\n")
+		TEXT("}\n");
+
+	FFileHelper::SaveStringToFile(FbxContent, *FbxPath);
+
+	FTerraDyneImportModelResult Result = FTerraDyneModelImporter::ImportModelFromFile(FbxPath);
+	TestTrue(TEXT("Handedness fixture must import"), Result.bSuccess);
+	if (!Result.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("FBX import failed: %s"), *Result.ErrorMessage));
+		return false;
+	}
+
+	const FBox3d& Bounds = Result.BoundingBox;
+	AddInfo(FString::Printf(TEXT("Imported FBX bounds: Min=(%.3f, %.3f, %.3f) Max=(%.3f, %.3f, %.3f)"),
+		Bounds.Min.X, Bounds.Min.Y, Bounds.Min.Z, Bounds.Max.X, Bounds.Max.Y, Bounds.Max.Z));
+
+	TestTrue(TEXT("A source +Z vertex must map to +Y in Unreal (left-handed Z-up)"), Bounds.Max.Y > KINDA_SMALL_NUMBER);
+	TestTrue(TEXT("No vertex may land on -Y -- that is the mirrored, right-handed result"), Bounds.Min.Y >= -KINDA_SMALL_NUMBER);
 
 	return true;
 }

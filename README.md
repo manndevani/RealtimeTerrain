@@ -850,6 +850,42 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
     * **`👁️` Visibility**: Toggles actor visibility (`SetVisibleInScene` / `SetActorHiddenInGame`).
     * **`🗑️` Delete**: Destroys the entity and removes it from the world.
 
+#### Runtime defects found and fixed (2026-08-28)
+
+The feature landed with passing tests that covered the parsers only — nothing called
+`SetModelAsset` and no test ran a real gizmo drag, so the entire runtime path had never executed.
+Three defects were hiding in exactly that gap:
+
+* **Crash on first placement.** `ApplyMaterials` used `ConstructorHelpers::FObjectFinder` outside a
+  constructor. `ConstructorHelpers::CheckIfIsInConstructor` is `Fatal` there (`UObjectGlobals.cpp`),
+  so the first model ever placed killed the process. Now uses the `LoadObject` call that already sat
+  beside it as a fallback.
+* **Placed models had no collision.** The constructor set collision responses but never enabled
+  complex collision, and `UDynamicMeshComponent::ContainsPhysicsTriMeshData` gates entirely on
+  `bEnableComplexCollision` (default `false`) — so every model was invisible to
+  `ATerraDyneEditController::TraceUnderCursor` and could not be clicked or selected. Now calls
+  `SetComplexAsSimpleCollisionEnabled(true, false)` in the constructor, plus `UpdateCollision(false)`
+  after each mesh swap, since `NotifyMeshUpdated()` only resets the render proxy and never touches
+  physics.
+* **FBX imported mirrored.** The importer targeted `ufbx_axes_right_handed_z_up`; Unreal is
+  **left**-handed Z-up. The two presets differ only in their `front` axis (`-Y` vs `+Y`), so every FBX
+  came in mirrored through the Y plane with reversed winding — rendering inside-out. Now targets
+  `ufbx_axes_left_handed_z_up`; ufbx flips face winding itself as part of the conversion
+  (`handedness_conversion_retain_winding` defaults to `false`).
+
+Two regression tests were added, because the existing nine could not see any of the above:
+`TerraDyne.ModelImport.PlacedActorCollision` (imports a closed box, calls `SetModelAsset`, then
+asserts cooked triangle geometry exists and a world line trace on `ECC_WorldStatic` — the same
+channel `TraceUnderCursor` uses — actually hits the actor) and
+`TerraDyne.ModelImport.FBXHandedness` (a fixture declaring Y-up right-handed source axes with one
+non-zero source-Z vertex, asserting it lands on **+Y**; under the old setting it landed on -Y).
+
+**Still open**: placed models and the library are not persisted in `UTerraDyneSaveGame`;
+`OnRep_AssetId` resolves against the *local* library so a client that never imported the file
+renders nothing; thumbnails are sidecar-PNG only with no generated fallback; the library does not
+dedupe by source path; the outliner refreshes only on demand; and the model-selection trace in
+`OnLeftClickStart` runs on every left click in every tool mode.
+
 ---
 
 ## 🛠️ Requirements & Setup

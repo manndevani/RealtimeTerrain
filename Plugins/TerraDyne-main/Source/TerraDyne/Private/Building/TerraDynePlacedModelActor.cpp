@@ -3,7 +3,6 @@
 #include "Net/UnrealNetwork.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
-#include "UObject/ConstructorHelpers.h"
 #include "Engine/World.h"
 #include "TerraDyneModule.h"
 
@@ -24,6 +23,13 @@ ATerraDynePlacedModelActor::ATerraDynePlacedModelActor()
 	DynamicMeshComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 	DynamicMeshComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Block);
 	DynamicMeshComponent->SetGenerateOverlapEvents(true);
+
+	// Collision responses alone give a UDynamicMeshComponent nothing to hit: it only ever reports
+	// physics geometry when bEnableComplexCollision is set (ContainsPhysicsTriMeshData gates on it
+	// outright), and that flag defaults to false. Without this the placed model is invisible to
+	// ATerraDyneEditController::TraceUnderCursor, so it cannot be clicked or selected at all.
+	// bImmediateUpdate is false here because there is no mesh yet -- SetModelAsset rebuilds it.
+	DynamicMeshComponent->SetComplexAsSimpleCollisionEnabled(true, false);
 }
 
 void ATerraDynePlacedModelActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -49,6 +55,11 @@ void ATerraDynePlacedModelActor::SetModelAsset(const FTerraDyneImportedModelAsse
 	{
 		DynamicMeshComponent->GetDynamicMesh()->SetMesh(Asset.Mesh);
 		DynamicMeshComponent->NotifyMeshUpdated();
+
+		// NotifyMeshUpdated only resets the render proxy -- it never touches physics. The collision
+		// body has to be rebuilt explicitly against the new geometry, or the component keeps whatever
+		// (empty) body it had and traces still pass straight through.
+		DynamicMeshComponent->UpdateCollision(false);
 	}
 
 	ApplyMaterials(Asset.Materials);
@@ -58,12 +69,10 @@ void ATerraDynePlacedModelActor::ApplyMaterials(const TArray<FTerraDyneImportedM
 {
 	if (!DynamicMeshComponent) return;
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> DefaultMatFinder(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-	UMaterialInterface* BaseMat = DefaultMatFinder.Object ? DefaultMatFinder.Object.Get() : nullptr;
-	if (!BaseMat)
-	{
-		BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-	}
+	// LoadObject, never ConstructorHelpers::FObjectFinder -- this runs at placement time, not during
+	// construction, and ConstructorHelpers::CheckIfIsInConstructor is Fatal outside a constructor
+	// (UObjectGlobals.cpp), so a finder here crashed on the very first model placed.
+	UMaterialInterface* BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 
 	for (int32 SlotIdx = 0; SlotIdx < Materials.Num(); ++SlotIdx)
 	{
