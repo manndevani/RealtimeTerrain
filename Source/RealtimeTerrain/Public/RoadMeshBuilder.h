@@ -36,9 +36,11 @@ namespace RoadMesh
 		static constexpr int32 Surface = 0;
 		static constexpr int32 Curb = 1;
 		static constexpr int32 Footpath = 2;
+		static constexpr int32 MarkingWhite = 3;
+		static constexpr int32 MarkingYellow = 4;
 		/** Vertical flanks and the underside read as concrete, so they share the curb slot. */
 		static constexpr int32 Flank = Curb;
-		static constexpr int32 Count = 3;
+		static constexpr int32 Count = 5;
 	}
 
 	/** One vertex of a cross-section, in the section's own (Lateral, Vertical) plane. */
@@ -210,6 +212,27 @@ namespace RoadMesh
 		const TArray<FFrame>& Frames,
 		const FTransform& WorldToLocal,
 		const FSweepOptions& Options);
+
+	/**
+	 * Sweeps procedural lane markings (dashed/solid centerlines, lane dividers, outer white edge lines)
+	 * into Mesh at a micro-offset above the road surface, avoiding separate actors or z-fighting.
+	 *
+	 * LeftHalfWidth/RightHalfWidth are taken separately rather than one symmetric width because a
+	 * styled road's driving surface is not generally centred on Lateral=0 -- LeftLanes and
+	 * RightLanes are independent lists, so a sidewalk or extra lane on only one side offsets the
+	 * real edges unevenly. Passing one shared width the caller derived from a lopsided style would
+	 * place edge lines and lane dividers outside the actual swept surface on one side and short of
+	 * it on the other.
+	 */
+	void BuildRoadMarkings(
+		UE::Geometry::FDynamicMesh3& Mesh,
+		const TArray<FFrame>& Frames,
+		double LeftHalfWidth,
+		double RightHalfWidth,
+		int32 NumLanes,
+		bool bHasCurbs,
+		const FTransform& WorldToLocal,
+		float UVScale);
 
 	/**
 	 * Appends a solid prism: a horizontal top face over the given counter-clockwise world-space

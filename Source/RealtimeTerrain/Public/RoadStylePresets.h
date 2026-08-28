@@ -152,4 +152,14 @@ public:
 	 * everything-including-sidewalks figure.
 	 */
 	double DrivingSurfaceWidth() const;
+
+	/**
+	 * DrivingSurfaceWidth() split per side rather than summed, because the two sides are not
+	 * generally equal -- LeftLanes and RightLanes are independent lists (a sidewalk on only one
+	 * side, an extra lane on the other), so the driving surface is offset from Lateral=0 rather
+	 * than symmetric about it. Anything positioning geometry relative to the real left/right edges
+	 * of the driving surface (road-marking placement, most notably) needs both halves separately,
+	 * not one combined width assumed to split evenly.
+	 */
+	void GetDrivingSurfaceHalfWidths(double& OutLeftHalfWidth, double& OutRightHalfWidth) const;
 };

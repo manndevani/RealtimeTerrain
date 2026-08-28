@@ -495,7 +495,21 @@ void ARuntimeGizmoActor::Tick(float DeltaTime)
 	{
 		const FVector CamLoc = Cam->GetCameraLocation();
 		const float Dist = FVector::Dist(CamLoc, GetActorLocation());
-		const float Scale = FMath::Clamp(Dist * 0.0006f, 0.3f, 4.0f);
+		// Screen-space scale maintains natural, comfortable size across any camera distance without artificial 4.0 cap
+		float Scale = FMath::Clamp(Dist * 0.00075f, 0.3f, 50000.0f);
+
+		// TargetBoundingRadius (set every frame from the selected target's real bounds via
+		// SetTargetBoundingExtent) only ever grows the screen-space scale above, never shrinks it:
+		// this is purely to stop handles rendering buried inside a large object's own geometry, not
+		// to override the normal camera-distance sizing for anything else. TipDistance is the
+		// translate arrow's native reach (the gizmo's longest handle), so scaling so that
+		// TipDistance*Scale reaches the target's own radius is what "extend beyond large objects"
+		// means concretely.
+		if (TargetBoundingRadius > 0.0f)
+		{
+			const float ScaleForTarget = FMath::Clamp(TargetBoundingRadius / TipDistance, 0.3f, 50000.0f);
+			Scale = FMath::Max(Scale, ScaleForTarget);
+		}
 		SetActorScale3D(FVector(Scale));
 
 		const FVector ToCamera = (CamLoc - GetActorLocation()).GetSafeNormal();

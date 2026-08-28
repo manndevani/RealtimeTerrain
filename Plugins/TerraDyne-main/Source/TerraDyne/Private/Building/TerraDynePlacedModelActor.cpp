@@ -81,9 +81,14 @@ void ATerraDynePlacedModelActor::ApplyMaterials(const TArray<FTerraDyneImportedM
 {
 	if (!DynamicMeshComponent) return;
 
-	// LoadObject, never ConstructorHelpers::FObjectFinder -- this runs at placement time, not during
-	// construction, and ConstructorHelpers::CheckIfIsInConstructor is Fatal outside a constructor
-	// (UObjectGlobals.cpp), so a finder here crashed on the very first model placed.
+	// A single lit base for every slot, textured or not. EmissiveTexturedMaterial (tried here
+	// previously) is MSM_Unlit -- confirmed by inspecting the shipped asset -- so routing a
+	// model's ordinary diffuse texture through it, plus unconditionally writing EmissiveColor
+	// below, made every textured imported model self-illuminate: fully bright regardless of scene
+	// lighting, casting no shaded response to a directional light, "glowing" in shadow or at
+	// night. BasicShapeMaterial is the one base this function already used, successfully, before
+	// a textured variant was added -- reusing it for both cases removes the glow with no new,
+	// unverified engine asset in the mix.
 	UMaterialInterface* BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 
 	for (int32 SlotIdx = 0; SlotIdx < Materials.Num(); ++SlotIdx)
@@ -94,12 +99,22 @@ void ATerraDynePlacedModelActor::ApplyMaterials(const TArray<FTerraDyneImportedM
 			UMaterialInstanceDynamic* DMI = UMaterialInstanceDynamic::Create(BaseMat, this);
 			if (DMI)
 			{
+				// Parameter names tried on spec: SetVectorParameterValue/SetTextureParameterValue
+				// are safe no-ops on a name the material doesn't declare, so trying several common
+				// conventions costs nothing when they don't match and helps if a future base
+				// material does declare one of them. Deliberately no EmissiveColor -- an ordinary
+				// diffuse/base color has no business driving self-illumination.
 				DMI->SetVectorParameterValue(TEXT("Color"), MatInfo.DiffuseColor);
 				DMI->SetVectorParameterValue(TEXT("BaseColor"), MatInfo.DiffuseColor);
+				DMI->SetVectorParameterValue(TEXT("DiffuseColor"), MatInfo.DiffuseColor);
+
 				if (MatInfo.DiffuseTexture)
 				{
 					DMI->SetTextureParameterValue(TEXT("Texture"), MatInfo.DiffuseTexture);
 					DMI->SetTextureParameterValue(TEXT("BaseColorTexture"), MatInfo.DiffuseTexture);
+					DMI->SetTextureParameterValue(TEXT("Diffuse"), MatInfo.DiffuseTexture);
+					DMI->SetTextureParameterValue(TEXT("DiffuseTexture"), MatInfo.DiffuseTexture);
+					DMI->SetTextureParameterValue(TEXT("Albedo"), MatInfo.DiffuseTexture);
 				}
 				DynamicMeshComponent->SetMaterial(SlotIdx, DMI);
 			}

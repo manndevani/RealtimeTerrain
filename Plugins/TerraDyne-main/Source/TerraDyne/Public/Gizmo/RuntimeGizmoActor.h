@@ -47,6 +47,13 @@ public:
 	EGizmoHandleType GetHighlightedHandle() const { return CurrentHighlight; }
 
 	/**
+	 * Sets the selected target's bounding radius so Tick() can grow the gizmo's screen-space scale
+	 * enough that its handles reach past a large object's own geometry instead of rendering buried
+	 * inside it. Purely additive to the normal camera-distance scale -- never shrinks it.
+	 */
+	void SetTargetBoundingExtent(float ExtentRadius) { TargetBoundingRadius = ExtentRadius; }
+
+	/**
 	 * A handle's own size, in current world units (already multiplied by this actor's camera-
 	 * distance scale factor) -- segment length for a translate/scale axis, ring radius for a
 	 * rotation handle, quad half-size for a plane handle, or a fixed click radius for a point-like
@@ -136,6 +143,7 @@ private:
 
 	EGizmoMode CurrentMode = EGizmoMode::Translate;
 	EGizmoHandleType CurrentHighlight = EGizmoHandleType::None;
+	float TargetBoundingRadius = 0.0f;
 
 	/** Built once in BuildHandleTypeMap; every handle component (including both pieces of a translate arrow) is a key. */
 	TMap<TWeakObjectPtr<const UPrimitiveComponent>, EGizmoHandleType> HandleTypeByComponent;

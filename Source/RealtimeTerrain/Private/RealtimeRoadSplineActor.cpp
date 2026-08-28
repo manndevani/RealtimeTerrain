@@ -66,11 +66,24 @@ ARealtimeRoadSplineActor::ARealtimeRoadSplineActor()
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> RoughFinder(TEXT("/Game/Roads/Materials/M_Proto_RoughRoad.M_Proto_RoughRoad"));
 	if (RoughFinder.Succeeded()) RoughRoadMaterial = RoughFinder.Object;
 
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MarkWhiteFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Mark.MI_FreewayAsphalt_Mark"));
+	if (MarkWhiteFinder.Succeeded()) MarkingWhiteMaterial = MarkWhiteFinder.Object;
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MarkYellowFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Mark.MI_FreewayAsphalt_Mark"));
+	if (MarkYellowFinder.Succeeded()) MarkingYellowMaterial = MarkYellowFinder.Object;
+
 	// Without this, a holographic draft (SetIsHolographicPreview -> ApplyMaterials) had nothing to
 	// fall back to and silently kept its normal, opaque material -- a "preview" indistinguishable
 	// from a real, already-committed road. See ApplyMaterials's bIsHolographicPreview branch.
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HolographicFinder(TEXT("/Game/Materials/M_RoadHolographic.M_RoadHolographic"));
 	if (HolographicFinder.Succeeded()) HolographicMaterial = HolographicFinder.Object;
+
+	PierSettings.bEnablePiers = true;
+	PierSettings.PierMesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
+	PierSettings.PierMeshUnitHeight = 100.0f;
+	PierSettings.MinClearance = 120.0f;
+	PierSettings.SpacingAlongRoad = 800.0f;
+	PierSettings.ThicknessScale = 1.2f;
 }
 
 void ARealtimeRoadSplineActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -639,6 +652,16 @@ double ARealtimeRoadSplineActor::GetDrivingSurfaceHalfWidth() const
 	return FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
 }
 
+void ARealtimeRoadSplineActor::GetDrivingSurfaceHalfWidths(double& OutLeftHalfWidth, double& OutRightHalfWidth) const
+{
+	if (StylePreset)
+	{
+		StylePreset->GetDrivingSurfaceHalfWidths(OutLeftHalfWidth, OutRightHalfWidth);
+		return;
+	}
+	OutLeftHalfWidth = OutRightHalfWidth = FMath::Max(50.0f, CrossSectionSettings.RoadWidth) * 0.5;
+}
+
 bool ARealtimeRoadSplineActor::SampleTerrainHeightAtXYWithSource(const FVector2D& WorldXY, float& OutHeightZ, bool& OutWasNonTerraDyneGround) const
 {
 	return RoadMesh::SampleGroundHeight(this, CachedTerraDyneManager, WorldXY, OutHeightZ, &OutWasNonTerraDyneGround);
@@ -1095,6 +1118,29 @@ void ARealtimeRoadSplineActor::ApplyMaterials()
 		MaterialSet[RoadMesh::Slots::Surface] = AsphaltMaterial;
 		MaterialSet[RoadMesh::Slots::Curb] = CurbMaterial;
 		MaterialSet[RoadMesh::Slots::Footpath] = FootpathMaterial;
+		MaterialSet[RoadMesh::Slots::MarkingWhite] = MarkingWhiteMaterial ? MarkingWhiteMaterial.Get() : AsphaltMaterial.Get();
+
+		// MarkingYellowMaterial and MarkingWhiteMaterial are both wired to the exact same asset
+		// (MI_FreewayAsphalt_Mark) in the constructor -- no distinct yellow-tinted marking material
+		// ships with this project's content -- so without differentiation here the centreline and
+		// lane-divider markings BuildRoadMarkings routes into Slots::MarkingYellow render pixel-
+		// identical to the white edge lines. A dynamic instance with a yellow tint applied is the
+		// only way to distinguish them without authoring a new content asset. The exact parameter
+		// name M_Mark (the master this instance is built from) actually exposes could not be
+		// confirmed without a live editor session to inspect it, so several common names are tried
+		// -- SetVectorParameterValue is a safe no-op on a name the material doesn't declare, so this
+		// cannot render worse than the un-tinted asset already did.
+		UMaterialInterface* YellowBase = MarkingYellowMaterial ? MarkingYellowMaterial.Get() : AsphaltMaterial.Get();
+		UMaterialInstanceDynamic* YellowDMI = YellowBase ? UMaterialInstanceDynamic::Create(YellowBase, this) : nullptr;
+		if (YellowDMI)
+		{
+			const FLinearColor RoadMarkingYellow(1.0f, 0.82f, 0.0f);
+			YellowDMI->SetVectorParameterValue(TEXT("Tint"), RoadMarkingYellow);
+			YellowDMI->SetVectorParameterValue(TEXT("TintColor"), RoadMarkingYellow);
+			YellowDMI->SetVectorParameterValue(TEXT("Color"), RoadMarkingYellow);
+			YellowDMI->SetVectorParameterValue(TEXT("BaseColor"), RoadMarkingYellow);
+		}
+		MaterialSet[RoadMesh::Slots::MarkingYellow] = YellowDMI ? static_cast<UMaterialInterface*>(YellowDMI) : YellowBase;
 	}
 	else
 	{
@@ -1224,6 +1270,28 @@ void ARealtimeRoadSplineActor::GenerateRoadMesh(bool bUpdateCollision)
 			}
 
 			RoadMesh::SweepSection(Mesh, Section, Frames, WorldToLocal, Options);
+
+			if (RoadType == ERoadType::PavedRoad)
+			{
+				// GetDrivingLaneCount(), not a from-scratch guess: junction arm routing and XODR
+				// export already rely on it as the one true lane count for this road, including its
+				// unstyled fallback (a flat 2 for paved, independent of width). A separate formula
+				// here disagreed with that -- an unstyled 1200cm-wide road reads as 2 lanes
+				// everywhere else, but was getting 4-lane striping from this call site alone.
+				const int32 Lanes = GetDrivingLaneCount();
+				// GetDrivingSurfaceHalfWidths(), not CrossSectionSettings.RoadWidth directly: the
+				// real surface (Section, swept just above via BuildRoadSectionFromStyle) is
+				// StylePreset's own width when one is set, and CrossSectionSettings.RoadWidth --
+				// untouched by a style -- kept sitting at its 800cm default regardless. The two
+				// sides are taken separately, not as one symmetric width, because an asymmetric
+				// style (a sidewalk or extra lane on only one side) leaves the driving surface
+				// genuinely off-centre; a single shared width placed markings beyond the real edge
+				// on one side and short of it on the other.
+				double LeftHalfWidth = 0.0, RightHalfWidth = 0.0;
+				GetDrivingSurfaceHalfWidths(LeftHalfWidth, RightHalfWidth);
+				RoadMesh::BuildRoadMarkings(Mesh, Frames, LeftHalfWidth, RightHalfWidth, Lanes, CrossSectionSettings.bHasCurbs, WorldToLocal, Options.UVScale);
+			}
+
 			RunFrames.Add(MoveTemp(Frames));
 		}
 	});
@@ -1607,7 +1675,7 @@ void ARealtimeRoadSplineActor::GeneratePiers(const TArray<TArray<RoadMesh::FFram
 
 		for (const RoadPierPlacement::FPierPlacement& Placement : Placements)
 		{
-			const FVector Location(Placement.LocationXY.X, Placement.LocationXY.Y, Placement.GroundZ);
+			const FVector Location(Placement.LocationXY.X, Placement.LocationXY.Y, Placement.GroundZ + Placement.Height * 0.5);
 			const float ScaleZ = static_cast<float>(Placement.Height / UnitHeight);
 			const FVector Scale(PierSettings.ThicknessScale, PierSettings.ThicknessScale, ScaleZ);
 			PierHISMComponent->AddInstance(FTransform(FRotator::ZeroRotator, Location, Scale), /*bWorldSpace*/ true);

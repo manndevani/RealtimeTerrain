@@ -29,12 +29,12 @@ ATerraDyneEditPawn::ATerraDyneEditPawn()
 	// owning client and fight the local camera.
 	SetReplicateMovement(false);
 
-	// Terrain work happens at chunk scale (10000 uu chunks), so the stock 1200 uu/s crawls.
+	// Smooth base editing speed (2000 uu/s = 20 m/s) with snappy acceleration and responsive stopping
 	if (UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(GetMovementComponent()))
 	{
-		Movement->MaxSpeed = 12000.0f;
-		Movement->Acceleration = 40000.0f;
-		Movement->Deceleration = 40000.0f;
+		Movement->MaxSpeed = 2000.0f;
+		Movement->Acceleration = 8000.0f;
+		Movement->Deceleration = 16000.0f;
 	}
 
 	// See the header comment on FlyToComponent: without this, FlyToCoordinates silently no-ops.
@@ -198,17 +198,18 @@ void ATerraDyneEditPawn::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// Dynamically adjust flight speed so the user can navigate across hundreds of km as easily as 100m.
-	// Same real-WGS84-height reasoning as before -- raw Unreal Z stops meaning "altitude" far from
-	// the georeference origin. FlightSpeedMultiplier (mouse wheel) scales this base up or down
-	// without disturbing the altitude scaling itself.
+	// Dynamically adjust flight speed so the user can navigate across hundreds of km as easily as 10m.
+	// Near ground level (0 - 50m altitude), speed remains comfortable and precise (~2000 uu/s).
+	// Higher altitudes scale progressively so flying across kilometers or whole continents remains responsive.
+	// FlightSpeedMultiplier (mouse wheel) scales this base up or down for fine control.
 	if (UFloatingPawnMovement* Movement = Cast<UFloatingPawnMovement>(GetMovementComponent()))
 	{
 		const double HeightMeters = GetCurrentLongitudeLatitudeHeight().Z;
-		const float Altitude = FMath::Max(100.0f, FMath::Abs((float)(HeightMeters * 100.0)));
-		Movement->MaxSpeed = FMath::Clamp(Altitude * 2.5f, 12000.0f, 50000000.0f) * FlightSpeedMultiplier;
-		Movement->Acceleration = Movement->MaxSpeed * 3.0f;
-		Movement->Deceleration = Movement->MaxSpeed * 3.0f;
+		const float PositiveHeight = (float)FMath::Max(0.0, HeightMeters);
+		const float BaseSpeed = FMath::Clamp(2000.0f + PositiveHeight * 10.0f, 1000.0f, 50000000.0f);
+		Movement->MaxSpeed = BaseSpeed * FlightSpeedMultiplier;
+		Movement->Acceleration = Movement->MaxSpeed * 4.0f;
+		Movement->Deceleration = Movement->MaxSpeed * 8.0f;
 	}
 
 	// Only a client needs to report upward; the listen-server host already moves the authoritative

@@ -60,8 +60,16 @@ ARealtimeRoadJunctionActor::ARealtimeRoadJunctionActor()
 
 	// Matches ARealtimeRoadSplineActor's own defaults so a junction and the roads meeting it use the
 	// same materials without per-actor setup. Still EditAnywhere, so any junction can override.
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Road.MI_FreewayAsphalt_Road"));
-	if (AsphaltFinder.Succeeded()) AsphaltMaterial = AsphaltFinder.Object;
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> AsphaltFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/M_Asphalt_Master_Inst_Intersection.M_Asphalt_Master_Inst_Intersection"));
+	if (AsphaltFinder.Succeeded())
+	{
+		AsphaltMaterial = AsphaltFinder.Object;
+	}
+	else
+	{
+		static ConstructorHelpers::FObjectFinder<UMaterialInterface> FreewayAsphaltFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Asphalt/MI_FreewayAsphalt_Road.MI_FreewayAsphalt_Road"));
+		if (FreewayAsphaltFinder.Succeeded()) AsphaltMaterial = FreewayAsphaltFinder.Object;
+	}
 
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> CurbFinder(TEXT("/Game/UnrealDrive_CitySample/Materials/MI_Concrete/M_roadcurb_master_concrete_instance.M_roadcurb_master_concrete_instance"));
 	if (CurbFinder.Succeeded()) CurbMaterial = CurbFinder.Object;
@@ -544,6 +552,8 @@ void ARealtimeRoadJunctionActor::ApplyMaterials()
 		MaterialSet[RoadMesh::Slots::Surface] = AsphaltMaterial;
 		MaterialSet[RoadMesh::Slots::Curb] = CurbMaterial;
 		MaterialSet[RoadMesh::Slots::Footpath] = FootpathMaterial;
+		MaterialSet[RoadMesh::Slots::MarkingWhite] = AsphaltMaterial;
+		MaterialSet[RoadMesh::Slots::MarkingYellow] = AsphaltMaterial;
 	}
 
 	JunctionMeshComponent->ConfigureMaterialSet(MaterialSet);

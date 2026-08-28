@@ -208,18 +208,16 @@ FVector GizmoMath::ComputeScaleDelta(
 	EGizmoHandleType Handle, EGizmoCoordinateSpace Space, const FQuat& TargetRotation,
 	const FVector& GizmoOrigin, const FVector& StartIntersection, const FVector& CurrentIntersection)
 {
-	// Both denominators are floored in magnitude before dividing, and the resulting ratio is floored
-	// to a small positive minimum -- together these keep the ratio finite and positive even when a
-	// drag starts almost exactly on the gizmo origin or crosses back over it (see class comment:
-	// "prevent invalid/negative scale unless explicitly supported").
-	constexpr double MinDenominator = 1.0; // cm
 	constexpr double MinRatio = 0.01;
+	constexpr double StandardReferenceDistance = 100.0; // Standard reference baseline (100 uu = 1m)
 
 	if (Handle == EGizmoHandleType::ScaleUniform)
 	{
-		const double StartDist = FMath::Max(FVector::Dist(StartIntersection, GizmoOrigin), MinDenominator);
+		const double StartDist = FVector::Dist(StartIntersection, GizmoOrigin);
 		const double CurrentDist = FVector::Dist(CurrentIntersection, GizmoOrigin);
-		const double Ratio = FMath::Max(CurrentDist / StartDist, MinRatio);
+		const double Delta = CurrentDist - StartDist;
+		const double RefDist = FMath::Max(StandardReferenceDistance, StartDist);
+		const double Ratio = FMath::Max(MinRatio, 1.0 + (Delta / RefDist));
 		return FVector(Ratio, Ratio, Ratio);
 	}
 
@@ -240,8 +238,9 @@ FVector GizmoMath::ComputeScaleDelta(
 
 	const double StartOffset = FVector::DotProduct(StartIntersection - GizmoOrigin, Axis);
 	const double CurrentOffset = FVector::DotProduct(CurrentIntersection - GizmoOrigin, Axis);
-	const double SignedStart = FMath::Sign(StartOffset) * FMath::Max(FMath::Abs(StartOffset), MinDenominator);
-	const double Ratio = FMath::Max(CurrentOffset / SignedStart, MinRatio);
+	const double Delta = CurrentOffset - StartOffset;
+	const double RefDist = FMath::Max(StandardReferenceDistance, FMath::Abs(StartOffset));
+	const double Ratio = FMath::Max(MinRatio, 1.0 + (Delta / RefDist));
 
 	FVector Result = FVector::OneVector;
 	Result[Component] = Ratio;

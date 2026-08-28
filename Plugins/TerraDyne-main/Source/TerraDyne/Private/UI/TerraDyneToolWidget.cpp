@@ -11,6 +11,12 @@
 #include "Kismet/GameplayStatics.h"
 #include "TerraDyneModule.h"
 
+#if WITH_EDITOR
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
+#include "Framework/Application/SlateApplication.h"
+#endif
+
 void UTerraDyneToolWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
@@ -134,6 +140,37 @@ void UTerraDyneToolWidget::OpenRasterLayerImportPicker(ETerraDyneRasterLayer Lay
 {
 	PendingImportLayer = Layer;
 
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		TArray<FString> OutFiles;
+		const FString Title = FString::Printf(TEXT("Import %s"), *TerraDyneRasterLayers::GetDisplayName(Layer).ToString());
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			Title,
+			TEXT(""),
+			TEXT(""),
+			TEXT("GeoTIFF & Raster Archives (*.tif;*.tiff;*.tar.gz;*.tgz;*.zip)|*.tif;*.tiff;*.tar.gz;*.tgz;*.zip|GeoTIFF (*.tif;*.tiff)|*.tif;*.tiff|Archives (*.tar.gz;*.tgz;*.zip)|*.tar.gz;*.tgz;*.zip|All Files (*.*)|*.*"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			HandleGeoTIFFChosen(OutFiles[0]);
+		}
+		else
+		{
+			// A bare return here used to skip HandleGeoTIFFPickerCancelled's cleanup entirely for
+			// this path -- if the manager was still awaiting the startup Sandbox/Import choice,
+			// cancelling the native dialog left the player stuck with no route back into either
+			// mode, exactly the dead end that handler's own comment says it exists to prevent.
+			HandleGeoTIFFPickerCancelled();
+		}
+		return;
+	}
+#endif
+
 	if (ActiveGeoTIFFPicker)
 	{
 		// Already up -- avoid stacking a second picker on top of it.
@@ -153,6 +190,39 @@ void UTerraDyneToolWidget::OpenRasterLayerImportPicker(ETerraDyneRasterLayer Lay
 
 void UTerraDyneToolWidget::OpenOSMImportPicker()
 {
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		// Set before the (blocking) dialog call, not after: HandleGeoTIFFPickerCancelled branches
+		// on this to know an OSM import (not the startup world-mode choice) was in flight, and it
+		// has to be true by the time a cancel is handled below.
+		bPickerIsForOSM = true;
+
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			TEXT("Import OpenStreetMap Export"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("OpenStreetMap Data (*.osm;*.xml)|*.osm;*.xml|All Files (*.*)|*.*"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			HandleOSMChosen(OutFiles[0]); // resets bPickerIsForOSM itself
+		}
+		else
+		{
+			// Same dead-end this fixes for the GeoTIFF path above: a bare return skipped
+			// HandleGeoTIFFPickerCancelled's cleanup entirely for the native-dialog path.
+			HandleGeoTIFFPickerCancelled();
+		}
+		return;
+	}
+#endif
+
 	if (ActiveGeoTIFFPicker)
 	{
 		// Already up -- avoid stacking a second picker on top of it.

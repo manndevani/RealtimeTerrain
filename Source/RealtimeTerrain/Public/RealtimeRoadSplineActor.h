@@ -292,6 +292,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Materials", meta = (EditCondition = "RoadType == ERoadType::PavedRoad"))
 	TObjectPtr<UMaterialInterface> FootpathMaterial;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Materials", meta = (EditCondition = "RoadType == ERoadType::PavedRoad"))
+	TObjectPtr<UMaterialInterface> MarkingWhiteMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Materials", meta = (EditCondition = "RoadType == ERoadType::PavedRoad"))
+	TObjectPtr<UMaterialInterface> MarkingYellowMaterial;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Road|Materials", meta = (EditCondition = "RoadType == ERoadType::RoughRoad"))
 	TObjectPtr<UMaterialInterface> RoughRoadMaterial;
 
@@ -462,6 +468,16 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")
 	double GetDrivingSurfaceHalfWidth() const;
+
+	/**
+	 * GetDrivingSurfaceHalfWidth() split per side instead of averaged into one symmetric scalar.
+	 * Existing callers (junction gore-point math) are fine with the symmetric figure and are left
+	 * on GetDrivingSurfaceHalfWidth() untouched; this exists for callers that place geometry
+	 * relative to the real left/right edges of the driving surface -- road-marking generation, most
+	 * notably, where an asymmetric style (a sidewalk or extra lane on only one side) means the two
+	 * edges are genuinely not equidistant from the centreline.
+	 */
+	void GetDrivingSurfaceHalfWidths(double& OutLeftHalfWidth, double& OutRightHalfWidth) const;
 
 	/** True when this instance may edit its own points: the authority, or a local-only preview. */
 	UFUNCTION(BlueprintCallable, Category = "Road|Realtime")

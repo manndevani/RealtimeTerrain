@@ -885,4 +885,119 @@ bool FTerraDyneModelTextureGCTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// -----------------------------------------------------------------------------
+// Test 14: Smart Texture Path Resolution
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneTextureResolutionTest, "TerraDyne.ModelImport.TextureResolution",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneTextureResolutionTest::RunTest(const FString& Parameters)
+{
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestTextureResolution"));
+	const FString TexturesSubDir = FPaths::Combine(TestDir, TEXT("textures"));
+	IFileManager::Get().MakeDirectory(*TexturesSubDir, true);
+
+	const FString ModelPath = FPaths::Combine(TestDir, TEXT("House.fbx"));
+	const FString RealTexturePath = FPaths::Combine(TexturesSubDir, TEXT("Roof_BaseColor.png"));
+
+	// Create a 1x1 PNG file
+	TArray<uint8> PngBytes = {
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+		0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+		0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+	};
+	FFileHelper::SaveArrayToFile(PngBytes, *RealTexturePath);
+
+	// Case A: Relative path "textures/Roof_BaseColor.png"
+	FString ResolvedA = FTerraDyneModelImporter::ResolveTexturePath(ModelPath, TEXT("textures/Roof_BaseColor.png"));
+	TestEqual(TEXT("Relative path in subfolder resolves"), ResolvedA, RealTexturePath);
+
+	// Case B: Foreign artist absolute path "D:\\Author\\3D\\Textures\\Roof_BaseColor.png"
+	FString ResolvedB = FTerraDyneModelImporter::ResolveTexturePath(ModelPath, TEXT("D:\\Author\\3D\\Textures\\Roof_BaseColor.png"));
+	TestEqual(TEXT("Foreign absolute path resolves via subfolder search"), ResolvedB, RealTexturePath);
+
+	// Case C: Extension fallback (FBX specifies .tga, but disk has .png)
+	FString ResolvedC = FTerraDyneModelImporter::ResolveTexturePath(ModelPath, TEXT("Roof_BaseColor.tga"));
+	TestEqual(TEXT("Extension fallback resolves .tga to .png"), ResolvedC, RealTexturePath);
+
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 15: FBX Texture Import
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneModelImportFBXTextureTest, "TerraDyne.ModelImport.FBXTexture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FTerraDyneModelImportFBXTextureTest::RunTest(const FString& Parameters)
+{
+	const FString TestDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("TestFBXTexture"));
+	const FString TexturesSubDir = FPaths::Combine(TestDir, TEXT("textures"));
+	IFileManager::Get().MakeDirectory(*TexturesSubDir, true);
+
+	const FString FbxPath = FPaths::Combine(TestDir, TEXT("CubeTextured.fbx"));
+	const FString TexPath = FPaths::Combine(TexturesSubDir, TEXT("CubeDiffuse.png"));
+
+	TArray<uint8> PngBytes = {
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+		0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+		0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+	};
+	FFileHelper::SaveArrayToFile(PngBytes, *TexPath);
+
+	const FString FbxContent =
+		TEXT("; FBX 7.4.0 project file\n")
+		TEXT("FBXHeaderExtension: {\n")
+		TEXT("    FBXHeaderVersion: 1003\n")
+		TEXT("    FBXVersion: 7400\n")
+		TEXT("}\n")
+		TEXT("Definitions: {\n")
+		TEXT("    Count: 4\n")
+		TEXT("    ObjectType: \"Model\" { Count: 1 }\n")
+		TEXT("    ObjectType: \"Geometry\" { Count: 1 }\n")
+		TEXT("    ObjectType: \"Material\" { Count: 1 }\n")
+		TEXT("    ObjectType: \"Texture\" { Count: 1 }\n")
+		TEXT("}\n")
+		TEXT("Objects: {\n")
+		TEXT("    Geometry: 1000, \"Geometry::Mesh\", \"Mesh\" {\n")
+		TEXT("        Vertices: *9 { a: 0,0,0,10,0,0,0,10,0 }\n")
+		TEXT("        PolygonVertexIndex: *3 { a: 0,1,-3 }\n")
+		TEXT("    }\n")
+		TEXT("    Model: 2000, \"Model::TestMesh\", \"Mesh\" { Version: 232 }\n")
+		TEXT("    Material: 3000, \"Material::CubeMat\", \"\" {\n")
+		TEXT("        Properties70: {\n")
+		TEXT("            P: \"DiffuseColor\", \"ColorRGB\", \"Color\", \"\",0.8,0.8,0.8\n")
+		TEXT("        }\n")
+		TEXT("    }\n")
+		TEXT("    Texture: 4000, \"Texture::CubeTex\", \"\" {\n")
+		TEXT("        FileName: \"textures/CubeDiffuse.png\"\n")
+		TEXT("        RelativeFilename: \"textures/CubeDiffuse.png\"\n")
+		TEXT("    }\n")
+		TEXT("}\n")
+		TEXT("Connections: {\n")
+		TEXT("    C: \"OO\",1000,2000\n")
+		TEXT("    C: \"OO\",2000,0\n")
+		TEXT("    C: \"OO\",3000,2000\n")
+		TEXT("    C: \"OP\",4000,3000, \"DiffuseColor\"\n")
+		TEXT("}\n");
+
+	FFileHelper::SaveStringToFile(FbxContent, *FbxPath);
+
+	FTerraDyneImportModelResult Result = FTerraDyneModelImporter::ImportModelFromFile(FbxPath);
+	TestTrue(TEXT("Textured FBX must import successfully"), Result.bSuccess);
+	TestTrue(TEXT("Materials array must have at least 1 material"), Result.Materials.Num() >= 1);
+	if (Result.Materials.Num() >= 1)
+	{
+		TestNotNull(TEXT("DiffuseTexture must be loaded on imported FBX material"), Result.Materials[0].DiffuseTexture.Get());
+	}
+
+	return true;
+}
+
 #endif // WITH_EDITOR

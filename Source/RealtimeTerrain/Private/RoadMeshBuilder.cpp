@@ -593,6 +593,130 @@ void SweepSection(
 	}
 }
 
+void BuildRoadMarkings(
+	FDynamicMesh3& Mesh,
+	const TArray<FFrame>& Frames,
+	double LeftHalfWidth,
+	double RightHalfWidth,
+	int32 NumLanes,
+	bool bHasCurbs,
+	const FTransform& WorldToLocal,
+	float UVScale)
+{
+	const int32 NumFrames = Frames.Num();
+	if (NumFrames < 2)
+	{
+		return;
+	}
+
+	PrepareMesh(Mesh);
+
+	// Clamped and curb-shrunk independently per side -- a symmetric style (LeftHalfWidth ==
+	// RightHalfWidth, the common case) reduces to exactly the old single-HalfWidth behaviour.
+	LeftHalfWidth = FMath::Max(50.0, LeftHalfWidth);
+	RightHalfWidth = FMath::Max(50.0, RightHalfWidth);
+	const double LeftDrivable = bHasCurbs ? LeftHalfWidth : LeftHalfWidth * 0.96;
+	const double RightDrivable = bHasCurbs ? RightHalfWidth : RightHalfWidth * 0.96;
+	const double MarkingWidth = 15.0; // 15 cm wide road stripe
+	const double Lift = 0.35;         // 3.5 mm elevation above road surface to avoid z-fighting
+	const double DashLength = 300.0;  // 3m standard dash
+	const double DashGap = 600.0;     // 6m standard gap
+	const double Period = DashLength + DashGap;
+
+	auto AppendQuadStrip = [&](const FFrame& F0, const FFrame& F1, double Lat0Left, double Lat0Right, double Lat1Left, double Lat1Right, int32 MatID)
+	{
+		const FVector P0_L = F0.Origin + F0.Right * Lat0Left + F0.Up * Lift;
+		const FVector P0_R = F0.Origin + F0.Right * Lat0Right + F0.Up * Lift;
+		const FVector P1_L = F1.Origin + F1.Right * Lat1Left + F1.Up * Lift;
+		const FVector P1_R = F1.Origin + F1.Right * Lat1Right + F1.Up * Lift;
+
+		const int32 V0 = Mesh.AppendVertex(WorldToLocal.TransformPosition(P0_L));
+		const int32 V1 = Mesh.AppendVertex(WorldToLocal.TransformPosition(P0_R));
+		const int32 V2 = Mesh.AppendVertex(WorldToLocal.TransformPosition(P1_L));
+		const int32 V3 = Mesh.AppendVertex(WorldToLocal.TransformPosition(P1_R));
+
+		const float U0 = 0.0f;
+		const float U1 = 1.0f;
+		const float TexV0 = static_cast<float>(F0.DistanceAlong * UVScale);
+		const float TexV1 = static_cast<float>(F1.DistanceAlong * UVScale);
+
+		AppendTri(Mesh, V0, V2, V3, MatID, FVector2f(U0, TexV0), FVector2f(U0, TexV1), FVector2f(U1, TexV1));
+		AppendTri(Mesh, V0, V3, V1, MatID, FVector2f(U0, TexV0), FVector2f(U1, TexV1), FVector2f(U1, TexV0));
+	};
+
+	// 1. Outer edge lines (solid white lines along both edges)
+	const double EdgeOffsetLeft = -LeftDrivable + 20.0;
+	const double EdgeOffsetRight = RightDrivable - 20.0;
+	for (int32 f = 0; f + 1 < NumFrames; ++f)
+	{
+		const FFrame& F0 = Frames[f];
+		const FFrame& F1 = Frames[f + 1];
+
+		AppendQuadStrip(F0, F1, EdgeOffsetLeft - MarkingWidth * 0.5, EdgeOffsetLeft + MarkingWidth * 0.5,
+		                EdgeOffsetLeft - MarkingWidth * 0.5, EdgeOffsetLeft + MarkingWidth * 0.5, Slots::MarkingWhite);
+
+		AppendQuadStrip(F0, F1, EdgeOffsetRight - MarkingWidth * 0.5, EdgeOffsetRight + MarkingWidth * 0.5,
+		                EdgeOffsetRight - MarkingWidth * 0.5, EdgeOffsetRight + MarkingWidth * 0.5, Slots::MarkingWhite);
+	}
+
+	// 2. Centerline markings (dashed yellow for 2-lane, dual solid yellow for 4+ lanes)
+	if (NumLanes <= 2)
+	{
+		for (int32 f = 0; f + 1 < NumFrames; ++f)
+		{
+			const FFrame& F0 = Frames[f];
+			const FFrame& F1 = Frames[f + 1];
+
+			const double Phase = FMath::Fmod(F0.DistanceAlong, Period);
+			if (Phase < DashLength)
+			{
+				AppendQuadStrip(F0, F1, -MarkingWidth * 0.5, MarkingWidth * 0.5,
+				                -MarkingWidth * 0.5, MarkingWidth * 0.5, Slots::MarkingYellow);
+			}
+		}
+	}
+	else
+	{
+		// Double solid yellow lines down the middle
+		const double Sep = 15.0;
+		for (int32 f = 0; f + 1 < NumFrames; ++f)
+		{
+			const FFrame& F0 = Frames[f];
+			const FFrame& F1 = Frames[f + 1];
+
+			AppendQuadStrip(F0, F1, -Sep - MarkingWidth * 0.5, -Sep + MarkingWidth * 0.5,
+			                -Sep - MarkingWidth * 0.5, -Sep + MarkingWidth * 0.5, Slots::MarkingYellow);
+			AppendQuadStrip(F0, F1, Sep - MarkingWidth * 0.5, Sep + MarkingWidth * 0.5,
+			                Sep - MarkingWidth * 0.5, Sep + MarkingWidth * 0.5, Slots::MarkingYellow);
+		}
+
+		// Interior dashed lane divider lines, evenly spread between the two (possibly unequal) real
+		// edges rather than around an assumed-symmetric centre.
+		const double LaneWidth = (LeftDrivable + RightDrivable) / FMath::Max(1, NumLanes);
+		for (int32 LaneIdx = 1; LaneIdx < NumLanes; ++LaneIdx)
+		{
+			const double LaneLat = -LeftDrivable + LaneIdx * LaneWidth;
+			if (FMath::Abs(LaneLat) < 40.0)
+			{
+				continue; // Skip centerline
+			}
+
+			for (int32 f = 0; f + 1 < NumFrames; ++f)
+			{
+				const FFrame& F0 = Frames[f];
+				const FFrame& F1 = Frames[f + 1];
+
+				const double Phase = FMath::Fmod(F0.DistanceAlong, Period);
+				if (Phase < DashLength)
+				{
+					AppendQuadStrip(F0, F1, LaneLat - MarkingWidth * 0.5, LaneLat + MarkingWidth * 0.5,
+					                LaneLat - MarkingWidth * 0.5, LaneLat + MarkingWidth * 0.5, Slots::MarkingWhite);
+				}
+			}
+		}
+	}
+}
+
 void AppendPrism(
 	FDynamicMesh3& Mesh,
 	const TArray<FVector>& BoundaryCCW,

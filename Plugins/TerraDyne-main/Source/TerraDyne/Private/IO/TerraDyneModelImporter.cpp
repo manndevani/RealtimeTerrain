@@ -249,9 +249,12 @@ bool FTerraDyneModelImporter::ImportOBJ(const FString& FilePath, FTerraDyneImpor
 					else if (MTrimmed.StartsWith(TEXT("map_Kd ")))
 					{
 						FString TexRelPath = MTrimmed.Mid(7).TrimStartAndEnd();
-						FString FullTexPath = FPaths::Combine(Directory, TexRelPath);
-						CurrentMtl.DiffuseTexturePath = FullTexPath;
-						CurrentMtl.DiffuseTexture = LoadTextureFromFile(FullTexPath);
+						FString ResolvedTexPath = ResolveTexturePath(FilePath, TexRelPath);
+						if (!ResolvedTexPath.IsEmpty())
+						{
+							CurrentMtl.DiffuseTexturePath = ResolvedTexPath;
+							CurrentMtl.DiffuseTexture = LoadTextureFromFile(ResolvedTexPath);
+						}
 					}
 				}
 
@@ -685,6 +688,110 @@ UTexture2D* FTerraDyneModelImporter::LoadTextureFromMemory(const uint8* BufferDa
 	return NewTexture;
 }
 
+FString FTerraDyneModelImporter::ResolveTexturePath(const FString& ModelFilePath, const FString& DeclaredTexturePath)
+{
+	if (DeclaredTexturePath.IsEmpty())
+	{
+		return FString();
+	}
+
+	const FString ModelDir = FPaths::GetPath(ModelFilePath);
+	const FString CleanDeclared = DeclaredTexturePath.Replace(TEXT("\\"), TEXT("/"));
+
+	// 1. Direct path check (if absolute or relative path exists directly)
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*CleanDeclared))
+	{
+		return CleanDeclared;
+	}
+
+	// 2. Relative to ModelDir
+	const FString RelativePath = FPaths::Combine(ModelDir, CleanDeclared);
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*RelativePath))
+	{
+		return RelativePath;
+	}
+
+	// 3. Basename directly in ModelDir
+	const FString CleanFileName = FPaths::GetCleanFilename(CleanDeclared);
+	const FString InModelDir = FPaths::Combine(ModelDir, CleanFileName);
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*InModelDir))
+	{
+		return InModelDir;
+	}
+
+	// 4. Look in common texture subdirectories inside ModelDir
+	static const TArray<FString> SubDirs = {
+		TEXT("textures"), TEXT("Textures"), TEXT("texture"), TEXT("Texture"),
+		TEXT("images"), TEXT("Images"), TEXT("image"), TEXT("Image"),
+		TEXT("maps"), TEXT("Maps"), TEXT("materials"), TEXT("Materials"),
+		TEXT("assets"), TEXT("Assets"), TEXT("sourceimages"), TEXT("SourceImages")
+	};
+
+	for (const FString& SubDir : SubDirs)
+	{
+		const FString SubDirPath = FPaths::Combine(ModelDir, SubDir, CleanFileName);
+		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*SubDirPath))
+		{
+			return SubDirPath;
+		}
+	}
+
+	// 5. Look in parent directory and parent's subdirectories
+	const FString ParentDir = FPaths::GetPath(ModelDir);
+	if (!ParentDir.IsEmpty() && ParentDir != ModelDir)
+	{
+		const FString InParentDir = FPaths::Combine(ParentDir, CleanFileName);
+		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*InParentDir))
+		{
+			return InParentDir;
+		}
+
+		for (const FString& SubDir : SubDirs)
+		{
+			const FString SubDirPath = FPaths::Combine(ParentDir, SubDir, CleanFileName);
+			if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*SubDirPath))
+			{
+				return SubDirPath;
+			}
+		}
+	}
+
+	// 6. Format fallback: if declared path has .tga, .tif, .tiff, .psd, .dds, check for .png, .jpg, .jpeg, .bmp
+	const FString BaseNameWithoutExt = FPaths::GetBaseFilename(CleanDeclared);
+	static const TArray<FString> Extensions = {
+		TEXT("png"), TEXT("PNG"), TEXT("jpg"), TEXT("JPG"), TEXT("jpeg"), TEXT("JPEG"),
+		TEXT("bmp"), TEXT("BMP"), TEXT("tga"), TEXT("TGA"), TEXT("tif"), TEXT("tiff")
+	};
+
+	for (const FString& Ext : Extensions)
+	{
+		const FString CandidateName = BaseNameWithoutExt + TEXT(".") + Ext;
+		const FString PathInModelDir = FPaths::Combine(ModelDir, CandidateName);
+		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PathInModelDir))
+		{
+			return PathInModelDir;
+		}
+		for (const FString& SubDir : SubDirs)
+		{
+			const FString SubDirPath = FPaths::Combine(ModelDir, SubDir, CandidateName);
+			if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*SubDirPath))
+			{
+				return SubDirPath;
+			}
+		}
+		if (!ParentDir.IsEmpty() && ParentDir != ModelDir)
+		{
+			const FString PathInParent = FPaths::Combine(ParentDir, CandidateName);
+			if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PathInParent))
+			{
+				return PathInParent;
+			}
+		}
+	}
+
+	return FString();
+}
+
 bool FTerraDyneModelImporter::ImportFBX(const FString& FilePath, FTerraDyneImportModelResult& OutResult)
 {
 	ufbx_load_opts opts = { 0 };
@@ -744,9 +851,23 @@ bool FTerraDyneModelImporter::ImportFBX(const FString& FilePath, FTerraDyneImpor
 			);
 		}
 
+		// Inspect all possible FBX texture slots
 		ufbx_texture* Tex = nullptr;
 		if (FbxMat->pbr.base_color.texture) Tex = FbxMat->pbr.base_color.texture;
 		else if (FbxMat->fbx.diffuse_color.texture) Tex = FbxMat->fbx.diffuse_color.texture;
+		else if (FbxMat->fbx.diffuse_factor.texture) Tex = FbxMat->fbx.diffuse_factor.texture;
+		else if (FbxMat->fbx.ambient_color.texture) Tex = FbxMat->fbx.ambient_color.texture;
+		else
+		{
+			for (size_t t = 0; t < FbxMat->textures.count; ++t)
+			{
+				if (FbxMat->textures.data[t].texture)
+				{
+					Tex = FbxMat->textures.data[t].texture;
+					break;
+				}
+			}
+		}
 
 		if (Tex)
 		{
@@ -757,15 +878,61 @@ bool FTerraDyneModelImporter::ImportFBX(const FString& FilePath, FTerraDyneImpor
 					Tex->content.size
 				);
 			}
-			else if (Tex->filename.length > 0)
+			else
 			{
-				FString TexPath = UTF8_TO_TCHAR(Tex->filename.data);
-				if (FPaths::IsRelative(TexPath))
+				TArray<FString> CandidatePaths;
+				if (Tex->relative_filename.length > 0) CandidatePaths.Add(UTF8_TO_TCHAR(Tex->relative_filename.data));
+				if (Tex->filename.length > 0) CandidatePaths.Add(UTF8_TO_TCHAR(Tex->filename.data));
+				if (Tex->absolute_filename.length > 0) CandidatePaths.Add(UTF8_TO_TCHAR(Tex->absolute_filename.data));
+				if (Tex->raw_filename.size > 0) CandidatePaths.Add(UTF8_TO_TCHAR((const char*)Tex->raw_filename.data));
+
+				for (const FString& Candidate : CandidatePaths)
 				{
-					TexPath = FPaths::Combine(FPaths::GetPath(FilePath), TexPath);
+					const FString Resolved = ResolveTexturePath(FilePath, Candidate);
+					if (!Resolved.IsEmpty())
+					{
+						ImportedMat.DiffuseTexturePath = Resolved;
+						ImportedMat.DiffuseTexture = LoadTextureFromFile(Resolved);
+						if (ImportedMat.DiffuseTexture)
+						{
+							break;
+						}
+					}
 				}
-				ImportedMat.DiffuseTexturePath = TexPath;
-				ImportedMat.DiffuseTexture = LoadTextureFromFile(TexPath);
+			}
+		}
+
+		// If no texture found on material slot, search companion texture by material/model name
+		if (!ImportedMat.DiffuseTexture)
+		{
+			const FString ModelName = FPaths::GetBaseFilename(FilePath);
+			const FString MatName = ImportedMat.MaterialName;
+			static const TArray<FString> Suffixes = {
+				TEXT(""), TEXT("_diffuse"), TEXT("_Diffuse"), TEXT("_basecolor"), TEXT("_BaseColor"),
+				TEXT("_albedo"), TEXT("_Albedo"), TEXT("_D"), TEXT("_d"), TEXT("_color"), TEXT("_Color"),
+				TEXT("_tex"), TEXT("_texture")
+			};
+			static const TArray<FString> Exts = { TEXT("png"), TEXT("jpg"), TEXT("jpeg"), TEXT("bmp"), TEXT("tga") };
+
+			for (const FString& NameStem : { MatName, ModelName })
+			{
+				if (NameStem.IsEmpty()) continue;
+				for (const FString& Suffix : Suffixes)
+				{
+					for (const FString& Ext : Exts)
+					{
+						const FString TestFileName = NameStem + Suffix + TEXT(".") + Ext;
+						const FString Resolved = ResolveTexturePath(FilePath, TestFileName);
+						if (!Resolved.IsEmpty())
+						{
+							ImportedMat.DiffuseTexturePath = Resolved;
+							ImportedMat.DiffuseTexture = LoadTextureFromFile(Resolved);
+							if (ImportedMat.DiffuseTexture) break;
+						}
+					}
+					if (ImportedMat.DiffuseTexture) break;
+				}
+				if (ImportedMat.DiffuseTexture) break;
 			}
 		}
 
@@ -952,12 +1119,12 @@ bool FTerraDyneModelImporter::ImportGLTF(const FString& FilePath, FTerraDyneImpo
 				else if (Image->uri)
 				{
 					FString TexPath = UTF8_TO_TCHAR(Image->uri);
-					if (FPaths::IsRelative(TexPath))
+					FString ResolvedTexPath = ResolveTexturePath(FilePath, TexPath);
+					if (!ResolvedTexPath.IsEmpty())
 					{
-						TexPath = FPaths::Combine(BaseDir, TexPath);
+						ImportedMat.DiffuseTexturePath = ResolvedTexPath;
+						ImportedMat.DiffuseTexture = LoadTextureFromFile(ResolvedTexPath);
 					}
-					ImportedMat.DiffuseTexturePath = TexPath;
-					ImportedMat.DiffuseTexture = LoadTextureFromFile(TexPath);
 				}
 			}
 		}

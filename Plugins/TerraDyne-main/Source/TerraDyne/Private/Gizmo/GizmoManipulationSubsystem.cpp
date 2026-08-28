@@ -69,6 +69,24 @@ void UGizmoManipulationSubsystem::UpdateGizmoTransform()
 		Rotation = State.GetTransformFn.Execute().GetRotation();
 	}
 	GizmoActor->SetActorRotation(Rotation);
+
+	float TargetExtent = 0.0f;
+	if (State.Target.IsValid())
+	{
+		if (AActor* Owner = State.Target->GetOwner())
+		{
+			const FBox Bounds = Owner->GetComponentsBoundingBox(true);
+			if (Bounds.IsValid)
+			{
+				TargetExtent = (float)Bounds.GetExtent().GetMax();
+			}
+		}
+		else
+		{
+			TargetExtent = (float)State.Target->Bounds.SphereRadius;
+		}
+	}
+	GizmoActor->SetTargetBoundingExtent(TargetExtent);
 }
 
 void UGizmoManipulationSubsystem::SetTarget(USceneComponent* NewTarget)
@@ -267,8 +285,28 @@ EGizmoHandleType UGizmoManipulationSubsystem::FindHoveredHandle(const FGizmoInte
 		case EGizmoHandleType::Center:
 		case EGizmoHandleType::ScaleUniform:
 		{
-			Dist = GizmoMath::DistanceRayToPoint(Ray, CompXform.GetLocation(), AlongRay);
-			HitPoint = CompXform.GetLocation();
+			const FVector ViewNormal = CameraForward.IsNearlyZero() ? FVector::UpVector : CameraForward.GetSafeNormal();
+			const FPlane ViewPlane(CompXform.GetLocation(), ViewNormal);
+			FVector PlaneHit;
+			if (GizmoMath::IntersectRayWithPlane(Ray, ViewPlane, PlaneHit))
+			{
+				AlongRay = FVector::DotProduct(PlaneHit - Ray.Origin, Ray.Direction);
+				const double RadialDist = FVector::Dist(PlaneHit, CompXform.GetLocation());
+				if (RadialDist <= (Reach + Tolerance))
+				{
+					Dist = FMath::Max(0.0, RadialDist - Reach);
+					HitPoint = PlaneHit;
+				}
+				else
+				{
+					Dist = TNumericLimits<double>::Max();
+				}
+			}
+			else
+			{
+				Dist = GizmoMath::DistanceRayToPoint(Ray, CompXform.GetLocation(), AlongRay);
+				HitPoint = CompXform.GetLocation();
+			}
 			break;
 		}
 		default:

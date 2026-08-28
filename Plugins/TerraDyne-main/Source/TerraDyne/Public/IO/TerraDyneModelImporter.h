@@ -83,6 +83,9 @@ public:
 	/** Loads an image from a raw memory buffer into a transient UTexture2D. */
 	static UTexture2D* LoadTextureFromMemory(const uint8* BufferData, int64 BufferSize, const FString& FormatHint = TEXT("png"));
 
+	/** Smart resolver for finding a texture file on disk given declared path, model folder, adjacent subfolders, and extension fallbacks. */
+	static FString ResolveTexturePath(const FString& ModelFilePath, const FString& DeclaredTexturePath);
+
 	/** Returns true if the given extension is a supported 3D model format. */
 	static bool IsSupportedExtension(const FString& Extension);
 
