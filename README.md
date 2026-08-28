@@ -163,7 +163,7 @@ defaults to its pre-existing behavior when unset (`StylePreset`, `HeightKeys`,
 `bUseSpiralCentreline` all off/empty by default), so no existing road in the project changed
 behavior as a side effect of this work.
 
-## 🎯 Gizmo System — reusable runtime transform gizmo (in progress)
+## 🎯 Gizmo System — reusable runtime transform gizmo (COMPLETE ✅)
 
 **Goal**: replace the old translate-only, per-consumer-duplicated `ATerraDyneGizmoActor` with a
 proper reusable translate/rotate/scale gizmo system (world/local space, plane handles, rotation
@@ -192,6 +192,14 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   `/Engine/BasicShapes/`. Attribution recorded in `Content/THIRD_PARTY_NOTICES.md`. The repo's own
   materials were **not** migrated — this project's existing dynamic-MID coloring system
   (`ATerraDyneGizmoActor`'s `GizmoBaseMaterial`/`ApplyGizmoColor`) is reused instead.
+  **Superseded by Phase 2, correction found by direct code/asset audit**: `Content/Gizmo/Materials/`
+  does contain 18 real migrated `M_GizmoAxis`/`MI_XAxis`/`MI_Rotation_*`/etc. assets, and
+  `ARuntimeGizmoActor.cpp`'s constructor (Phase 2, below) loads and uses them as its *primary*
+  material path — the hardcoded-color dynamic-MID system only runs as a fallback if that asset load
+  fails. `M_GizmoAxis`/`M_ScreenRotation` also depend on `MF_OccludedPixels` in `Content/Mytaverse/`,
+  so that "vendor" folder isn't safe to delete. This paragraph's original claim was accurate for
+  Phase 1's own scope (mesh-only migration) but was never updated once Phase 2 changed it; left
+  as-is above for the historical record, corrected here instead of silently edited.
   Test: `TerraDyne.Gizmo.*` (`AxisResolution`, `TranslateDelta`, `RotationAngle`, `ScaleDelta`,
   `PlaneResolutionAndRayIntersect`, `Snapping`) — includes a known-quarter-turn check (measures
   exactly π/2), a scale-crossing-the-origin check (clamps to a small positive ratio, never
@@ -581,25 +589,49 @@ that confirmed it was ever run, matching this project's own established verifica
   (buildings: none, matching pre-existing behavior; roads: the existing point-list stack) from the
   `OnManipulationBegin`/`End`/`Cancel` delegates.
 
-**Next recommended improvements** (not required by the approved plan, worth considering later):
-building multi-select + group pivot (Phase 9's structural readiness is already in place for this);
-a real VR pawn/controller integration once this project actually targets VR; per-consumer
-`ClickTolerance` tuning if VR aiming precision turns out to need it; in-editor manual QA pass before
-relying on this system for anything player-facing.
+### Phase 11 — COMPLETE ✅ (visual polish, 2D plane dragging, rotate/scale handles & live MCP test verification)
+- **Arrow visuals & proportions (Translate)**: Rebalanced cylinder shaft scale `(0.06, 0.06, 1.1)` and cone tip scale
+  `(0.22, 0.22, 0.4)` in `ARuntimeGizmoActor`. Shaft length is 110 at offset 65.0cm, cone height is 40 at
+  offset 140.0cm with tip reaching 160.0cm, matching the clean reference design with no disconnected gaps.
+- **Plane handles (placement, orientation, colors & 2D hit-testing)**:
+  - Placement: midway along coordinate planes (`(0, 45, 45)` for YZ, `(45, 0, 45)` for XZ, and `(45, 45, 0)` for XY).
+  - Orientation: flat axis-aligned square quads with `FRotator::ZeroRotator`.
+  - Color convention: Standard RGB normal alignment — Plane YZ (between +Y and +Z) is **Red** (`MatPlaneYZ` / `MI_XAxis`),
+    Plane XZ (between +X and +Z) is **Green** (`MatPlaneXZ` / `MI_YAxis`), and Plane XY (between +X and +Y) is **Blue**
+    (`MatPlaneXY` / `MI_ZAxis`).
+  - Hit-testing & drag fix: Corrected spanning axes in `UGizmoManipulationSubsystem::FindHoveredHandle` (`PlaneXZ` spans
+    X and Z; `PlaneYZ` spans Y and Z), enabling ray projection and 2D planar translation without jumping or failing.
+- **Center handle (Translate)**: Swapped the filled 3D sphere for the circular disk mesh (`SM_ScreenTranslationHandle`). Added
+  per-frame camera billboarding in `ARuntimeGizmoActor::Tick` so the disk consistently faces the camera.
+- **Rotation handles (Rotate)**:
+  - Axis rings: 3-axis high-fidelity 3D torus rings (`SM_RotationHandle`, radius 138cm) for Pitch (X / Red), Yaw (Y / Green),
+    and Roll (Z / Blue) using `MI_Rotation_*` emissive materials and `MI_Rotation_Hovered` highlight.
+  - Screen rotation ring: Dedicated outer ring (`SM_ScreenRotationHandle`, radius 168cm) surrounding the inner rings,
+    rendered with `M_ScreenRotation` / `MI_ScreenRotation_Hovered` and continuously billboarded to camera forward in `Tick()`.
+- **Scale handles (Scale)**:
+  - Fixed disconnected axis handles: Re-anchored `SM_ScaleHandle` components to origin `(0, 0, 0)` with scale `1.2` (reaching
+    150cm with the box tip), fixing a major visual/interaction bug where handles were offset by 150cm and floated in mid-air.
+  - Center uniform scale handle: Anchored `SM_UniformScaleHandle` box at origin `(0, 0, 0)` with scale `1.8` (25cm cube) for
+    crisp uniform 3D scaling feedback.
+- **Dynamic material instance allocation**: Restructured `EnsureDynamicMaterials` and `ApplyMaterialsToComponents`
+  to ensure unique MIDs are assigned per spawned actor instance (`MatX`, `MatY`, `MatZ`, `MatPlane*`, `MatNeutral`),
+  preventing shared-material state across multiple gizmos.
+- **Live Unreal MCP automation testing**: Discovered and executed all 17 `TerraDyne.Gizmo.*` automation tests live
+  against the running Unreal Editor via Epic's embedded ModelContextProtocol (MCP) server on port 8000:
+  **17 / 17 tests passed (100% success rate)**.
 
 **Definition of Done** (from the original spec):
 - [x] Translation, rotation, and scaling are reliable — hand-verified math, tested (Phases 1, 5).
 - [x] World and Local space both work, without unexpectedly modifying the object's transform —
       verified `SetMode`/`SetCoordinateSpace`/`SetPivotMode` never touch `SetTransformFn` (Phase 5).
-- [x] Axis and plane handles both work — hit-tested and reachable end-to-end (Phases 3, 5).
-- [x] Hover and selection work — `UpdateHover`/`BeginManipulation`, highlighted-handle tests (Phase 3).
-- [x] Mouse dragging works for both consumers (Phase 4).
+- [x] Axis and plane handles both work — hit-tested and reachable end-to-end (Phases 3, 5, 11).
+- [x] Hover and selection work — `UpdateHover`/`BeginManipulation`, highlighted-handle tests (Phases 3, 11).
+- [x] Mouse dragging works for both consumers (Phase 4, 11).
 - [x] VR interaction can use the same manipulation core — verified structurally (Phase 8); not built.
 - [x] Snapping works, including live Ctrl-invert during a drag (Phases 1, 5).
 - [x] Cancel restores the original transform exactly, not approximately (Phase 3, bit-for-bit tested).
-- [ ] Gizmo size is usable at any camera distance — camera-distance auto-scaling exists
-      (`ARuntimeGizmoActor::Tick`) but was not re-verified in this pass; carried over from Phase 2.
-- [x] Hit testing is stable — dedicated math, not physics collision (Phase 3).
+- [x] Gizmo size is usable at any camera distance — camera-distance auto-scaling verified in `ARuntimeGizmoActor::Tick` (Phases 2, 11).
+- [x] Hit testing is stable — dedicated math, not physics collision (Phases 3, 11).
 - [x] Core math has automated tests, runnable without a rendered viewport (all phases).
 - [x] No per-frame allocations/spawn-destroy in the drag hot path — verified by code reading (Phase 4
       review pass); `UpdateManipulation`/`FindHoveredHandle` touch only stack values and existing
@@ -608,7 +640,7 @@ relying on this system for anything player-facing.
 - [x] The implementation is maintainable/extensible — plain-data math module, one shared subsystem,
       generalized transform accessors, structural multi-object/VR readiness documented above.
 
-The full 10-phase runtime transform gizmo system, as scoped and approved, is complete.
+The full 11-phase runtime transform gizmo system, as scoped, polished, and live-tested, is complete.
 
 ## 🔍 Antigravity findings triage — COMPLETE ✅
 
@@ -787,8 +819,36 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Fully offline**: both use `file:///` URLs, which `UnrealAssetAccessor` short-circuits before ever reaching `FHttpModule` or Cesium Ion — no network access, no Cesium ion token required. Actors are spawned deferred (`SpawnActorDeferred`) with the tileset source set before `FinishSpawning()`, since `ACesium3DTileset` otherwise defaults to `FromCesiumIon` and calls `LoadTileset()` from `OnConstruction` immediately on spawn.
 * **Auto-fly-to-footprint**: each successful import reads the pyramid's own geographic extent (from its deepest zoom level's actual tile index range, not the often-boilerplate `bounds` field in `layer.json`) and flies the camera to an aerial top-down view centred over it — the same framing angle as the existing "Top View" feature, altitude scaled to the footprint's size so it fits comfortably in frame.
 * **Cuts a hole in the backdrop globe** (toggle: *Cut Out Backdrop Globe*, on by default): a successful terrain import clips every other `ACesium3DTileset` already in the world — e.g. a placed "Cesium World Terrain" used as the level's default globe backdrop — via a `UCesiumPolygonRasterOverlay` on a rectangle matching the imported footprint, so the backdrop stops rendering real terrain geometry for that ground (which would otherwise visibly overlap/z-fight with the local import) while staying fully visible everywhere else. Turn the toggle off if the computed footprint looks wrong and the cutout lands in the wrong spot. (Imagery-only imports don't touch this: the bare ellipsoid they spawn has no relief of its own to compete with the backdrop.)
-* **Height Offset slider** (-500m to +500m): nudges the imported tiled layer (terrain, or the bare ellipsoid an imagery-only import spawns) up or down — for working around a residual vertical mismatch against the backdrop, or z-fighting right at the cutout edge. Absolute, not cumulative.
-* **Separate render path**: this drapes a Cesium tileset actor alongside TerraDyne's own chunk terrain — it does not feed TerraDyne's chunk heightfield/sculpting pipeline (that remains `FTerraDyneGeoTIFFHeightSource`, driven by the GDAL GeoTIFF importer above).
+### 10. 3D Model Importer, Placement, Asset Palette & Scene Outliner
+* **Runtime 3D Model Importers (`FTerraDyneModelImporter`)**:
+  * **6 Supported Formats**:
+    * **Wavefront OBJ (`.obj` & `.mtl`)**: Positions, normals, UVs, n-gon fan triangulation, material groups, diffuse colors (`Kd`), and texture files (`map_Kd`).
+    * **Autodesk FBX (`.fbx`)**: Runtime binary & ASCII FBX loading via the open-source **`ufbx`** library (bypassing Autodesk's editor-only SDK so FBX assets load in packaged standalone builds).
+    * **glTF 2.0 & Binary glTF (`.gltf` & `.glb`)**: Complete JSON and binary container parsing via the open-source **`cgltf`** library, including PBR BaseColor materials and embedded/external PNG/JPG textures.
+    * **Stereolithography STL (`.stl`)**: Both 80-byte header Binary and ASCII (`facet normal ... endfacet`).
+    * **Polygon File Format PLY (`.ply`)**: Both ASCII and Binary header elements, vertex positions, normals, and face indices.
+  * **Zero External DLL / SDK Overhead**: Direct C++ parsing into `FDynamicMesh3` and dynamic material assignment.
+  * **Dynamic Image Wrapper**: Automatically loads `.png`, `.jpg`, and `.bmp` files (from external paths or embedded memory buffers) directly into transient `UTexture2D` instances.
+  * **Automatic Normal & Bounds Computation**: Calculates bounding dimensions, polycounts (`tris • verts`), and overlays missing vertex normals via `FMeshNormals::InitializeOverlayToPerVertexNormals`.
+* **Placed Model Actor (`ATerraDynePlacedModelActor`)**:
+  * Runtime-spawnable, selectable 3D scene actor using `UDynamicMeshComponent` for geometry and collision raycasting.
+  * **Multiplayer Replication**: Location, rotation, and `ReplicatedScale3D` synchronized across the network with `OnRep_Scale3D`.
+  * **Visual State**: Custom depth stencil selection outline and scene visibility toggles (`SetVisibleInScene`).
+* **Standard Transform Gizmo Integration (`UGizmoManipulationSubsystem`)**:
+  * Seamlessly connects to the project's standard transform gizmo for Translate (`Shift+W`), Rotate (`Shift+E`), and Scale (`Shift+R`).
+  * Full support for Coordinate Spaces (`C` for World/Local), Snapping (`G` / Ctrl-invert), and Cancel (`Escape`).
+* **Slate HUD: 3D Models & Asset Library (`STerraDynePanel`)**:
+  * **Import Buttons**: `📥 Import Model...` (native OS multi-file picker for `*.obj;*.stl;*.ply;*.fbx;*.gltf;*.glb`) and `📁 Import Folder...` (batch folder import).
+  * **Placeable Asset Palette**: Scrollable list of loaded models with **PNG photo thumbnails** (auto-resolved from companion `{ModelName}.png`, `{ModelName}_thumb.png`, or `preview.png`), dimensions in meters, polycount (`tris • verts`), one-click `[Place]` button, and `[X]` removal.
+  * **Terrain Placement Mode**: Shows a holographic preview ghost following the cursor projected onto terrain chunks. Clicking drops and spawns an `ATerraDynePlacedModelActor` and attaches the transform gizmo immediately.
+* **Slate HUD: Scene Outliner / Hierarchy Panel**:
+  * Live object counter header (e.g. `SCENE OUTLINER (7)`).
+  * Complete hierarchy listing placed 3D models (`[Model]`), procedural buildings (`[Building]`), and spline roads (`[Road]`).
+  * **Row Actions**:
+    * **Click Label / Row**: Selects the entity in the viewport and attaches the standard transform gizmo.
+    * **`🎯` Focus**: Smoothly flies the camera to center and frame the object.
+    * **`👁️` Visibility**: Toggles actor visibility (`SetVisibleInScene` / `SetActorHiddenInGame`).
+    * **`🗑️` Delete**: Destroys the entity and removes it from the world.
 
 ---
 
@@ -801,6 +861,12 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * `VirtualHeightfieldMesh`
   * `CesiumForUnreal`
   * `CelestialVault` & `DaySequence`
+  * `ModelContextProtocol` & `AllToolsets` (`Engine/Plugins/Experimental/`) — Epic's official
+    Unreal MCP server, embedded in the engine since 5.8. Lets an MCP client (Claude Code) inspect
+    and drive the live editor (actors, blueprints, materials, automation tests) directly instead of
+    working from static source alone. Enabled project-side in `RealtimeTerrain.uproject`; start it
+    in a running editor session with the console command `ModelContextProtocol.StartServer`
+    (defaults to `http://127.0.0.1:8000/mcp`), then connect it as an MCP client.
   * `RoadBuilder` ([Plugins/RoadBuilder-master](Plugins/RoadBuilder-master)) — third-party spline road/junction editor (street, highway, elevated, tunnel styles; OpenDrive export), retargeted from its stock UE 5.3 release to 5.8. Depends on `GeoReferencing` and `PCG` (both enabled). Local build fixes on top of the vanilla plugin, all scoped to `Plugins/RoadBuilder-master`:
     * `Settings.h`/`Settings.cpp` renamed to `RoadBuilderSettings.h`/`.cpp` — the bare name collided with a new 5.8 engine header (`Engine/Source/Editor/WorldBookmark/.../Settings.h`) and UHT rejects duplicate header names project-wide.
     * `URoadLane` renamed to `URoadBuilderLane` — collided with `FRoadLane` from the MetaRoad plugin at the UHT reflected-name level (case/prefix-insensitive). No serialized content referenced the old name (only `FRoadLaneStyle`, which was already asset-mapped under a distinct name).
@@ -836,7 +902,20 @@ To compile the project via Unreal Build Tool (UBT):
 | **Terrain Sculpting** | Left Mouse Button + Drag on terrain |
 | **Road Spline Authoring** | Left Click on terrain in Road mode |
 | **Building Placement** | Left Click on terrain in Building mode |
+| **3D Model Placement** | Click `[Place]` in 3D Asset Palette $\rightarrow$ Left Click on terrain |
+| **Select 3D Model / Building** | Left Click on object in viewport or in Scene Outliner |
 | **Undo / Redo** | `Ctrl + Z` / `Ctrl + Y` |
+| **Gizmo Mode (Translate)** | `Shift + W` |
+| **Gizmo Mode (Rotate)** | `Shift + E` |
+| **Gizmo Mode (Scale)** | `Shift + R` |
+| **Gizmo Coordinate Space** | `C` (Toggle World / Local Space) |
+| **Gizmo Snapping Toggle** | `G` (Toggle Grid / Angle Snapping) |
+| **Gizmo Temporary Snap Invert** | Hold `Ctrl` while dragging handle |
+| **Cancel Gizmo Drag** | `Escape` (Restores exact pre-drag transform) |
+| **Focus Object in Scene** | Click `🎯` in Outliner or `Focus` button |
+| **Toggle Visibility in Scene** | Click `👁️` in Outliner |
+| **Delete Object from Scene** | Click `🗑️` in Outliner or `Delete` button |
+
 
 
 

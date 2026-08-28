@@ -38,6 +38,17 @@ void URealtimeRoadBuilderComponent::TickComponent(
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	// Fail-safe: if the left mouse button is no longer held down, ensure any active drag is terminated immediately
+	// (prevents the gizmo/point from getting stuck to the cursor if Slate or a UI element consumed the mouse release event).
+	if (bIsDraggingPoint)
+	{
+		const APlayerController* Controller = GetOwningPlayerController();
+		if (Controller && !Controller->IsInputKeyDown(EKeys::LeftMouseButton))
+		{
+			EndPointDrag();
+		}
+	}
+
 	if (bIsDraggingPoint && SelectedRoadActor.IsValid() && SelectedPointIndex != INDEX_NONE)
 	{
 		if (bIsGizmoDrag)

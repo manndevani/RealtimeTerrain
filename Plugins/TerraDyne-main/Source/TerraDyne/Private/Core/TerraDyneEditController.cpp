@@ -4,7 +4,9 @@
 #include "Core/TerraDyneSubsystem.h"
 #include "World/TerraDyneChunk.h"
 #include "Building/TerraDyneBuildingActor.h"
+#include "Building/TerraDynePlacedModelActor.h"
 #include "Building/TerraDyneGizmoActor.h"
+#include "Core/TerraDyneAssetLibrarySubsystem.h"
 #include "Gizmo/GizmoManipulationSubsystem.h"
 #include "Gizmo/RuntimeGizmoActor.h"
 #include "Components/SplineComponent.h"
@@ -117,6 +119,11 @@ void ATerraDyneEditController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		HolographicGhostBuilding->Destroy();
 		HolographicGhostBuilding = nullptr;
+	}
+	if (HolographicGhostModel && !HolographicGhostModel->IsActorBeingDestroyed())
+	{
+		HolographicGhostModel->Destroy();
+		HolographicGhostModel = nullptr;
 	}
 	if (ActiveMoveGizmo && !ActiveMoveGizmo->IsActorBeingDestroyed())
 	{
@@ -321,7 +328,34 @@ void ATerraDyneEditController::OnLeftClickStart()
 		}
 	}
 
-	if (ToolUI && (IsBuildingToolMode(ToolUI->CurrentTool) || IsRoadToolMode(ToolUI->CurrentTool)))
+	if (ToolUI && ToolUI->SelectedModelActor.IsValid())
+	{
+		if (GizmoSubsystem)
+		{
+			FGizmoInteractionRay Ray;
+			if (BuildGizmoInteractionRay(Ray))
+			{
+				if (GizmoSubsystem->BeginManipulation(Ray, GetCameraForwardVector()) != EGizmoHandleType::None)
+				{
+					bIsGizmoAxisDrag = true;
+					return;
+				}
+			}
+		}
+	}
+
+	// Check if user clicked on a placed model actor to select it
+	FHitResult Hit;
+	if (TraceUnderCursor(Hit) && Hit.bBlockingHit)
+	{
+		if (ATerraDynePlacedModelActor* HitModel = Cast<ATerraDynePlacedModelActor>(Hit.GetActor()))
+		{
+			SelectModelActor(HitModel);
+			return;
+		}
+	}
+
+	if (ToolUI && (IsBuildingToolMode(ToolUI->CurrentTool) || IsRoadToolMode(ToolUI->CurrentTool) || IsModelToolMode(ToolUI->CurrentTool)))
 	{
 		// Deliberately does NOT set bIsClicking: that flag is what makes Tick keep re-applying the
 		// action, which is right for a brush and wrong for placing an actor.
@@ -332,6 +366,10 @@ void ATerraDyneEditController::OnLeftClickStart()
 		else if (IsRoadToolMode(ToolUI->CurrentTool))
 		{
 			HandleRoadClick();
+		}
+		else if (IsModelToolMode(ToolUI->CurrentTool))
+		{
+			HandleModelClick();
 		}
 		return;
 	}
@@ -540,6 +578,10 @@ void ATerraDyneEditController::OnLeftClickStop()
 		{
 			RequestMoveBuilding(ToolUI->SelectedBuilding.Get(), ToolUI->SelectedBuilding->GetActorTransform());
 		}
+		else if (ToolUI && ToolUI->SelectedModelActor.IsValid())
+		{
+			RequestMoveModel(ToolUI->SelectedModelActor.Get(), ToolUI->SelectedModelActor->GetActorTransform());
+		}
 		return;
 	}
 
@@ -730,6 +772,13 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 	TimeSinceLastPadUpdate += DeltaTime;
 
+	// Fail-safe: if the left mouse button is no longer down, terminate any active gizmo/vertex/stroke drag
+	// so the actor or gizmo never gets stuck to the mouse if a release event was consumed by UI or missed.
+	if ((bIsGizmoAxisDrag || DraggingSplinePointIndex != INDEX_NONE || bIsClicking) && !IsInputKeyDown(EKeys::LeftMouseButton))
+	{
+		OnLeftClickStop();
+	}
+
 	// 1. Handle spline point vertex drag
 	if (DraggingSplinePointIndex != INDEX_NONE)
 	{
@@ -772,13 +821,30 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 				const bool bInvertSnap = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
 				GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector(), bInvertSnap);
 
+				const EGizmoHandleType ActiveHandle = GizmoSubsystem->GetActiveHandle();
+				const bool bIsVerticalOrNonPlanar = (ActiveHandle == EGizmoHandleType::TranslateZ ||
+					ActiveHandle == EGizmoHandleType::Center ||
+					ActiveHandle == EGizmoHandleType::ScaleZ ||
+					ActiveHandle == EGizmoHandleType::ScaleUniform ||
+					ActiveHandle == EGizmoHandleType::RotateX ||
+					ActiveHandle == EGizmoHandleType::RotateY);
+
+				if (bIsVerticalOrNonPlanar)
+				{
+					ToolUI->SelectedBuilding->bAutoPadHeight = false;
+				}
+
 				ToolUI->SelectedBuilding->PadTargetWorldZ = ToolUI->SelectedBuilding->GetActorLocation().Z;
 
 				// Throttled terrain pad update during continuous drag (~20Hz)
 				if (TimeSinceLastPadUpdate >= 0.05f)
 				{
 					TimeSinceLastPadUpdate = 0.0f;
-					ToolUI->SelectedBuilding->SnapToPadHeight();
+
+					if (!bIsVerticalOrNonPlanar && ToolUI->SelectedBuilding->bAutoPadHeight)
+					{
+						ToolUI->SelectedBuilding->SnapToPadHeight();
+					}
 					ToolUI->SelectedBuilding->NotifyBuildingChanged();
 				}
 
@@ -787,6 +853,15 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 					ActiveMoveGizmo->SetActorLocation(ToolUI->SelectedBuilding->GetActorLocation());
 					ActiveMoveGizmo->UpdateSplinePointHandles(ToolUI->SelectedBuilding->GatherSplinePointsLocal(), ToolUI->SelectedBuilding->GetActorTransform());
 				}
+			}
+		}
+		else if (ToolUI && ToolUI->SelectedModelActor.IsValid() && GizmoSubsystem)
+		{
+			FGizmoInteractionRay Ray;
+			if (BuildGizmoInteractionRay(Ray))
+			{
+				const bool bInvertSnap = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+				GizmoSubsystem->UpdateManipulation(Ray, GetCameraForwardVector(), bInvertSnap);
 			}
 		}
 	}
@@ -801,6 +876,7 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 	}
 
 	UpdateHolographicPreview();
+	UpdateHolographicModelPreview();
 
 	if (PendingChunkSyncs.Num() == 0)
 	{
@@ -880,10 +956,17 @@ void ATerraDyneEditController::UpdateMoveGizmo()
 			ActiveMoveGizmo->UpdateSplinePointHandles(Selected->GatherSplinePointsLocal(), Selected->GetActorTransform());
 		}
 
-		if (GizmoSubsystem && GizmoBoundBuilding.Get() != Selected)
+		if (GizmoSubsystem)
 		{
-			GizmoSubsystem->SetTarget(Selected->GetRootComponent());
-			GizmoBoundBuilding = Selected;
+			if (GizmoBoundBuilding.Get() != Selected)
+			{
+				GizmoSubsystem->SetTarget(Selected->GetRootComponent());
+				GizmoBoundBuilding = Selected;
+			}
+			else
+			{
+				GizmoSubsystem->UpdateGizmoTransform();
+			}
 		}
 
 		if (!bIsGizmoAxisDrag && DraggingSplinePointIndex == INDEX_NONE)
@@ -921,6 +1004,47 @@ void ATerraDyneEditController::UpdateMoveGizmo()
 			}
 		}
 	}
+	else if (ATerraDynePlacedModelActor* SelectedModel = ToolUI ? ToolUI->SelectedModelActor.Get() : nullptr)
+	{
+		if (ActiveMoveGizmo)
+		{
+			ActiveMoveGizmo->SetActorHiddenInGame(true);
+			ActiveMoveGizmo->SetHighlightedSplinePoint(INDEX_NONE);
+		}
+
+		if (GizmoSubsystem)
+		{
+			if (GizmoBoundModel.Get() != SelectedModel)
+			{
+				GizmoSubsystem->SetTarget(SelectedModel->GetRootComponent());
+				GizmoBoundModel = SelectedModel;
+				GizmoBoundBuilding = nullptr;
+			}
+			else
+			{
+				GizmoSubsystem->UpdateGizmoTransform();
+			}
+		}
+
+		if (!bIsGizmoAxisDrag)
+		{
+			float MouseX = 0.0f, MouseY = 0.0f;
+			GetMousePosition(MouseX, MouseY);
+			const FVector2D CurrentMousePos(MouseX, MouseY);
+			if (FVector2D::DistSquared(CurrentMousePos, LastMousePosition) > 1.0f)
+			{
+				LastMousePosition = CurrentMousePos;
+				if (GizmoSubsystem)
+				{
+					FGizmoInteractionRay Ray;
+					if (BuildGizmoInteractionRay(Ray))
+					{
+						GizmoSubsystem->UpdateHover(Ray, GetCameraForwardVector());
+					}
+				}
+			}
+		}
+	}
 	else
 	{
 		if (ActiveMoveGizmo)
@@ -932,6 +1056,11 @@ void ATerraDyneEditController::UpdateMoveGizmo()
 		{
 			GizmoSubsystem->ClearTarget();
 			GizmoBoundBuilding = nullptr;
+		}
+		if (GizmoSubsystem && GizmoBoundModel.IsValid())
+		{
+			GizmoSubsystem->ClearTarget();
+			GizmoBoundModel = nullptr;
 		}
 	}
 }
@@ -1187,7 +1316,11 @@ void ATerraDyneEditController::RequestMoveBuilding(ATerraDyneBuildingActor* Buil
 	if (HasAuthority())
 	{
 		Building->SetActorTransform(NewTransform);
-		Building->SnapToPadHeight();
+		Building->PadTargetWorldZ = NewTransform.GetLocation().Z;
+		if (Building->bAutoPadHeight)
+		{
+			Building->SnapToPadHeight();
+		}
 		Building->NotifyBuildingChanged();
 	}
 	else
@@ -1610,4 +1743,234 @@ void ATerraDyneEditController::Server_StartSandboxMode_Implementation()
 	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
 
 	RequestStartSandboxMode();
+}
+
+void ATerraDyneEditController::UpdateHolographicModelPreview()
+{
+	if (!IsLocalController() || !IsInstructor())
+	{
+		if (HolographicGhostModel)
+		{
+			HolographicGhostModel->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (!ToolUI || ToolUI->CurrentTool != ETerraDyneToolMode::PlaceModel)
+	{
+		if (HolographicGhostModel)
+		{
+			HolographicGhostModel->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+
+	UTerraDyneAssetLibrarySubsystem* AssetLib = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneAssetLibrarySubsystem>() : nullptr;
+	if (!AssetLib) return;
+
+	const FGuid SelectedAssetId = AssetLib->GetSelectedPlacementAsset();
+	const FTerraDyneImportedModelAsset* Asset = AssetLib->FindAsset(SelectedAssetId);
+	if (!Asset)
+	{
+		if (HolographicGhostModel)
+		{
+			HolographicGhostModel->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+
+	FHitResult Hit;
+	if (!TraceUnderCursor(Hit) || !Hit.bBlockingHit)
+	{
+		if (HolographicGhostModel)
+		{
+			HolographicGhostModel->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+
+	if (!HolographicGhostModel)
+	{
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		SpawnParams.ObjectFlags |= RF_Transient;
+		HolographicGhostModel = GetWorld()->SpawnActor<ATerraDynePlacedModelActor>(
+			ATerraDynePlacedModelActor::StaticClass(),
+			FTransform(Hit.Location),
+			SpawnParams);
+		if (HolographicGhostModel)
+		{
+			HolographicGhostModel->SetActorEnableCollision(false);
+		}
+	}
+
+	if (HolographicGhostModel)
+	{
+		HolographicGhostModel->SetActorHiddenInGame(false);
+		if (HolographicGhostModel->AssetId != Asset->AssetId)
+		{
+			HolographicGhostModel->SetModelAsset(*Asset);
+		}
+		HolographicGhostModel->SetActorLocation(Hit.Location);
+	}
+}
+
+void ATerraDyneEditController::HandleModelClick()
+{
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (!ToolUI) return;
+
+	FHitResult Hit;
+	if (!TraceUnderCursor(Hit) || !Hit.bBlockingHit) return;
+
+	if (ToolUI->CurrentTool != ETerraDyneToolMode::PlaceModel)
+	{
+		return;
+	}
+
+	UTerraDyneAssetLibrarySubsystem* AssetLib = GetWorld() ? GetWorld()->GetSubsystem<UTerraDyneAssetLibrarySubsystem>() : nullptr;
+	if (!AssetLib) return;
+
+	const FGuid AssetId = AssetLib->GetSelectedPlacementAsset();
+	if (!AssetId.IsValid()) return;
+
+	RequestPlaceModel(AssetId, FTransform(Hit.Location));
+}
+
+void ATerraDyneEditController::SelectModelActor(ATerraDynePlacedModelActor* ModelActor)
+{
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (ToolUI)
+	{
+		if (ToolUI->SelectedModelActor.IsValid() && ToolUI->SelectedModelActor.Get() != ModelActor)
+		{
+			ToolUI->SelectedModelActor->SetSelectionState(false);
+		}
+		ToolUI->SelectedModelActor = ModelActor;
+		if (ToolUI->SelectedBuilding.IsValid())
+		{
+			ToolUI->SelectedBuilding = nullptr;
+		}
+	}
+
+	if (ModelActor)
+	{
+		ModelActor->SetSelectionState(true);
+		if (GizmoSubsystem)
+		{
+			GizmoSubsystem->SetTarget(ModelActor->GetRootComponent());
+			GizmoBoundModel = ModelActor;
+			GizmoBoundBuilding = nullptr;
+		}
+	}
+	else
+	{
+		if (GizmoSubsystem && GizmoBoundModel.IsValid())
+		{
+			GizmoSubsystem->ClearTarget();
+			GizmoBoundModel = nullptr;
+		}
+	}
+}
+
+void ATerraDyneEditController::ClearModelSelection()
+{
+	UTerraDyneToolWidget* ToolUI = GetToolWidget();
+	if (ToolUI && ToolUI->SelectedModelActor.IsValid())
+	{
+		ToolUI->SelectedModelActor->SetSelectionState(false);
+		ToolUI->SelectedModelActor = nullptr;
+	}
+	if (GizmoSubsystem && GizmoBoundModel.IsValid())
+	{
+		GizmoSubsystem->ClearTarget();
+		GizmoBoundModel = nullptr;
+	}
+}
+
+void ATerraDyneEditController::RequestPlaceModel(const FGuid& AssetId, const FTransform& WorldTransform)
+{
+	if (!AssetId.IsValid()) return;
+
+	if (HasAuthority())
+	{
+		if (UWorld* World = GetWorld())
+		{
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ATerraDynePlacedModelActor* NewModel = World->SpawnActor<ATerraDynePlacedModelActor>(
+				ATerraDynePlacedModelActor::StaticClass(),
+				WorldTransform,
+				SpawnParams);
+
+			if (NewModel)
+			{
+				if (UTerraDyneAssetLibrarySubsystem* AssetLib = World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>())
+				{
+					if (const FTerraDyneImportedModelAsset* Asset = AssetLib->FindAsset(AssetId))
+					{
+						NewModel->SetModelAsset(*Asset);
+					}
+				}
+				SelectModelActor(NewModel);
+			}
+		}
+	}
+	else
+	{
+		Server_PlaceModel(AssetId, WorldTransform);
+	}
+}
+
+void ATerraDyneEditController::Server_PlaceModel_Implementation(FGuid AssetId, FTransform WorldTransform)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+	RequestPlaceModel(AssetId, WorldTransform);
+}
+
+void ATerraDyneEditController::RequestMoveModel(ATerraDynePlacedModelActor* ModelActor, const FTransform& NewTransform)
+{
+	if (!ModelActor) return;
+	if (HasAuthority())
+	{
+		ModelActor->SetActorTransform(NewTransform);
+		ModelActor->NotifyScaleChanged();
+	}
+	else
+	{
+		Server_MoveModel(ModelActor, NewTransform);
+	}
+}
+
+void ATerraDyneEditController::Server_MoveModel_Implementation(ATerraDynePlacedModelActor* ModelActor, FTransform NewTransform)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+	RequestMoveModel(ModelActor, NewTransform);
+}
+
+void ATerraDyneEditController::RequestDeleteModel(ATerraDynePlacedModelActor* ModelActor)
+{
+	if (!ModelActor) return;
+	if (HasAuthority())
+	{
+		if (UTerraDyneToolWidget* ToolUI = GetToolWidget())
+		{
+			if (ToolUI->SelectedModelActor.Get() == ModelActor)
+			{
+				ClearModelSelection();
+			}
+		}
+		ModelActor->Destroy();
+	}
+	else
+	{
+		Server_DeleteModel(ModelActor);
+	}
+}
+
+void ATerraDyneEditController::Server_DeleteModel_Implementation(ATerraDynePlacedModelActor* ModelActor)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+	RequestDeleteModel(ModelActor);
 }

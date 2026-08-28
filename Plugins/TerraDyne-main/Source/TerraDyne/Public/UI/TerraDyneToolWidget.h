@@ -23,6 +23,9 @@ enum class ETerraDyneToolMode : uint8
 	/** Clicks select a building instead of sculpting. */
 	SelectBuilding,
 
+	/** Next terrain click drops an imported 3D model. */
+	PlaceModel,
+
 	/** Draw interactive realtime paved road */
 	DrawPavedRoad,
 	/** Draw interactive realtime rough dirt trail */
@@ -40,6 +43,11 @@ enum class ETerraDyneToolMode : uint8
 inline bool IsBuildingToolMode(ETerraDyneToolMode Mode)
 {
 	return Mode == ETerraDyneToolMode::PlaceBuilding || Mode == ETerraDyneToolMode::SelectBuilding;
+}
+
+inline bool IsModelToolMode(ETerraDyneToolMode Mode)
+{
+	return Mode == ETerraDyneToolMode::PlaceModel;
 }
 
 inline bool IsRoadToolMode(ETerraDyneToolMode Mode)
@@ -73,7 +81,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|State")
 	float BrushFalloff = 0.5f;
 
-	//--- Buildings ---
+	//--- Buildings & Models ---
 
 	/**
 	 * Building the panel is currently editing. Weak, so a building destroyed by any route (delete
@@ -81,6 +89,9 @@ public:
 	 * leaving the panel driving a dangling pointer.
 	 */
 	TWeakObjectPtr<class ATerraDyneBuildingActor> SelectedBuilding;
+
+	/** Placed 3D model actor currently selected in editor/outliner. */
+	TWeakObjectPtr<class ATerraDynePlacedModelActor> SelectedModelActor;
 
 	/** Floor count given to the next building placed. Carried over from the last one edited. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|Buildings", meta = (ClampMin = "1"))

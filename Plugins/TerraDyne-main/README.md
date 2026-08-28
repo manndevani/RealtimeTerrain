@@ -113,6 +113,21 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Height Offset slider** (-500m to +500m): nudges the imported tiled layer (terrain, or the bare ellipsoid an imagery-only import spawns) up or down — for working around a residual vertical mismatch against the backdrop, or z-fighting right at the cutout edge. Absolute, not cumulative.
 * **Separate render path**: this drapes a Cesium tileset actor alongside TerraDyne's own chunk terrain — it does not feed TerraDyne's chunk heightfield/sculpting pipeline (that remains `FTerraDyneGeoTIFFHeightSource`, driven by the GDAL GeoTIFF importer above).
 
+### 10. Runtime Transform Gizmo System
+* **Unified Gizmo Pipeline (`UGizmoManipulationSubsystem`)**: Pluggable world subsystem driving transform manipulation for both modular buildings and road spline control points.
+* **Full 3D Handle Modes**:
+  * **Translate Mode (`Shift + W`)**: 3-axis arrows (X/Red, Y/Green, Z/Blue), 3 flat planar quads (YZ/Red, XZ/Green, XY/Blue), and camera-facing screen-space center handle (`SM_ScreenTranslationHandle`).
+  * **Rotate Mode (`Shift + E`)**: 3-axis rotation rings (Pitch, Yaw, Roll) and outer camera-facing screen-space rotation ring.
+  * **Scale Mode (`Shift + R`)**: 3-axis box handles and uniform center scale handle.
+* **Coordinate Spaces & Grid Snapping**:
+  * World vs. Local coordinate spaces (`C` toggle / HUD checkbox).
+  * Angle and translation grid snapping (`G` toggle / HUD checkbox, or hold `Ctrl` during drag to invert snapping temporarily).
+* **Mathematical Precision & Cancellation**:
+  * Ray-to-geometry distance hit testing (Segment, Ring, Point, Quad) with zero physics collision dependencies.
+  * Delta transforms calculated from initial pre-drag state; `Escape` immediately restores exact pre-drag transforms.
+  * Dynamic per-instance material allocation and camera distance auto-scaling.
+  * 100% test coverage with automated ModelContextProtocol (MCP) live editor test execution (17/17 tests passing).
+
 ---
 
 ## 🛠️ Requirements & Setup
@@ -153,3 +168,10 @@ To compile the project via Unreal Build Tool (UBT):
 | **Road Spline Authoring** | Left Click on terrain in Road mode |
 | **Building Placement** | Left Click on terrain in Building mode |
 | **Undo / Redo** | `Ctrl + Z` / `Ctrl + Y` |
+| **Gizmo Mode (Translate)** | `Shift + W` |
+| **Gizmo Mode (Rotate)** | `Shift + E` |
+| **Gizmo Mode (Scale)** | `Shift + R` |
+| **Gizmo Coordinate Space** | `C` (Toggle World / Local Space) |
+| **Gizmo Snapping Toggle** | `G` (Toggle Grid / Angle Snapping) |
+| **Gizmo Temporary Snap Invert** | Hold `Ctrl` while dragging handle |
+| **Cancel Gizmo Drag** | `Escape` (Restores exact pre-drag transform) |

@@ -128,6 +128,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Building")
 	void RequestDeleteBuilding(class ATerraDyneBuildingActor* Building);
 
+	//--- Placed 3D Model Requests ---
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Model")
+	void RequestPlaceModel(const FGuid& AssetId, const FTransform& WorldTransform);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Model")
+	void RequestMoveModel(class ATerraDynePlacedModelActor* ModelActor, const FTransform& NewTransform);
+
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Model")
+	void RequestDeleteModel(class ATerraDynePlacedModelActor* ModelActor);
+
+	void SelectModelActor(class ATerraDynePlacedModelActor* ModelActor);
+	void ClearModelSelection();
+
 	//--- Population Requests ---
 	void RequestHarvestPopulation(const FGuid& PopulationId);
 	void RequestSetPopulationDestroyed(const FGuid& PopulationId, bool bDestroyed);
@@ -154,22 +167,20 @@ private:
 	TObjectPtr<class ATerraDyneBuildingActor> HolographicGhostBuilding;
 
 	UPROPERTY(Transient)
+	TObjectPtr<class ATerraDynePlacedModelActor> HolographicGhostModel;
+
+	UPROPERTY(Transient)
 	TObjectPtr<class ATerraDyneGizmoActor> ActiveMoveGizmo;
 
 	/** Lazily fetched the first time UpdateMoveGizmo runs -- see RealtimeRoadBuilderComponent's identical pattern. */
 	UPROPERTY(Transient)
 	TObjectPtr<UGizmoManipulationSubsystem> GizmoSubsystem;
 
-	/**
-	 * Which building (if any) this controller currently owns the shared subsystem's target for.
-	 * The subsystem is shared with URealtimeRoadBuilderComponent -- clearing its target whenever
-	 * this controller merely has no building selected would rip away a road tool's point gizmo
-	 * the instant a road tool mode ticks this controller too. Only ever touch ClearTarget/SetTarget
-	 * here when this is the consumer that actually set it, mirroring GizmoBoundRoad's guard.
-	 */
 	TWeakObjectPtr<class ATerraDyneBuildingActor> GizmoBoundBuilding;
+	TWeakObjectPtr<class ATerraDynePlacedModelActor> GizmoBoundModel;
 
 	void UpdateHolographicPreview();
+	void UpdateHolographicModelPreview();
 	void UpdateMoveGizmo();
 	bool TraceSplinePointUnderCursor(int32& OutPointIndex, FVector& OutHitPoint) const;
 	bool IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const;
@@ -227,6 +238,7 @@ private:
 	 * route. Replicating placed buildings out to other machines is phase 6.
 	 */
 	void HandleBuildingClick();
+	void HandleModelClick();
 
 public:
 	/**
@@ -326,6 +338,15 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_DeleteBuilding(class ATerraDyneBuildingActor* Building);
+
+	UFUNCTION(Server, Reliable)
+	void Server_PlaceModel(FGuid AssetId, FTransform WorldTransform);
+
+	UFUNCTION(Server, Reliable)
+	void Server_MoveModel(class ATerraDynePlacedModelActor* ModelActor, FTransform NewTransform);
+
+	UFUNCTION(Server, Reliable)
+	void Server_DeleteModel(class ATerraDynePlacedModelActor* ModelActor);
 
 	UFUNCTION(Server, Reliable)
 	void Server_HarvestPopulation(FGuid PopulationId);

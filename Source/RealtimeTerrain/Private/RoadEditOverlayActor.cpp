@@ -77,7 +77,7 @@ ARoadEditOverlayActor::ARoadEditOverlayActor()
 	// the route line render through roads, terrain and walls. Falls back to the normal material
 	// when the asset is missing so nothing breaks before it is created.
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(
-		TEXT("/Game/Materials/M_OverlayForeground.M_OverlayForeground"));
+		TEXT("/Game/Mytaverse/TransformGizmo/Materials/M_GizmoAxis.M_GizmoAxis"));
 	OverlayForegroundMaterial = ForegroundMatFinder.Object
 		? ForegroundMatFinder.Object
 		: OverlayBaseMaterial;

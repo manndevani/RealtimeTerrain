@@ -109,8 +109,21 @@ private:
 	TObjectPtr<UMaterialInterface> GizmoBaseMaterial;
 
 	void EnsureDynamicMaterials();
+	void ApplyMaterialsToComponents();
 	static void ApplyGizmoColor(UMaterialInstanceDynamic* DMI, const FLinearColor& InColor);
 	void BuildHandleTypeMap();
+
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstX;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstY;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstZ;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstNeutral;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstHovered;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstRotX;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstRotY;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstRotZ;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstRotHovered;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstScreenRot;
+	UPROPERTY() TObjectPtr<UMaterialInterface> MatInstScreenRotHovered;
 
 	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> MatX;
 	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> MatY;

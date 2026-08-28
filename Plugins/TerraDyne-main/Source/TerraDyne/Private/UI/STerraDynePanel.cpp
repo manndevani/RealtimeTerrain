@@ -8,11 +8,16 @@
 #include "IO/TerraDyneArchiveHelper.h"
 #include "IO/TerraDyneRasterLayers.h"
 #include "Building/TerraDyneBuildingActor.h"
+#include "Building/TerraDynePlacedModelActor.h"
+#include "Core/TerraDyneAssetLibrarySubsystem.h"
+#include "IO/TerraDyneModelImporter.h"
 #include "Gizmo/GizmoManipulationSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Images/SImage.h"
+#include "Brushes/SlateImageBrush.h"
 #include "Misc/Paths.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/PlatformFileManager.h"
@@ -751,6 +756,77 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			]
 		];
 
+	// 5b. Content for 3D MODELS & ASSET LIBRARY section
+	TSharedRef<SWidget> ModelsContent = SNew(SVerticalBox)
+		// Import Buttons
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnImport3DModel", "📥 Import Model..."))
+				.ToolTipText(LOCTEXT("BtnImport3DModelTip", "Import 3D model (.obj, .stl, .ply) into the placeable asset library"))
+				.OnClicked(this, &STerraDynePanel::OnImport3DModelClicked)
+				.HAlign(HAlign_Center)
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnImport3DFolder", "📁 Import Folder..."))
+				.ToolTipText(LOCTEXT("BtnImport3DFolderTip", "Batch import all 3D models (.obj, .stl, .ply) from a folder"))
+				.OnClicked(this, &STerraDynePanel::OnImport3DFolderClicked)
+				.HAlign(HAlign_Center)
+			]
+		]
+		// Asset Palette Subheader
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 2)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ModelPaletteHeader", "PLACEABLE 3D ASSETS"))
+			.Font(MicroFont)
+			.ColorAndOpacity(HudDim)
+		]
+		// Dynamic Model Asset List Box
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SAssignNew(ModelAssetListBox, SVerticalBox)
+		];
+
+	// 5c. Content for SCENE OUTLINER section
+	TSharedRef<SWidget> OutlinerContent = SNew(SVerticalBox)
+		// Header row with live counter and refresh
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(this, &STerraDynePanel::GetOutlinerHeaderCountText)
+				.Font(MicroFont)
+				.ColorAndOpacity(HudDim)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().Padding(1)
+			[
+				SNew(SButton)
+				.ButtonStyle(&HudButtonStyle)
+				.Text(LOCTEXT("BtnRefreshOutliner", "🔄 Refresh"))
+				.OnClicked_Lambda([this]()
+				{
+					RefreshOutlinerList();
+					return FReply::Handled();
+				})
+				.HAlign(HAlign_Center)
+			]
+		]
+		// Dynamic Outliner List Box
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+		[
+			SAssignNew(OutlinerListBox, SVerticalBox)
+		];
+
 	// 6. Content for TILED CESIUM IMPORT section -- displays local Cesium quantized-mesh
 	// terrain and XYZ imagery pyramids alongside TerraDyne's own chunk terrain, entirely
 	// offline (file:/// URLs, no ion). Folder-picked each time, never a typed-in path.
@@ -949,6 +1025,18 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 							MakeCollapsibleSection(LOCTEXT("SecBuildings", "BUILDINGS"), bSectionBuildingsOpen, BuildingsContent, SectionHeaderFont)
 						]
 
+						// 5b. 3D MODELS & ASSETS SECTION
+						+ SScrollBox::Slot().Padding(0, 1)
+						[
+							MakeCollapsibleSection(LOCTEXT("SecModels", "3D MODELS & ASSETS"), bSectionModelsOpen, ModelsContent, SectionHeaderFont)
+						]
+
+						// 5c. SCENE OUTLINER SECTION
+						+ SScrollBox::Slot().Padding(0, 1)
+						[
+							MakeCollapsibleSection(LOCTEXT("SecOutliner", "SCENE OUTLINER"), bSectionOutlinerOpen, OutlinerContent, SectionHeaderFont)
+						]
+
 						// 6. TILED CESIUM IMPORT SECTION -- DEM worlds only, same gate as GEOTIFF / RASTER LAYERS
 						+ SScrollBox::Slot().Padding(0, 1)
 						[
@@ -979,6 +1067,13 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 	];
 
 	RefreshDynamicLayersList();
+	RefreshModelAssetList();
+	RefreshOutlinerList();
+
+	if (UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem())
+	{
+		AssetLib->OnAssetLibraryChanged.AddSP(this, &STerraDynePanel::RefreshModelAssetList);
+	}
 }
 
 TSharedRef<SWidget> STerraDynePanel::MakeCollapsibleSection(
@@ -2948,6 +3043,613 @@ FText STerraDynePanel::GetRoadStatusText() const
 		}
 	}
 	return LOCTEXT("RoadStatusIdle", "Select a road tool above to begin.");
+}
+
+// -----------------------------------------------------------------------------
+// 3D Models & Asset Library Implementation
+// -----------------------------------------------------------------------------
+UTerraDyneAssetLibrarySubsystem* STerraDynePanel::GetAssetLibrarySubsystem() const
+{
+	if (OwnerWidget.IsValid())
+	{
+		if (UWorld* World = OwnerWidget->GetWorld())
+		{
+			return World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+		}
+	}
+	if (ATerraDyneManager* Mgr = GetManager())
+	{
+		if (UWorld* World = Mgr->GetWorld())
+		{
+			return World->GetSubsystem<UTerraDyneAssetLibrarySubsystem>();
+		}
+	}
+	return nullptr;
+}
+
+FReply STerraDynePanel::OnImport3DModelClicked()
+{
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		const void* ParentWindowWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			ParentWindowWindowHandle,
+			TEXT("Import 3D Model"),
+			FPaths::ProjectDir(),
+			TEXT(""),
+			FTerraDyneModelImporter::GetSupportedFileFilter(),
+			EFileDialogFlags::Multiple,
+			OutFiles
+		);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			if (UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem())
+			{
+				for (const FString& FilePath : OutFiles)
+				{
+					FString OutError;
+					AssetLib->ImportModelFromFile(FilePath, OutError);
+				}
+				RefreshModelAssetList();
+				RefreshOutlinerList();
+			}
+		}
+	}
+#endif
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnImport3DFolderClicked()
+{
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		const void* ParentWindowWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+		FString OutFolder;
+		const bool bPicked = DesktopPlatform->OpenDirectoryDialog(
+			ParentWindowWindowHandle,
+			TEXT("Import 3D Models Folder"),
+			FPaths::ProjectDir(),
+			OutFolder
+		);
+
+		if (bPicked && !OutFolder.IsEmpty())
+		{
+			if (UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem())
+			{
+				AssetLib->ImportDirectory(OutFolder);
+				RefreshModelAssetList();
+				RefreshOutlinerList();
+			}
+		}
+	}
+#endif
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnPlaceModelClicked(FGuid AssetId)
+{
+	if (UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem())
+	{
+		AssetLib->SetSelectedPlacementAsset(AssetId);
+	}
+	SetToolMode(ETerraDyneToolMode::PlaceModel);
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnRemoveModelAssetClicked(FGuid AssetId)
+{
+	if (UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem())
+	{
+		AssetLib->RemoveAsset(AssetId);
+		RefreshModelAssetList();
+		RefreshOutlinerList();
+	}
+	return FReply::Handled();
+}
+
+TSharedRef<SWidget> STerraDynePanel::MakeModelAssetTile(
+	const FTerraDyneImportedModelAsset& Asset,
+	const FSlateFontInfo& LabelFont,
+	const FSlateFontInfo& MicroFont,
+	const FLinearColor& HudText,
+	const FLinearColor& HudDim,
+	const FLinearColor& HudCyan)
+{
+	const FGuid AssetId = Asset.AssetId;
+	const FString ModelName = Asset.AssetName;
+	const int32 Tris = Asset.TriangleCount;
+	const int32 Verts = Asset.VertexCount;
+	const FVector Dims = Asset.Dimensions / 100.0f; // Convert cm to meters
+
+	TSharedPtr<SWidget> ThumbnailWidget;
+	if (Asset.ThumbnailTexture)
+	{
+		FSlateImageBrush* ThumbBrush = new FSlateImageBrush(Asset.ThumbnailTexture, FVector2D(42, 42));
+		ThumbnailWidget = SNew(SImage).Image(ThumbBrush);
+	}
+	else
+	{
+		ThumbnailWidget = SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+			.BorderBackgroundColor(FLinearColor(0.12f, 0.14f, 0.18f, 0.9f))
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(TEXT("3D")))
+				.Font(MicroFont)
+				.ColorAndOpacity(HudCyan)
+			];
+	}
+
+	return SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+		.BorderBackgroundColor(FLinearColor(0.07f, 0.08f, 0.10f, 0.95f))
+		.Padding(FMargin(4.0f, 4.0f))
+		[
+			SNew(SHorizontalBox)
+			// Thumbnail box
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0, 0, 6, 0)
+			[
+				SNew(SBox)
+				.WidthOverride(42.0f)
+				.HeightOverride(42.0f)
+				[
+					ThumbnailWidget.ToSharedRef()
+				]
+			]
+			// Info
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(ModelName))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+					.ColorAndOpacity(HudText)
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock)
+					.Text(FText::Format(LOCTEXT("ModelStatsFmt", "{0} tris • {1} verts"), FText::AsNumber(Tris), FText::AsNumber(Verts)))
+					.Font(MicroFont)
+					.ColorAndOpacity(HudDim)
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock)
+					.Text(FText::Format(LOCTEXT("ModelDimsFmt", "{0}m × {1}m × {2}m"),
+						FText::AsNumber(FMath::RoundToInt(Dims.X * 10.0f) / 10.0f),
+						FText::AsNumber(FMath::RoundToInt(Dims.Y * 10.0f) / 10.0f),
+						FText::AsNumber(FMath::RoundToInt(Dims.Z * 10.0f) / 10.0f)))
+					.Font(MicroFont)
+					.ColorAndOpacity(FLinearColor(0.6f, 0.8f, 0.6f))
+				]
+			]
+			// Action buttons
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4, 0, 0, 0)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(1)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
+					.Text(LOCTEXT("BtnPlaceModel", "Place"))
+					.ToolTipText(LOCTEXT("BtnPlaceModelTip", "Enter placement mode to drop this 3D model onto the terrain"))
+					.OnClicked_Lambda([this, AssetId]()
+					{
+						return OnPlaceModelClicked(AssetId);
+					})
+				]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(1)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
+					.Text(LOCTEXT("BtnRemoveModel", "X"))
+					.ToolTipText(LOCTEXT("BtnRemoveModelTip", "Remove this 3D model from the asset catalog"))
+					.OnClicked_Lambda([this, AssetId]()
+					{
+						return OnRemoveModelAssetClicked(AssetId);
+					})
+				]
+			]
+		];
+}
+
+void STerraDynePanel::RefreshModelAssetList()
+{
+	if (!ModelAssetListBox.IsValid())
+	{
+		return;
+	}
+
+	ModelAssetListBox->ClearChildren();
+
+	UTerraDyneAssetLibrarySubsystem* AssetLib = GetAssetLibrarySubsystem();
+	if (!AssetLib || AssetLib->GetAssets().Num() == 0)
+	{
+		ModelAssetListBox->AddSlot().AutoHeight().Padding(2, 4)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("NoModelsLoaded", "No 3D models imported yet. Click 'Import 3D Model' to import .obj, .stl, or .ply files."))
+			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 8))
+			.ColorAndOpacity(TerraDyneHud::Dim)
+			.AutoWrapText(true)
+		];
+		return;
+	}
+
+	const FSlateFontInfo LabelFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
+	const FSlateFontInfo MicroFont = FCoreStyle::GetDefaultFontStyle("Bold", 8);
+	const FLinearColor HudText = TerraDyneHud::Text;
+	const FLinearColor HudDim = TerraDyneHud::Dim;
+	const FLinearColor HudCyan = TerraDyneHud::Cyan;
+
+	for (const FTerraDyneImportedModelAsset& Asset : AssetLib->GetAssets())
+	{
+		ModelAssetListBox->AddSlot().AutoHeight().Padding(0, 2)
+		[
+			MakeModelAssetTile(Asset, LabelFont, MicroFont, HudText, HudDim, HudCyan)
+		];
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scene Outliner Implementation
+// -----------------------------------------------------------------------------
+FText STerraDynePanel::GetOutlinerHeaderCountText() const
+{
+	UWorld* World = OwnerWidget.IsValid() ? OwnerWidget->GetWorld() : (GetManager() ? GetManager()->GetWorld() : nullptr);
+	if (!World) return LOCTEXT("OutlinerZero", "SCENE OUTLINER (0)");
+
+	TArray<AActor*> PlacedActors;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDynePlacedModelActor::StaticClass(), PlacedActors);
+	TArray<AActor*> BuildingActors;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDyneBuildingActor::StaticClass(), BuildingActors);
+
+	return FText::Format(LOCTEXT("OutlinerCountFmt", "SCENE OUTLINER ({0})"), FText::AsNumber(PlacedActors.Num() + BuildingActors.Num()));
+}
+
+void STerraDynePanel::RefreshOutlinerList()
+{
+	if (!OutlinerListBox.IsValid())
+	{
+		return;
+	}
+
+	OutlinerListBox->ClearChildren();
+
+	UWorld* World = nullptr;
+	if (OwnerWidget.IsValid())
+	{
+		World = OwnerWidget->GetWorld();
+	}
+	else if (ATerraDyneManager* Mgr = GetManager())
+	{
+		World = Mgr->GetWorld();
+	}
+
+	if (!World)
+	{
+		return;
+	}
+
+	TArray<AActor*> PlacedActors;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDynePlacedModelActor::StaticClass(), PlacedActors);
+
+	TArray<AActor*> BuildingActors;
+	UGameplayStatics::GetAllActorsOfClass(World, ATerraDyneBuildingActor::StaticClass(), BuildingActors);
+
+	UClass* SplineRoadClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadSplineActor"));
+	TArray<AActor*> RoadActors;
+	if (SplineRoadClass)
+	{
+		UGameplayStatics::GetAllActorsOfClass(World, SplineRoadClass, RoadActors);
+	}
+
+	const int32 TotalCount = PlacedActors.Num() + BuildingActors.Num() + RoadActors.Num();
+	if (TotalCount == 0)
+	{
+		OutlinerListBox->AddSlot().AutoHeight().Padding(2, 4)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("NoOutlinerActors", "No placed objects in scene. Place 3D models, buildings, or roads to track them here."))
+			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 8))
+			.ColorAndOpacity(TerraDyneHud::Dim)
+			.AutoWrapText(true)
+		];
+		return;
+	}
+
+	const FSlateFontInfo LabelFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
+	const FSlateFontInfo MicroFont = FCoreStyle::GetDefaultFontStyle("Bold", 8);
+	const FLinearColor HudText = TerraDyneHud::Text;
+	const FLinearColor HudDim = TerraDyneHud::Dim;
+	const FLinearColor HudCyan = TerraDyneHud::Cyan;
+
+	// 1. Placed Models
+	for (AActor* Actor : PlacedActors)
+	{
+		if (ATerraDynePlacedModelActor* ModelActor = Cast<ATerraDynePlacedModelActor>(Actor))
+		{
+			const FString Label = ModelActor->CustomLabel.IsEmpty() ? ModelActor->ModelName : ModelActor->CustomLabel;
+			OutlinerListBox->AddSlot().AutoHeight().Padding(0, 1)
+			[
+				MakeOutlinerRow(ModelActor, Label, TEXT("Model"), LabelFont, MicroFont, HudText, HudDim, HudCyan)
+			];
+		}
+	}
+
+	// 2. Buildings
+	for (AActor* Actor : BuildingActors)
+	{
+		if (ATerraDyneBuildingActor* Building = Cast<ATerraDyneBuildingActor>(Actor))
+		{
+			const FString Label = FString::Printf(TEXT("Building (%d floors)"), Building->FloorCount);
+			OutlinerListBox->AddSlot().AutoHeight().Padding(0, 1)
+			[
+				MakeOutlinerRow(Building, Label, TEXT("Building"), LabelFont, MicroFont, HudText, HudDim, HudCyan)
+			];
+		}
+	}
+
+	// 3. Roads
+	for (AActor* Actor : RoadActors)
+	{
+		if (Actor)
+		{
+			const FString Label = Actor->GetName();
+			OutlinerListBox->AddSlot().AutoHeight().Padding(0, 1)
+			[
+				MakeOutlinerRow(Actor, Label, TEXT("Road"), LabelFont, MicroFont, HudText, HudDim, HudCyan)
+			];
+		}
+	}
+}
+
+TSharedRef<SWidget> STerraDynePanel::MakeOutlinerRow(
+	AActor* Actor,
+	const FString& Label,
+	const FString& TypeTag,
+	const FSlateFontInfo& LabelFont,
+	const FSlateFontInfo& MicroFont,
+	const FLinearColor& HudText,
+	const FLinearColor& HudDim,
+	const FLinearColor& HudCyan)
+{
+	TWeakObjectPtr<AActor> ActorPtr = Actor;
+
+	auto IsActorSelected = [this, ActorPtr]() -> bool
+	{
+		if (!ActorPtr.IsValid() || !OwnerWidget.IsValid()) return false;
+		if (OwnerWidget->SelectedModelActor.Get() == ActorPtr.Get()) return true;
+		if (OwnerWidget->SelectedBuilding.Get() == ActorPtr.Get()) return true;
+		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			if (PC->GetSelectedRoadActor() == ActorPtr.Get()) return true;
+		}
+		return false;
+	};
+
+	auto RowBGColor = [IsActorSelected]() -> FSlateColor
+	{
+		return IsActorSelected()
+			? FSlateColor(FLinearColor(0.15f, 0.25f, 0.40f, 0.9f))
+			: FSlateColor(FLinearColor(0.06f, 0.07f, 0.09f, 0.8f));
+	};
+
+	return SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+		.BorderBackgroundColor_Lambda(RowBGColor)
+		.Padding(FMargin(4.0f, 2.0f))
+		[
+			SNew(SHorizontalBox)
+			// Type badge
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0, 0, 4, 0)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(FString::Printf(TEXT("[%s]"), *TypeTag)))
+				.Font(MicroFont)
+				.ColorAndOpacity(HudCyan)
+			]
+			// Actor Label & Selection Click
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.ButtonStyle(FCoreStyle::Get(), "NoBorder")
+				.OnClicked_Lambda([this, ActorPtr]()
+				{
+					return OnSelectOutlinerActorClicked(ActorPtr);
+				})
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(Label))
+					.Font(LabelFont)
+					.ColorAndOpacity(HudText)
+				]
+			]
+			// Action buttons: Focus, Visibility, Delete
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SHorizontalBox)
+				// Focus
+				+ SHorizontalBox::Slot().AutoWidth().Padding(1)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
+					.Text(LOCTEXT("BtnOutlinerFocus", "🎯"))
+					.ToolTipText(LOCTEXT("BtnOutlinerFocusTip", "Focus camera on this object"))
+					.OnClicked_Lambda([this, ActorPtr]()
+					{
+						return OnFocusOutlinerActorClicked(ActorPtr);
+					})
+				]
+				// Visibility
+				+ SHorizontalBox::Slot().AutoWidth().Padding(1)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
+					.Text_Lambda([ActorPtr]()
+					{
+						if (!ActorPtr.IsValid()) return FText::FromString(TEXT("👁"));
+						return ActorPtr->IsHidden() ? FText::FromString(TEXT("🚫")) : FText::FromString(TEXT("👁"));
+					})
+					.ToolTipText(LOCTEXT("BtnOutlinerVisTip", "Toggle visibility in scene"))
+					.OnClicked_Lambda([this, ActorPtr]()
+					{
+						return OnToggleOutlinerVisibilityClicked(ActorPtr);
+					})
+				]
+				// Delete
+				+ SHorizontalBox::Slot().AutoWidth().Padding(1)
+				[
+					SNew(SButton)
+					.ButtonStyle(&HudButtonStyle)
+					.Text(LOCTEXT("BtnOutlinerDelete", "🗑"))
+					.ToolTipText(LOCTEXT("BtnOutlinerDeleteTip", "Delete this object from scene"))
+					.OnClicked_Lambda([this, ActorPtr]()
+					{
+						return OnDeleteOutlinerActorClicked(ActorPtr);
+					})
+				]
+			]
+		];
+}
+
+FReply STerraDynePanel::OnSelectOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr)
+{
+	if (!ActorPtr.IsValid()) return FReply::Unhandled();
+
+	AActor* Target = ActorPtr.Get();
+	APlayerController* PC = OwnerWidget.IsValid() ? OwnerWidget->GetOwningPlayer() : nullptr;
+	ATerraDyneEditController* EditPC = Cast<ATerraDyneEditController>(PC);
+
+	if (ATerraDynePlacedModelActor* ModelActor = Cast<ATerraDynePlacedModelActor>(Target))
+	{
+		if (EditPC)
+		{
+			EditPC->SelectModelActor(ModelActor);
+		}
+		else if (OwnerWidget.IsValid())
+		{
+			OwnerWidget->SelectedModelActor = ModelActor;
+			OwnerWidget->SelectedBuilding = nullptr;
+		}
+	}
+	else if (ATerraDyneBuildingActor* Building = Cast<ATerraDyneBuildingActor>(Target))
+	{
+		if (OwnerWidget.IsValid())
+		{
+			OwnerWidget->SelectedBuilding = Building;
+			OwnerWidget->SelectedModelActor = nullptr;
+		}
+		if (EditPC)
+		{
+			EditPC->ClearModelSelection();
+		}
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnFocusOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr)
+{
+	if (!ActorPtr.IsValid()) return FReply::Unhandled();
+
+	APlayerController* PC = OwnerWidget.IsValid() ? OwnerWidget->GetOwningPlayer() : nullptr;
+	if (!PC && GetManager() && GetManager()->GetWorld())
+	{
+		PC = GetManager()->GetWorld()->GetFirstPlayerController();
+	}
+	if (PC)
+	{
+		if (ATerraDyneEditPawn* Pawn = Cast<ATerraDyneEditPawn>(PC->GetPawn()))
+		{
+			Pawn->FocusOnLocation(ActorPtr->GetActorLocation(), 3500.0f);
+		}
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnToggleOutlinerVisibilityClicked(TWeakObjectPtr<AActor> ActorPtr)
+{
+	if (!ActorPtr.IsValid()) return FReply::Unhandled();
+
+	if (ATerraDynePlacedModelActor* ModelActor = Cast<ATerraDynePlacedModelActor>(ActorPtr.Get()))
+	{
+		ModelActor->SetVisibleInScene(!ModelActor->bIsVisibleInScene);
+	}
+	else
+	{
+		ActorPtr->SetActorHiddenInGame(!ActorPtr->IsHidden());
+	}
+	return FReply::Handled();
+}
+
+FReply STerraDynePanel::OnDeleteOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr)
+{
+	if (!ActorPtr.IsValid()) return FReply::Unhandled();
+
+	AActor* Target = ActorPtr.Get();
+	APlayerController* PC = OwnerWidget.IsValid() ? OwnerWidget->GetOwningPlayer() : nullptr;
+	ATerraDyneEditController* EditPC = Cast<ATerraDyneEditController>(PC);
+
+	if (ATerraDynePlacedModelActor* ModelActor = Cast<ATerraDynePlacedModelActor>(Target))
+	{
+		if (EditPC)
+		{
+			EditPC->RequestDeleteModel(ModelActor);
+		}
+		else
+		{
+			ModelActor->Destroy();
+		}
+	}
+	else if (ATerraDyneBuildingActor* Building = Cast<ATerraDyneBuildingActor>(Target))
+	{
+		if (EditPC)
+		{
+			EditPC->RequestDeleteBuilding(Building);
+		}
+		else
+		{
+			Building->Destroy();
+		}
+	}
+	else
+	{
+		Target->Destroy();
+	}
+
+	RefreshOutlinerList();
+	return FReply::Handled();
+}
+
+FSlateColor STerraDynePanel::GetOutlinerVisibilityColor(TWeakObjectPtr<AActor> ActorPtr) const
+{
+	if (!ActorPtr.IsValid()) return FSlateColor(TerraDyneHud::Dim);
+	return ActorPtr->IsHidden() ? FSlateColor(TerraDyneHud::Dim) : FSlateColor(TerraDyneHud::Cyan);
 }
 
 #undef LOCTEXT_NAMESPACE

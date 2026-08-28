@@ -66,6 +66,8 @@ private:
 	bool bSectionGizmoOpen = true;
 	bool bSectionRoadsOpen = true;
 	bool bSectionBuildingsOpen = true;
+	bool bSectionModelsOpen = true;
+	bool bSectionOutlinerOpen = true;
 	bool bSectionTelemetryOpen = false;
 	bool bSectionTiledCesiumOpen = true;
 
@@ -234,6 +236,27 @@ private:
 	FReply OnFocusBuildingClicked();
 	FReply OnRelevelClicked();
 	FReply OnDeleteBuildingClicked();
+
+	// 3D Models & Asset Library
+	class UTerraDyneAssetLibrarySubsystem* GetAssetLibrarySubsystem() const;
+	FReply OnImport3DModelClicked();
+	FReply OnImport3DFolderClicked();
+	FReply OnPlaceModelClicked(FGuid AssetId);
+	FReply OnRemoveModelAssetClicked(FGuid AssetId);
+	TSharedRef<SWidget> MakeModelAssetTile(const struct FTerraDyneImportedModelAsset& Asset, const struct FSlateFontInfo& LabelFont, const struct FSlateFontInfo& MicroFont, const FLinearColor& HudText, const FLinearColor& HudDim, const FLinearColor& HudCyan);
+	void RefreshModelAssetList();
+	TSharedPtr<class SVerticalBox> ModelAssetListBox;
+
+	// Scene Outliner
+	TSharedRef<SWidget> MakeOutlinerRow(AActor* Actor, const FString& Label, const FString& TypeTag, const struct FSlateFontInfo& LabelFont, const struct FSlateFontInfo& MicroFont, const FLinearColor& HudText, const FLinearColor& HudDim, const FLinearColor& HudCyan);
+	void RefreshOutlinerList();
+	TSharedPtr<class SVerticalBox> OutlinerListBox;
+	FText GetOutlinerHeaderCountText() const;
+	FReply OnSelectOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr);
+	FReply OnFocusOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr);
+	FReply OnToggleOutlinerVisibilityClicked(TWeakObjectPtr<AActor> ActorPtr);
+	FReply OnDeleteOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr);
+	FSlateColor GetOutlinerVisibilityColor(TWeakObjectPtr<AActor> ActorPtr) const;
 
 	// Roads & Junctions
 	FText GetRoadStatusText() const;

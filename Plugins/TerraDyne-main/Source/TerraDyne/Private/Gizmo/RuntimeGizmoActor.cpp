@@ -2,6 +2,8 @@
 #include "Gizmo/RuntimeGizmoActor.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialParameters.h"
 #include "Kismet/GameplayStatics.h"
 #include "Camera/PlayerCameraManager.h"
 #include "TerraDyneModule.h"
@@ -9,27 +11,20 @@
 
 namespace
 {
-	// Placeholder placement constants -- the migrated meshes' native size/pivot hasn't been seen in
-	// a rendered viewport from this environment, so these are a reasonable first pass, not a
-	// visually-tuned final. GizmoActorTests.cpp logs each migrated mesh's real bounds so a follow-up
-	// pass can correct these against ground truth instead of guessing twice.
-	constexpr float ShaftDistance = 100.0f;
-	constexpr float TipDistance = 200.0f;
+	constexpr float ShaftDistance = 65.0f;
+	constexpr float TipDistance = 160.0f;
 	constexpr float ScaleHandleDistance = 150.0f;
-	constexpr float PlaneHandleOffset = 50.0f;
+	constexpr float PlaneHandleOffset = 45.0f;
 	constexpr float RotateRingScale = 1.5f;
 	constexpr float ScreenRingScaleMultiplier = 1.3f;
 
-	// Native ring radius, empirically measured (not guessed) from SM_RotationHandle's actual bounds
-	// extent logged by TerraDyne.Gizmo.ActorRuntimeAssets (Y=Z=92 -- see that test's AddInfo output).
+	// Native ring radius, empirically measured from SM_RotationHandle's actual bounds
 	constexpr float NativeRingRadius = 92.0f;
 
-	// Cube's native half-size (/Engine/BasicShapes/Cube.Cube is 100 units per side); PlaneScale's
-	// 0.4 XY component (see the constructor) scales that down to this actual plane-handle half-size.
-	constexpr float PlaneHandleHalfSize = 50.0f * 0.4f;
+	// Plane handle half-size (Cube is 100 units, scaled by 0.22 -> 22 units wide, half-size is 11.0f).
+	constexpr float PlaneHandleHalfSize = 11.0f;
 
-	// Point-like handles (Center, ScaleUniform) have no directional mesh dimension to derive a size
-	// from the way a segment/ring/quad does -- a fixed, generous click radius stands in instead.
+	// Point-like handles (Center, ScaleUniform)
 	constexpr float PointHandleReach = 30.0f;
 }
 
@@ -45,28 +40,87 @@ ARuntimeGizmoActor::ARuntimeGizmoActor()
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> ConeFinder(TEXT("/Engine/BasicShapes/Cone.Cone"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereFinder(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeFinder(TEXT("/Engine/BasicShapes/Cube.Cube"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> RotationHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_RotationHandle.SM_RotationHandle"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScaleHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_ScaleHandle.SM_ScaleHandle"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> UniformScaleHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_UniformScaleHandle.SM_UniformScaleHandle"));
 
-	// Same fallback chain as ATerraDyneGizmoActor -- M_OverlayForeground (translucent, disable-
-	// depth-test, so the gizmo renders through terrain/walls) first, then engine gizmo/basic-shape
-	// materials as runtime-safe fallbacks if the project material is ever missing.
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> RotationHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_RotationHandle.SM_RotationHandle"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> RotationHandleFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Meshes/SM_RotationHandle.SM_RotationHandle"));
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScaleHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_ScaleHandle.SM_ScaleHandle"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScaleHandleFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Meshes/SM_ScaleHandle.SM_ScaleHandle"));
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> UniformScaleHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_UniformScaleHandle.SM_UniformScaleHandle"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> UniformScaleHandleFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Meshes/SM_UniformScaleHandle.SM_UniformScaleHandle"));
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScreenTranslationHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_ScreenTranslationHandle.SM_ScreenTranslationHandle"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScreenTranslationHandleFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Meshes/SM_ScreenTranslationHandle.SM_ScreenTranslationHandle"));
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScreenRotationHandleFinder(TEXT("/Game/Gizmo/Meshes/SM_ScreenRotationHandle.SM_ScreenRotationHandle"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ScreenRotationHandleFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Meshes/SM_ScreenRotationHandle.SM_ScreenRotationHandle"));
+
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> GizmoMatFinder(TEXT("/Engine/EngineMaterials/GizmoMaterial.GizmoMaterial"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BasicMatFinder(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(TEXT("/Game/Materials/M_OverlayForeground.M_OverlayForeground"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(TEXT("/Game/Gizmo/Materials/M_GizmoAxis.M_GizmoAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/M_GizmoAxis.M_GizmoAxis"));
 
-	UStaticMesh* CylinderMesh = CylinderFinder.Object;
-	UStaticMesh* ConeMesh = ConeFinder.Object;
-	UStaticMesh* SphereMesh = SphereFinder.Object;
-	UStaticMesh* CubeMesh = CubeFinder.Object;
-	UStaticMesh* RotationHandleMesh = RotationHandleFinder.Object;
-	UStaticMesh* ScaleHandleMesh = ScaleHandleFinder.Object;
-	UStaticMesh* UniformScaleHandleMesh = UniformScaleHandleFinder.Object;
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatXFinder(TEXT("/Game/Gizmo/Materials/MI_XAxis.MI_XAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatXFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_XAxis.MI_XAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatYFinder(TEXT("/Game/Gizmo/Materials/MI_YAxis.MI_YAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatYFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_YAxis.MI_YAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatZFinder(TEXT("/Game/Gizmo/Materials/MI_ZAxis.MI_ZAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatZFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_ZAxis.MI_ZAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatXYZFinder(TEXT("/Game/Gizmo/Materials/MI_XYZAxis.MI_XYZAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatXYZFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_XYZAxis.MI_XYZAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatHoverFinder(TEXT("/Game/Gizmo/Materials/MI_Hovered.MI_Hovered"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatHoverFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Hovered.MI_Hovered"));
 
-	GizmoBaseMaterial = ForegroundMatFinder.Object
-		? ForegroundMatFinder.Object
-		: (GizmoMatFinder.Object ? GizmoMatFinder.Object : BasicMatFinder.Object);
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotXFinder(TEXT("/Game/Gizmo/Materials/MI_Rotation_XAxis.MI_Rotation_XAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotXFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_XAxis.MI_Rotation_XAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotYFinder(TEXT("/Game/Gizmo/Materials/MI_Rotation_YAxis.MI_Rotation_YAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotYFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_YAxis.MI_Rotation_YAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotZFinder(TEXT("/Game/Gizmo/Materials/MI_Rotation_ZAxis.MI_Rotation_ZAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotZFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_ZAxis.MI_Rotation_ZAxis"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotHoverFinder(TEXT("/Game/Gizmo/Materials/MI_Rotation_Hovered.MI_Rotation_Hovered"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatRotHoverFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_Hovered.MI_Rotation_Hovered"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatScreenRotFinder(TEXT("/Game/Gizmo/Materials/M_ScreenRotation.M_ScreenRotation"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatScreenRotFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/M_ScreenRotation.M_ScreenRotation"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatScreenRotHoverFinder(TEXT("/Game/Gizmo/Materials/MI_ScreenRotation_Hovered.MI_ScreenRotation_Hovered"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> MatScreenRotHoverFinder2(TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_ScreenRotation_Hovered.MI_ScreenRotation_Hovered"));
+
+	MatInstX = MatXFinder.Object ? MatXFinder.Object.Get() : MatXFinder2.Object.Get();
+	MatInstY = MatYFinder.Object ? MatYFinder.Object.Get() : MatYFinder2.Object.Get();
+	MatInstZ = MatZFinder.Object ? MatZFinder.Object.Get() : MatZFinder2.Object.Get();
+	MatInstNeutral = MatXYZFinder.Object ? MatXYZFinder.Object.Get() : MatXYZFinder2.Object.Get();
+	MatInstHovered = MatHoverFinder.Object ? MatHoverFinder.Object.Get() : MatHoverFinder2.Object.Get();
+	MatInstRotX = MatRotXFinder.Object ? MatRotXFinder.Object.Get() : MatRotXFinder2.Object.Get();
+	MatInstRotY = MatRotYFinder.Object ? MatRotYFinder.Object.Get() : MatRotYFinder2.Object.Get();
+	MatInstRotZ = MatRotZFinder.Object ? MatRotZFinder.Object.Get() : MatRotZFinder2.Object.Get();
+	MatInstRotHovered = MatRotHoverFinder.Object ? MatRotHoverFinder.Object.Get() : MatRotHoverFinder2.Object.Get();
+	MatInstScreenRot = MatScreenRotFinder.Object ? MatScreenRotFinder.Object.Get() : MatScreenRotFinder2.Object.Get();
+	MatInstScreenRotHovered = MatScreenRotHoverFinder.Object ? MatScreenRotHoverFinder.Object.Get() : MatScreenRotHoverFinder2.Object.Get();
+
+	UStaticMesh* CylinderMesh = CylinderFinder.Object.Get();
+	UStaticMesh* ConeMesh = ConeFinder.Object.Get();
+	UStaticMesh* SphereMesh = SphereFinder.Object.Get();
+	UStaticMesh* CubeMesh = CubeFinder.Object.Get();
+	UStaticMesh* RotationHandleMesh = RotationHandleFinder.Object ? RotationHandleFinder.Object.Get() : RotationHandleFinder2.Object.Get();
+	UStaticMesh* ScreenRotationHandleMesh = ScreenRotationHandleFinder.Object ? ScreenRotationHandleFinder.Object.Get() : (ScreenRotationHandleFinder2.Object ? ScreenRotationHandleFinder2.Object.Get() : RotationHandleMesh);
+	UStaticMesh* ScaleHandleMesh = ScaleHandleFinder.Object ? ScaleHandleFinder.Object.Get() : ScaleHandleFinder2.Object.Get();
+	UStaticMesh* UniformScaleHandleMesh = UniformScaleHandleFinder.Object ? UniformScaleHandleFinder.Object.Get() : UniformScaleHandleFinder2.Object.Get();
+	UStaticMesh* ScreenTranslationHandleMesh = ScreenTranslationHandleFinder.Object ? ScreenTranslationHandleFinder.Object.Get() : (ScreenTranslationHandleFinder2.Object ? ScreenTranslationHandleFinder2.Object.Get() : CylinderMesh);
+
+	UMaterialInterface* ForegroundMat = ForegroundMatFinder.Object ? ForegroundMatFinder.Object.Get() : ForegroundMatFinder2.Object.Get();
+	UMaterialInterface* GizmoMat = GizmoMatFinder.Object ? GizmoMatFinder.Object.Get() : BasicMatFinder.Object.Get();
+	if (MatInstX)
+	{
+		GizmoBaseMaterial = MatInstX;
+	}
+	else if (ForegroundMat)
+	{
+		GizmoBaseMaterial = ForegroundMat;
+	}
+	else
+	{
+		GizmoBaseMaterial = GizmoMat;
+	}
 
 	auto SetupMesh = [this](TObjectPtr<UStaticMeshComponent>& Comp, const TCHAR* Name, UStaticMesh* Mesh, const FVector& Loc, const FRotator& Rot, const FVector& Scale)
 	{
@@ -82,52 +136,48 @@ ARuntimeGizmoActor::ARuntimeGizmoActor()
 		Comp->SetCollisionResponseToChannel(ECC_Camera, ECR_Block);
 		Comp->SetTranslucentSortPriority(10000);
 		Comp->SetCastShadow(false);
-		Comp->DepthPriorityGroup = SDPG_Foreground;
 	};
 
-	// A mesh whose "length" axis is local Z by default (the engine's own Cylinder/Cone) needs this
-	// rotation to point along each world axis.
 	const FRotator RotX = FRotationMatrix::MakeFromZ(FVector(1.0f, 0.0f, 0.0f)).Rotator();
 	const FRotator RotY = FRotationMatrix::MakeFromZ(FVector(0.0f, 1.0f, 0.0f)).Rotator();
 	const FRotator RotZ = FRotator::ZeroRotator;
 
-	// The migrated SM_RotationHandle/SM_ScaleHandle meshes are authored with their own primary axis
-	// (a ring's normal; a scale handle's long arm) along local X, not Z -- confirmed by
-	// GizmoActorTests.cpp's logged bounds extent (SM_RotationHandle: X=2, Y=92, Z=92; SM_ScaleHandle:
-	// X=58.5, Y=7, Z=7 -- both thin/short in X only when X is what actually needs to be zero-rotation-
-	// aligned, i.e. their long/normal axis IS X). Reusing RotX/RotY/RotZ above for these meshes -- as
-	// the code originally did, before that bounds data existed -- pointed every ring/handle at the
-	// wrong world axis.
 	const FRotator XPrimaryToX = FRotator::ZeroRotator;
 	const FRotator XPrimaryToY = FRotationMatrix::MakeFromX(FVector(0.0f, 1.0f, 0.0f)).Rotator();
 	const FRotator XPrimaryToZ = FRotationMatrix::MakeFromX(FVector(0.0f, 0.0f, 1.0f)).Rotator();
 
-	const FVector ShaftScale(0.06f, 0.06f, 2.0f);
-	const FVector TipScale(0.22f, 0.22f, 0.5f);
+	const FVector ShaftScale(0.06f, 0.06f, 1.1f);
+	const FVector TipScale(0.22f, 0.22f, 0.4f);
 
 	SetupMesh(MeshShaftX, TEXT("MeshShaftX"), CylinderMesh, FVector(ShaftDistance, 0.0f, 0.0f), RotX, ShaftScale);
-	SetupMesh(MeshTipX, TEXT("MeshTipX"), ConeMesh, FVector(TipDistance, 0.0f, 0.0f), RotX, TipScale);
+	SetupMesh(MeshTipX, TEXT("MeshTipX"), ConeMesh, FVector(140.0f, 0.0f, 0.0f), RotX, TipScale);
 	SetupMesh(MeshShaftY, TEXT("MeshShaftY"), CylinderMesh, FVector(0.0f, ShaftDistance, 0.0f), RotY, ShaftScale);
-	SetupMesh(MeshTipY, TEXT("MeshTipY"), ConeMesh, FVector(0.0f, TipDistance, 0.0f), RotY, TipScale);
+	SetupMesh(MeshTipY, TEXT("MeshTipY"), ConeMesh, FVector(0.0f, 140.0f, 0.0f), RotY, TipScale);
 	SetupMesh(MeshShaftZ, TEXT("MeshShaftZ"), CylinderMesh, FVector(0.0f, 0.0f, ShaftDistance), RotZ, ShaftScale);
-	SetupMesh(MeshTipZ, TEXT("MeshTipZ"), ConeMesh, FVector(0.0f, 0.0f, TipDistance), RotZ, TipScale);
+	SetupMesh(MeshTipZ, TEXT("MeshTipZ"), ConeMesh, FVector(0.0f, 0.0f, 140.0f), RotZ, TipScale);
 
-	const FVector PlaneScale(0.4f, 0.4f, 0.02f);
-	SetupMesh(MeshPlaneXY, TEXT("MeshPlaneXY"), CubeMesh, FVector(PlaneHandleOffset, PlaneHandleOffset, 0.0f), FRotator::ZeroRotator, PlaneScale);
-	SetupMesh(MeshPlaneXZ, TEXT("MeshPlaneXZ"), CubeMesh, FVector(PlaneHandleOffset, 0.0f, PlaneHandleOffset), FRotationMatrix::MakeFromZ(FVector(0.0f, 1.0f, 0.0f)).Rotator(), PlaneScale);
-	SetupMesh(MeshPlaneYZ, TEXT("MeshPlaneYZ"), CubeMesh, FVector(0.0f, PlaneHandleOffset, PlaneHandleOffset), FRotationMatrix::MakeFromZ(FVector(1.0f, 0.0f, 0.0f)).Rotator(), PlaneScale);
+	// Planar translation quads (flat along their normal axis, placed halfway along adjacent axes)
+	const FVector PlaneScaleYZ(0.01f, 0.22f, 0.22f); // flat in X
+	const FVector PlaneScaleXZ(0.22f, 0.01f, 0.22f); // flat in Y
+	const FVector PlaneScaleXY(0.22f, 0.22f, 0.01f); // flat in Z
 
-	SetupMesh(MeshCenter, TEXT("MeshCenter"), SphereMesh, FVector::ZeroVector, FRotator::ZeroRotator, FVector(0.3f));
+	SetupMesh(MeshPlaneYZ, TEXT("MeshPlaneYZ"), CubeMesh, FVector(0.0f, PlaneHandleOffset, PlaneHandleOffset), FRotator::ZeroRotator, PlaneScaleYZ);
+	SetupMesh(MeshPlaneXZ, TEXT("MeshPlaneXZ"), CubeMesh, FVector(PlaneHandleOffset, 0.0f, PlaneHandleOffset), FRotator::ZeroRotator, PlaneScaleXZ);
+	SetupMesh(MeshPlaneXY, TEXT("MeshPlaneXY"), CubeMesh, FVector(PlaneHandleOffset, PlaneHandleOffset, 0.0f), FRotator::ZeroRotator, PlaneScaleXY);
+
+	const FVector CenterScale = (ScreenTranslationHandleMesh == CylinderMesh) ? FVector(0.25f, 0.25f, 0.01f) : FVector(1.0f);
+	SetupMesh(MeshCenter, TEXT("MeshCenter"), ScreenTranslationHandleMesh, FVector::ZeroVector, FRotator::ZeroRotator, CenterScale);
 
 	SetupMesh(MeshRotateX, TEXT("MeshRotateX"), RotationHandleMesh, FVector::ZeroVector, XPrimaryToX, FVector(RotateRingScale));
 	SetupMesh(MeshRotateY, TEXT("MeshRotateY"), RotationHandleMesh, FVector::ZeroVector, XPrimaryToY, FVector(RotateRingScale));
 	SetupMesh(MeshRotateZ, TEXT("MeshRotateZ"), RotationHandleMesh, FVector::ZeroVector, XPrimaryToZ, FVector(RotateRingScale));
-	SetupMesh(MeshRotateScreen, TEXT("MeshRotateScreen"), RotationHandleMesh, FVector::ZeroVector, FRotator::ZeroRotator, FVector(RotateRingScale * ScreenRingScaleMultiplier));
+	const float ScreenRotScale = (ScreenRotationHandleMesh == RotationHandleMesh) ? (RotateRingScale * ScreenRingScaleMultiplier) : RotateRingScale;
+	SetupMesh(MeshRotateScreen, TEXT("MeshRotateScreen"), ScreenRotationHandleMesh, FVector::ZeroVector, FRotator::ZeroRotator, FVector(ScreenRotScale));
 
-	SetupMesh(MeshScaleX, TEXT("MeshScaleX"), ScaleHandleMesh, FVector(ScaleHandleDistance, 0.0f, 0.0f), XPrimaryToX, FVector(1.0f));
-	SetupMesh(MeshScaleY, TEXT("MeshScaleY"), ScaleHandleMesh, FVector(0.0f, ScaleHandleDistance, 0.0f), XPrimaryToY, FVector(1.0f));
-	SetupMesh(MeshScaleZ, TEXT("MeshScaleZ"), ScaleHandleMesh, FVector(0.0f, 0.0f, ScaleHandleDistance), XPrimaryToZ, FVector(1.0f));
-	SetupMesh(MeshScaleUniform, TEXT("MeshScaleUniform"), UniformScaleHandleMesh, FVector::ZeroVector, FRotator::ZeroRotator, FVector(1.0f));
+	SetupMesh(MeshScaleX, TEXT("MeshScaleX"), ScaleHandleMesh, FVector::ZeroVector, XPrimaryToX, FVector(1.2f));
+	SetupMesh(MeshScaleY, TEXT("MeshScaleY"), ScaleHandleMesh, FVector::ZeroVector, XPrimaryToY, FVector(1.2f));
+	SetupMesh(MeshScaleZ, TEXT("MeshScaleZ"), ScaleHandleMesh, FVector::ZeroVector, XPrimaryToZ, FVector(1.2f));
+	SetupMesh(MeshScaleUniform, TEXT("MeshScaleUniform"), UniformScaleHandleMesh, FVector::ZeroVector, FRotator::ZeroRotator, FVector(1.8f));
 
 	BuildHandleTypeMap();
 }
@@ -225,45 +275,157 @@ void ARuntimeGizmoActor::ApplyGizmoColor(UMaterialInstanceDynamic* DMI, const FL
 	DMI->SetVectorParameterValue(TEXT("GizmoColor"), InColor);
 	DMI->SetVectorParameterValue(TEXT("Color"), InColor);
 	DMI->SetVectorParameterValue(TEXT("BaseColor"), InColor);
+	DMI->SetVectorParameterValue(TEXT("TintColor"), InColor);
+	DMI->SetVectorParameterValue(TEXT("Tint"), InColor);
 	DMI->SetVectorParameterValue(TEXT("EmissiveColor"), InColor * 2.5f);
 }
 
 void ARuntimeGizmoActor::EnsureDynamicMaterials()
 {
-	if (MatX) return;
-
-	if (!GizmoBaseMaterial)
+	if (!MatInstX)
 	{
-		UE_LOG(LogTerraDyne, Warning, TEXT("Gizmo has no base material -- handles will render with the default material."));
-		return;
+		MatInstX = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_XAxis.MI_XAxis"));
+		if (!MatInstX) MatInstX = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_XAxis.MI_XAxis"));
+
+		MatInstY = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_YAxis.MI_YAxis"));
+		if (!MatInstY) MatInstY = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_YAxis.MI_YAxis"));
+
+		MatInstZ = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_ZAxis.MI_ZAxis"));
+		if (!MatInstZ) MatInstZ = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_ZAxis.MI_ZAxis"));
+
+		MatInstNeutral = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_XYZAxis.MI_XYZAxis"));
+		if (!MatInstNeutral) MatInstNeutral = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_XYZAxis.MI_XYZAxis"));
+
+		MatInstHovered = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_Hovered.MI_Hovered"));
+		if (!MatInstHovered) MatInstHovered = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Hovered.MI_Hovered"));
+
+		MatInstRotX = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_Rotation_XAxis.MI_Rotation_XAxis"));
+		if (!MatInstRotX) MatInstRotX = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_XAxis.MI_Rotation_XAxis"));
+
+		MatInstRotY = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_Rotation_YAxis.MI_Rotation_YAxis"));
+		if (!MatInstRotY) MatInstRotY = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_YAxis.MI_Rotation_YAxis"));
+
+		MatInstRotZ = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_Rotation_ZAxis.MI_Rotation_ZAxis"));
+		if (!MatInstRotZ) MatInstRotZ = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_ZAxis.MI_Rotation_ZAxis"));
+
+		MatInstRotHovered = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_Rotation_Hovered.MI_Rotation_Hovered"));
+		if (!MatInstRotHovered) MatInstRotHovered = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_Rotation_Hovered.MI_Rotation_Hovered"));
+
+		MatInstScreenRot = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/M_ScreenRotation.M_ScreenRotation"));
+		if (!MatInstScreenRot) MatInstScreenRot = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/M_ScreenRotation.M_ScreenRotation"));
+
+		MatInstScreenRotHovered = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/MI_ScreenRotation_Hovered.MI_ScreenRotation_Hovered"));
+		if (!MatInstScreenRotHovered) MatInstScreenRotHovered = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/MI_ScreenRotation_Hovered.MI_ScreenRotation_Hovered"));
 	}
 
-	MatX = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
-	MatY = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
-	MatZ = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
-	MatPlaneXY = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
-	MatPlaneXZ = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
-	MatPlaneYZ = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
-	MatNeutral = UMaterialInstanceDynamic::Create(GizmoBaseMaterial, this);
+	if (!MatX)
+	{
+		UMaterialInterface* BaseMat = MatInstX ? MatInstX.Get() : GizmoBaseMaterial.Get();
+		if (!BaseMat)
+		{
+			BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Gizmo/Materials/M_GizmoAxis.M_GizmoAxis"));
+			if (!BaseMat)
+			{
+				BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Mytaverse/TransformGizmo/Materials/M_GizmoAxis.M_GizmoAxis"));
+			}
+			if (!BaseMat)
+			{
+				BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/GizmoMaterial.GizmoMaterial"));
+			}
+			if (!BaseMat)
+			{
+				BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+			}
+		}
 
-	ApplyGizmoColor(MatX, FLinearColor(1.0f, 0.08f, 0.08f, 1.0f));
-	ApplyGizmoColor(MatY, FLinearColor(0.08f, 0.95f, 0.08f, 1.0f));
-	ApplyGizmoColor(MatZ, FLinearColor(0.12f, 0.45f, 1.0f, 1.0f));
-	ApplyGizmoColor(MatPlaneXY, FLinearColor(0.9f, 0.85f, 0.1f, 1.0f));
-	ApplyGizmoColor(MatPlaneXZ, FLinearColor(0.9f, 0.1f, 0.85f, 1.0f));
-	ApplyGizmoColor(MatPlaneYZ, FLinearColor(0.1f, 0.85f, 0.9f, 1.0f));
-	ApplyGizmoColor(MatNeutral, FLinearColor(0.9f, 0.9f, 0.9f, 1.0f));
+		if (BaseMat)
+		{
+			MatX = UMaterialInstanceDynamic::Create(MatInstX ? MatInstX.Get() : BaseMat, this);
+			MatY = UMaterialInstanceDynamic::Create(MatInstY ? MatInstY.Get() : BaseMat, this);
+			MatZ = UMaterialInstanceDynamic::Create(MatInstZ ? MatInstZ.Get() : BaseMat, this);
+			MatPlaneXY = UMaterialInstanceDynamic::Create(MatInstZ ? MatInstZ.Get() : BaseMat, this);
+			MatPlaneXZ = UMaterialInstanceDynamic::Create(MatInstY ? MatInstY.Get() : BaseMat, this);
+			MatPlaneYZ = UMaterialInstanceDynamic::Create(MatInstX ? MatInstX.Get() : BaseMat, this);
+			MatNeutral = UMaterialInstanceDynamic::Create(MatInstNeutral ? MatInstNeutral.Get() : BaseMat, this);
 
-	auto SetMat = [](UStaticMeshComponent* Comp, UMaterialInstanceDynamic* Mat) { if (Comp) Comp->SetMaterial(0, Mat); };
-	SetMat(MeshShaftX, MatX); SetMat(MeshTipX, MatX); SetMat(MeshRotateX, MatX); SetMat(MeshScaleX, MatX);
-	SetMat(MeshShaftY, MatY); SetMat(MeshTipY, MatY); SetMat(MeshRotateY, MatY); SetMat(MeshScaleY, MatY);
-	SetMat(MeshShaftZ, MatZ); SetMat(MeshTipZ, MatZ); SetMat(MeshRotateZ, MatZ); SetMat(MeshScaleZ, MatZ);
-	SetMat(MeshPlaneXY, MatPlaneXY);
-	SetMat(MeshPlaneXZ, MatPlaneXZ);
-	SetMat(MeshPlaneYZ, MatPlaneYZ);
-	SetMat(MeshCenter, MatNeutral);
-	SetMat(MeshRotateScreen, MatNeutral);
-	SetMat(MeshScaleUniform, MatNeutral);
+			ApplyGizmoColor(MatX, FLinearColor(1.0f, 0.08f, 0.08f, 1.0f));
+			ApplyGizmoColor(MatY, FLinearColor(0.08f, 0.95f, 0.08f, 1.0f));
+			ApplyGizmoColor(MatZ, FLinearColor(0.12f, 0.45f, 1.0f, 1.0f));
+			ApplyGizmoColor(MatPlaneYZ, FLinearColor(1.0f, 0.08f, 0.08f, 1.0f)); // Red for YZ plane
+			ApplyGizmoColor(MatPlaneXZ, FLinearColor(0.08f, 0.95f, 0.08f, 1.0f)); // Green for XZ plane
+			ApplyGizmoColor(MatPlaneXY, FLinearColor(0.12f, 0.45f, 1.0f, 1.0f)); // Blue for XY plane
+			ApplyGizmoColor(MatNeutral, FLinearColor(2.5f, 2.5f, 2.5f, 1.0f));
+			MatNeutral->SetScalarParameterValue(TEXT("Alpha"), 1.0f);
+		}
+	}
+
+	ApplyMaterialsToComponents();
+}
+
+void ARuntimeGizmoActor::ApplyMaterialsToComponents()
+{
+	auto SetMat = [](UStaticMeshComponent* Comp, UMaterialInterface* Mat)
+	{
+		if (!Comp || !Mat) return;
+		const int32 NumMaterials = FMath::Max(1, Comp->GetNumMaterials());
+		for (int32 i = 0; i < NumMaterials; ++i)
+		{
+			Comp->SetMaterial(i, Mat);
+		}
+	};
+
+	const bool bHoverX = (CurrentHighlight == EGizmoHandleType::TranslateX || CurrentHighlight == EGizmoHandleType::ScaleX);
+	const bool bHoverY = (CurrentHighlight == EGizmoHandleType::TranslateY || CurrentHighlight == EGizmoHandleType::ScaleY);
+	const bool bHoverZ = (CurrentHighlight == EGizmoHandleType::TranslateZ || CurrentHighlight == EGizmoHandleType::ScaleZ);
+	const bool bHoverPlaneXY = (CurrentHighlight == EGizmoHandleType::PlaneXY);
+	const bool bHoverPlaneXZ = (CurrentHighlight == EGizmoHandleType::PlaneXZ);
+	const bool bHoverPlaneYZ = (CurrentHighlight == EGizmoHandleType::PlaneYZ);
+	const bool bHoverCenter = (CurrentHighlight == EGizmoHandleType::Center || CurrentHighlight == EGizmoHandleType::ScaleUniform);
+	const bool bHoverRotX = (CurrentHighlight == EGizmoHandleType::RotateX);
+	const bool bHoverRotY = (CurrentHighlight == EGizmoHandleType::RotateY);
+	const bool bHoverRotZ = (CurrentHighlight == EGizmoHandleType::RotateZ);
+	const bool bHoverScreenRot = (CurrentHighlight == EGizmoHandleType::RotateScreen);
+
+	UMaterialInterface* BaseMat = MatInstX ? MatInstX.Get() : GizmoBaseMaterial.Get();
+	UMaterialInterface* HoverMat = MatInstHovered ? MatInstHovered.Get() : (MatNeutral ? MatNeutral.Get() : BaseMat);
+	UMaterialInterface* RotHoverMat = MatInstRotHovered ? MatInstRotHovered.Get() : HoverMat;
+	UMaterialInterface* ScreenRotHoverMat = MatInstScreenRotHovered ? MatInstScreenRotHovered.Get() : HoverMat;
+	UMaterialInterface* CenterMat = MatNeutral ? MatNeutral.Get() : (MatInstNeutral ? MatInstNeutral.Get() : BaseMat);
+
+	UMaterialInterface* MatOrInstX = MatX ? MatX.Get() : (MatInstX ? MatInstX.Get() : BaseMat);
+	UMaterialInterface* MatOrInstY = MatY ? MatY.Get() : (MatInstY ? MatInstY.Get() : BaseMat);
+	UMaterialInterface* MatOrInstZ = MatZ ? MatZ.Get() : (MatInstZ ? MatInstZ.Get() : BaseMat);
+	UMaterialInterface* MatOrInstPlaneYZ = MatPlaneYZ ? MatPlaneYZ.Get() : (MatInstX ? MatInstX.Get() : BaseMat);
+	UMaterialInterface* MatOrInstPlaneXZ = MatPlaneXZ ? MatPlaneXZ.Get() : (MatInstY ? MatInstY.Get() : BaseMat);
+	UMaterialInterface* MatOrInstPlaneXY = MatPlaneXY ? MatPlaneXY.Get() : (MatInstZ ? MatInstZ.Get() : BaseMat);
+	UMaterialInterface* MatOrInstRotX = MatInstRotX ? MatInstRotX.Get() : (MatX ? MatX.Get() : BaseMat);
+	UMaterialInterface* MatOrInstRotY = MatInstRotY ? MatInstRotY.Get() : (MatY ? MatY.Get() : BaseMat);
+	UMaterialInterface* MatOrInstRotZ = MatInstRotZ ? MatInstRotZ.Get() : (MatZ ? MatZ.Get() : BaseMat);
+	UMaterialInterface* MatOrInstScreenRot = MatInstScreenRot ? MatInstScreenRot.Get() : (MatNeutral ? MatNeutral.Get() : BaseMat);
+
+	SetMat(MeshShaftX, bHoverX ? HoverMat : MatOrInstX);
+	SetMat(MeshTipX, bHoverX ? HoverMat : MatOrInstX);
+	SetMat(MeshScaleX, bHoverX ? HoverMat : MatOrInstX);
+
+	SetMat(MeshShaftY, bHoverY ? HoverMat : MatOrInstY);
+	SetMat(MeshTipY, bHoverY ? HoverMat : MatOrInstY);
+	SetMat(MeshScaleY, bHoverY ? HoverMat : MatOrInstY);
+
+	SetMat(MeshShaftZ, bHoverZ ? HoverMat : MatOrInstZ);
+	SetMat(MeshTipZ, bHoverZ ? HoverMat : MatOrInstZ);
+	SetMat(MeshScaleZ, bHoverZ ? HoverMat : MatOrInstZ);
+
+	SetMat(MeshPlaneYZ, bHoverPlaneYZ ? HoverMat : MatOrInstPlaneYZ);
+	SetMat(MeshPlaneXZ, bHoverPlaneXZ ? HoverMat : MatOrInstPlaneXZ);
+	SetMat(MeshPlaneXY, bHoverPlaneXY ? HoverMat : MatOrInstPlaneXY);
+
+	SetMat(MeshCenter, bHoverCenter ? HoverMat : CenterMat);
+	SetMat(MeshScaleUniform, bHoverCenter ? HoverMat : CenterMat);
+
+	SetMat(MeshRotateX, bHoverRotX ? RotHoverMat : MatOrInstRotX);
+	SetMat(MeshRotateY, bHoverRotY ? RotHoverMat : MatOrInstRotY);
+	SetMat(MeshRotateZ, bHoverRotZ ? RotHoverMat : MatOrInstRotZ);
+	SetMat(MeshRotateScreen, bHoverScreenRot ? ScreenRotHoverMat : MatOrInstScreenRot);
 }
 
 void ARuntimeGizmoActor::PostInitializeComponents()
@@ -311,6 +473,8 @@ void ARuntimeGizmoActor::SetMode(EGizmoMode NewMode)
 	SetActive(MeshScaleY, bScale);
 	SetActive(MeshScaleZ, bScale);
 	SetActive(MeshScaleUniform, bScale);
+
+	ApplyMaterialsToComponents();
 }
 
 void ARuntimeGizmoActor::SetHighlightedHandle(EGizmoHandleType Handle)
@@ -320,25 +484,7 @@ void ARuntimeGizmoActor::SetHighlightedHandle(EGizmoHandleType Handle)
 	if (CurrentHighlight == Handle) return;
 	CurrentHighlight = Handle;
 
-	const FLinearColor NormalX(1.0f, 0.08f, 0.08f, 1.0f);
-	const FLinearColor NormalY(0.08f, 0.95f, 0.08f, 1.0f);
-	const FLinearColor NormalZ(0.12f, 0.45f, 1.0f, 1.0f);
-	const FLinearColor NormalPlaneXY(0.9f, 0.85f, 0.1f, 1.0f);
-	const FLinearColor NormalPlaneXZ(0.9f, 0.1f, 0.85f, 1.0f);
-	const FLinearColor NormalPlaneYZ(0.1f, 0.85f, 0.9f, 1.0f);
-	const FLinearColor NormalNeutral(0.9f, 0.9f, 0.9f, 1.0f);
-	const FLinearColor HighlightColor(2.5f, 2.5f, 0.4f, 1.0f);
-
-	auto IsOneOf = [Handle](EGizmoHandleType A, EGizmoHandleType B, EGizmoHandleType C) { return Handle == A || Handle == B || Handle == C; };
-
-	ApplyGizmoColor(MatX, IsOneOf(EGizmoHandleType::TranslateX, EGizmoHandleType::RotateX, EGizmoHandleType::ScaleX) ? HighlightColor : NormalX);
-	ApplyGizmoColor(MatY, IsOneOf(EGizmoHandleType::TranslateY, EGizmoHandleType::RotateY, EGizmoHandleType::ScaleY) ? HighlightColor : NormalY);
-	ApplyGizmoColor(MatZ, IsOneOf(EGizmoHandleType::TranslateZ, EGizmoHandleType::RotateZ, EGizmoHandleType::ScaleZ) ? HighlightColor : NormalZ);
-	ApplyGizmoColor(MatPlaneXY, Handle == EGizmoHandleType::PlaneXY ? HighlightColor : NormalPlaneXY);
-	ApplyGizmoColor(MatPlaneXZ, Handle == EGizmoHandleType::PlaneXZ ? HighlightColor : NormalPlaneXZ);
-	ApplyGizmoColor(MatPlaneYZ, Handle == EGizmoHandleType::PlaneYZ ? HighlightColor : NormalPlaneYZ);
-	const bool bNeutralActive = (Handle == EGizmoHandleType::Center || Handle == EGizmoHandleType::RotateScreen || Handle == EGizmoHandleType::ScaleUniform);
-	ApplyGizmoColor(MatNeutral, bNeutralActive ? HighlightColor : NormalNeutral);
+	ApplyMaterialsToComponents();
 }
 
 void ARuntimeGizmoActor::Tick(float DeltaTime)
@@ -352,18 +498,27 @@ void ARuntimeGizmoActor::Tick(float DeltaTime)
 		const float Scale = FMath::Clamp(Dist * 0.0006f, 0.3f, 4.0f);
 		SetActorScale3D(FVector(Scale));
 
-		// The screen-space rotation ring always faces the camera -- unlike every other handle, its
-		// whole purpose is to rotate around whatever axis the camera happens to be looking down, so
-		// its own orientation has to track the camera every frame rather than staying fixed.
-		if (MeshRotateScreen && MeshRotateScreen->IsVisible())
+		const FVector ToCamera = (CamLoc - GetActorLocation()).GetSafeNormal();
+		if (!ToCamera.IsNearlyZero())
 		{
-			const FVector ToCamera = (CamLoc - GetActorLocation()).GetSafeNormal();
-			if (!ToCamera.IsNearlyZero())
+			// The screen-space rotation ring always faces the camera
+			if (MeshRotateScreen && MeshRotateScreen->IsVisible())
 			{
-				// MakeFromX, not MakeFromZ: SM_RotationHandle's ring normal is local X (see the
-				// constructor's comment on XPrimaryToX/Y/Z), so it's local X that has to point at
-				// the camera for the ring's face to actually turn toward the viewer.
 				MeshRotateScreen->SetWorldRotation(FRotationMatrix::MakeFromX(ToCamera).Rotator());
+			}
+
+			// The screen-space center handle disk always faces the camera
+			if (MeshCenter && MeshCenter->IsVisible())
+			{
+				const UStaticMesh* CenterMesh = MeshCenter->GetStaticMesh();
+				if (CenterMesh && CenterMesh->GetName().Contains(TEXT("Cylinder")))
+				{
+					MeshCenter->SetWorldRotation(FRotationMatrix::MakeFromZ(ToCamera).Rotator());
+				}
+				else
+				{
+					MeshCenter->SetWorldRotation(FRotationMatrix::MakeFromX(ToCamera).Rotator());
+				}
 			}
 		}
 	}

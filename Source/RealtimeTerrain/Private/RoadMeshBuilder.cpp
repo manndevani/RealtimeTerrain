@@ -13,6 +13,12 @@
 #include "Kismet/GameplayStatics.h"
 #include "Core/TerraDyneManager.h"
 
+#ifndef M_PI
+	#define M_PI    3.14159265358979323846
+#endif
+#pragma warning(disable:4456)
+#include "../../../Plugins/RoadBuilder-master/Source/ThirdParty/CDT/include/CDT.h"
+
 using UE::Geometry::FDynamicMesh3;
 using UE::Geometry::FDynamicMeshUVOverlay;
 using UE::Geometry::FDynamicMeshMaterialAttribute;
@@ -633,20 +639,50 @@ void AppendPrism(
 		return FVector2f(static_cast<float>(P.X * UVScale), static_cast<float>(P.Y * UVScale));
 	};
 
-	// Ear-clip the cap rather than fanning it from the centroid.
-	//
-	// A centroid fan is only valid when every edge is visible from the centre. An intersection
-	// surface is not: the corner returns arc inward, so on a junction with deep notches a fan emits
-	// triangles that spill outside the boundary entirely. Ear clipping handles any simple polygon.
-	TArray<FVector2D> Flat;
-	Flat.Reserve(Num);
-	for (const FVector& Point : BoundaryCCW)
+	// Constrained Delaunay Triangulation (CDT) from RoadBuilder: handles complex non-convex
+	// junction outlines, reflex angles, and concave corner fillets without degenerate slivers or holes.
+	TArray<FIndex3i> CapTriangles;
+	try
 	{
-		Flat.Emplace(Point.X, Point.Y);
+		auto cdt = CDT::Triangulation<double>(CDT::VertexInsertionOrder::AsProvided, CDT::IntersectingConstraintEdges::Resolve, 0);
+		std::vector<CDT::V2d<double>> verts;
+		std::vector<CDT::Edge> edges;
+		for (int32 i = 0; i < Num; ++i)
+		{
+			edges.push_back(CDT::Edge(i, (i + 1) % Num));
+			verts.push_back(CDT::V2d<double>::make(BoundaryCCW[i].X, BoundaryCCW[i].Y));
+		}
+		cdt.insertVertices(verts);
+		cdt.insertEdges(edges);
+		cdt.eraseOuterTrianglesAndHoles();
+
+		const size_t UnsignedNum = static_cast<size_t>(Num);
+		for (const auto& tri : cdt.triangles)
+		{
+			if (tri.vertices[0] < UnsignedNum && tri.vertices[1] < UnsignedNum && tri.vertices[2] < UnsignedNum)
+			{
+				CapTriangles.Add(FIndex3i(
+					static_cast<int32>(tri.vertices[0]),
+					static_cast<int32>(tri.vertices[1]),
+					static_cast<int32>(tri.vertices[2])));
+			}
+		}
+	}
+	catch (...)
+	{
+		CapTriangles.Reset();
 	}
 
-	TArray<FIndex3i> CapTriangles;
-	PolygonTriangulation::TriangulateSimplePolygon(Flat, CapTriangles, false);
+	if (CapTriangles.Num() == 0)
+	{
+		TArray<FVector2D> Flat;
+		Flat.Reserve(Num);
+		for (const FVector& Point : BoundaryCCW)
+		{
+			Flat.Emplace(Point.X, Point.Y);
+		}
+		PolygonTriangulation::TriangulateSimplePolygon(Flat, CapTriangles, false);
+	}
 
 	if (CapTriangles.Num() == 0)
 	{

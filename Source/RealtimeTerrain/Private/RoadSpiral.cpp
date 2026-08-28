@@ -1185,14 +1185,17 @@ void BuildSpiralCentreline(
 				// through to the bisection loop's own already-correct handling (used on every later
 				// Iter anyway), which can't overshoot like this because it only ever bisects within
 				// [MinC, MaxC].
-				const double CandidateSize = Size + ProjectedDist / Cos;
-				if (Iter == 0 && CandidateSize >= 0.0 && CandidateSize <= FMath::Max(PrevSize, NextSize))
+				if (Iter == 0 && FMath::Abs(Cos) > 1.0e-5)
 				{
-					// Even the gentlest allowed curvature (MinC) overshoots the corner at this entry
-					// distance -- pull the transition's start closer instead of bisecting further.
-					Size = CandidateSize;
-					StartPos = ControlPoints[i] - PrevDir * Size;
-					break;
+					const double CandidateSize = Size + ProjectedDist / Cos;
+					if (CandidateSize >= 0.0 && CandidateSize <= FMath::Max(PrevSize, NextSize))
+					{
+						// Even the gentlest allowed curvature (MinC) overshoots the corner at this entry
+						// distance -- pull the transition's start closer instead of bisecting further.
+						Size = CandidateSize;
+						StartPos = ControlPoints[i] - PrevDir * Size;
+						break;
+					}
 				}
 				MaxC = C;
 				C = (MinC + MaxC) / 2.0;

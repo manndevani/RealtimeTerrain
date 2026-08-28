@@ -45,7 +45,8 @@ public class TerraDyne : ModuleRules
             "GDAL",
             "Projects",
             "Json",
-            "JsonUtilities"
+            "JsonUtilities",
+            "ImageWrapper"
 		});
 
 		if (Target.bBuildEditor)

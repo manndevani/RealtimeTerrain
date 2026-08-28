@@ -110,13 +110,15 @@ public:
 	/** The shared gizmo actor itself, or null if none has been spawned yet -- for callers that need to e.g. add it to a separate trace's ignore list. */
 	AActor* GetGizmoActor() const;
 
+	/** Updates the gizmo actor's location and rotation to match the current target/pivot. */
+	void UpdateGizmoTransform();
+
 	FOnGizmoManipulationBegin OnManipulationBegin;
 	FOnGizmoManipulationEnd OnManipulationEnd;
 	FOnGizmoManipulationCancel OnManipulationCancel;
 
 private:
 	ARuntimeGizmoActor* EnsureGizmoActor();
-	void UpdateGizmoTransform();
 	FVector GetPivotLocation() const;
 
 	/** Finds the closest handle (of the current mode) within its own click tolerance; OutHitPoint is the world-space point that hit was found at (used to seed BeginManipulation's InitialIntersection). */

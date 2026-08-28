@@ -18,7 +18,11 @@ public class RealtimeTerrain : ModuleRules
 			"GeometryFramework",
 			"GeometryScriptingCore",
 			"DynamicMesh",
-			"TerraDyne"
+			"ProceduralMeshComponent",
+			"MeshDescription",
+			"StaticMeshDescription",
+			"TerraDyne",
+			"RoadBuilder"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {

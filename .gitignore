@@ -81,7 +81,6 @@ Plugins/Monolith/
 # ---------------------------------------------------------------------------
 !/Content/Materials/
 /Content/Materials/*
-!/Content/Materials/M_OverlayForeground.uasset
 !/Content/Materials/M_RoadHolographic.uasset
 
 # ---------------------------------------------------------------------------

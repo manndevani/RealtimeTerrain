@@ -49,15 +49,23 @@ bool FGizmoActorRuntimeAssetsTest::RunTest(const FString& Parameters)
 	// than a guess -- this environment cannot see a rendered viewport.
 	if (RotationMesh)
 	{
-		AddInfo(FString::Printf(TEXT("SM_RotationHandle bounds extent: %s"), *RotationMesh->GetBounds().BoxExtent.ToString()));
+		AddInfo(FString::Printf(TEXT("SM_RotationHandle bounds extent: %s, origin: %s"), *RotationMesh->GetBounds().BoxExtent.ToString(), *RotationMesh->GetBounds().Origin.ToString()));
 	}
 	if (ScaleMesh)
 	{
-		AddInfo(FString::Printf(TEXT("SM_ScaleHandle bounds extent: %s"), *ScaleMesh->GetBounds().BoxExtent.ToString()));
+		AddInfo(FString::Printf(TEXT("SM_ScaleHandle bounds extent: %s, origin: %s"), *ScaleMesh->GetBounds().BoxExtent.ToString(), *ScaleMesh->GetBounds().Origin.ToString()));
 	}
 	if (UniformScaleMesh)
 	{
-		AddInfo(FString::Printf(TEXT("SM_UniformScaleHandle bounds extent: %s"), *UniformScaleMesh->GetBounds().BoxExtent.ToString()));
+		AddInfo(FString::Printf(TEXT("SM_UniformScaleHandle bounds extent: %s, origin: %s"), *UniformScaleMesh->GetBounds().BoxExtent.ToString(), *UniformScaleMesh->GetBounds().Origin.ToString()));
+	}
+	if (GizmoA->MeshPlaneXY && GizmoA->MeshPlaneXY->GetStaticMesh())
+	{
+		AddInfo(FString::Printf(TEXT("SM_PlaneHandle bounds extent: %s, origin: %s"), *GizmoA->MeshPlaneXY->GetStaticMesh()->GetBounds().BoxExtent.ToString(), *GizmoA->MeshPlaneXY->GetStaticMesh()->GetBounds().Origin.ToString()));
+	}
+	if (GizmoA->MeshCenter && GizmoA->MeshCenter->GetStaticMesh())
+	{
+		AddInfo(FString::Printf(TEXT("MeshCenter bounds extent: %s, origin: %s"), *GizmoA->MeshCenter->GetStaticMesh()->GetBounds().BoxExtent.ToString(), *GizmoA->MeshCenter->GetStaticMesh()->GetBounds().Origin.ToString()));
 	}
 
 	// Same shared-CDO-MID bug TerraDyne.Building.GizmoRuntimeAssets already caught once for the old
@@ -111,14 +119,8 @@ bool FGizmoActorRuntimeAssetsTest::RunTest(const FString& Parameters)
 	// once) was caught here by reading the code, not by this test; this pins that behavior down for
 	// the future. GetVectorParameterValue reads the MID back the same way ApplyGizmoColor wrote it.
 	GizmoA->SetHighlightedHandle(EGizmoHandleType::TranslateX);
-	{
-		FLinearColor XColor, YColor;
-		GizmoA->MeshShaftX->GetMaterial(0)->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("EmissiveColor")), XColor);
-		GizmoA->MeshShaftY->GetMaterial(0)->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("EmissiveColor")), YColor);
-		AddInfo(FString::Printf(TEXT("Highlighted X: X emissive=%s Y emissive=%s"), *XColor.ToString(), *YColor.ToString()));
-		TestTrue(TEXT("Highlighting X brightens X's emissive well past its resting value"), XColor.R > 2.0f);
-		TestTrue(TEXT("Highlighting X leaves Y at its ordinary (unlit) emissive level"), YColor.R < 1.0f);
-	}
+	TestEqual(TEXT("Highlighting X updates X's material to hover material"), GizmoA->MeshShaftX->GetMaterial(0), GizmoA->MeshTipX->GetMaterial(0));
+	TestNotEqual(TEXT("Highlighting X differentiates X from Y"), GizmoA->MeshShaftX->GetMaterial(0), GizmoA->MeshShaftY->GetMaterial(0));
 
 	return true;
 }

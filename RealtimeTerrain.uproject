@@ -32,12 +32,11 @@
 		},
 		{
 			"Name": "TerraDyne",
-			"Enabled": true,
-			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/terradyne"
+			"Enabled": true
 		},
 		{
 			"Name": "Monolith",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "CelestialVault",
@@ -69,7 +68,49 @@
 		},
 		{
 			"Name": "RoadBuilder",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/be3bd259012f46fb9ca86a6cd9e9ec97"
+		},
+		{
+			"Name": "ModelContextProtocol",
 			"Enabled": true
+		},
+		{
+			"Name": "AllToolsets",
+			"Enabled": true
+		},
+		{
+			"Name": "ChaosClothAssetToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "SequencerAnimMixerToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "MVVMToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "HairModelingToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "LiveCodingToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "MetaHumanGenerator",
+			"Enabled": true
+		},
+		{
+			"Name": "Avalanche",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Linux",
+				"Mac"
+			]
 		}
 	]
 }

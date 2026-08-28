@@ -6,11 +6,24 @@ namespace RoadElevationProfile
 {
 	double EvaluateHeight(const TArray<FRoadHeightKey>& Keys, double Dist)
 	{
+		if (Keys.Num() == 0)
+		{
+			return 0.0;
+		}
+		if (Keys.Num() == 1)
+		{
+			return Keys[0].Height;
+		}
+
 		int32 Index = RoadCurveGraph::FindElementIndex(Keys, Dist);
 		// Clamp so Index+1 is always a valid bracketing key, matching RoadCurveGraph::FindBracketIndex.
-		if (Index == Keys.Num() - 1)
+		if (Index >= Keys.Num() - 1)
 		{
-			Index--;
+			Index = Keys.Num() - 2;
+		}
+		if (Index < 0)
+		{
+			Index = 0;
 		}
 
 		const FRoadHeightKey& Start = Keys[Index];

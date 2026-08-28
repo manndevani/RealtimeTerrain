@@ -29,14 +29,7 @@ ATerraDyneGizmoActor::ATerraDyneGizmoActor()
 	// own gizmo material, exposing a GizmoColor parameter.
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> GizmoMatFinder(TEXT("/Engine/EngineMaterials/GizmoMaterial.GizmoMaterial"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BasicMatFinder(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-
-	// GizmoMaterial (the fallback below) is BLEND_OPAQUE -- SDPG_Foreground alone only controls
-	// draw ORDER, it does not skip depth testing for opaque geometry, so a handle drawn with it is
-	// still occluded by anything actually in front of it in 3D space (terrain, walls) despite every
-	// mesh here being marked SDPG_Foreground. M_OverlayForeground is translucent with disable-depth-
-	// test explicitly enabled, which is what actually makes a handle render through geometry -- the
-	// same material RoadEditOverlayActor's handles/route line use for the identical reason.
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(TEXT("/Game/Materials/M_OverlayForeground.M_OverlayForeground"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ForegroundMatFinder(TEXT("/Game/Mytaverse/TransformGizmo/Materials/M_GizmoAxis.M_GizmoAxis"));
 
 	SphereMesh = SphereFinder.Object;
 	GizmoBaseMaterial = ForegroundMatFinder.Object

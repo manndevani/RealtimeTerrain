@@ -241,11 +241,25 @@ EGizmoHandleType UGizmoManipulationSubsystem::FindHoveredHandle(const FGizmoInte
 			break;
 		}
 		case EGizmoHandleType::PlaneXY:
-		case EGizmoHandleType::PlaneXZ:
-		case EGizmoHandleType::PlaneYZ:
 		{
 			const FVector AxisU = CompXform.GetUnitAxis(EAxis::X);
 			const FVector AxisV = CompXform.GetUnitAxis(EAxis::Y);
+			Dist = GizmoMath::DistanceRayToQuad(Ray, CompXform.GetLocation(), AxisU, AxisV, Reach, AlongRay);
+			HitPoint = Ray.Origin + Ray.Direction * AlongRay;
+			break;
+		}
+		case EGizmoHandleType::PlaneXZ:
+		{
+			const FVector AxisU = CompXform.GetUnitAxis(EAxis::X);
+			const FVector AxisV = CompXform.GetUnitAxis(EAxis::Z);
+			Dist = GizmoMath::DistanceRayToQuad(Ray, CompXform.GetLocation(), AxisU, AxisV, Reach, AlongRay);
+			HitPoint = Ray.Origin + Ray.Direction * AlongRay;
+			break;
+		}
+		case EGizmoHandleType::PlaneYZ:
+		{
+			const FVector AxisU = CompXform.GetUnitAxis(EAxis::Y);
+			const FVector AxisV = CompXform.GetUnitAxis(EAxis::Z);
 			Dist = GizmoMath::DistanceRayToQuad(Ray, CompXform.GetLocation(), AxisU, AxisV, Reach, AlongRay);
 			HitPoint = Ray.Origin + Ray.Direction * AlongRay;
 			break;
