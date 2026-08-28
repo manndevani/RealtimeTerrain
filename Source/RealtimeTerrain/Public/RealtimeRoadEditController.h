@@ -40,4 +40,13 @@ public:
 	virtual void DeleteSelectedRoadPoint() override;
 	virtual bool HasRoadPointSelected() const override;
 	virtual void ClearRoadSelection() override;
+
+	/**
+	 * Builds one road from an OSM centreline.
+	 *
+	 * The plugin-side importer classifies the ways and converts them to world space but cannot
+	 * construct a road itself -- ARealtimeRoadSplineActor lives in this module, which the plugin
+	 * cannot reference -- so it calls out through this hook, exactly as it does for HandleRoadClick.
+	 */
+	virtual AActor* CreateRoadFromOSM(const TArray<FVector>& WorldPoints, float WidthMeters) override;
 };

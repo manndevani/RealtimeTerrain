@@ -821,6 +821,53 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			SAssignNew(ModelAssetListBox, SVerticalBox)
 		];
 
+	// 5b-bis. Content for OPENSTREETMAP section. Buildings become footprint-spline buildings and
+	// drivable highways become road splines; both are placed through the level's Cesium
+	// georeference, which is why the import refuses to run without one.
+	TSharedRef<SWidget> OSMContent = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SButton)
+			.ButtonStyle(&HudButtonStyle)
+			.Text(LOCTEXT("BtnImportOSM", "🌍 Import OpenStreetMap (.osm)…"))
+			.ToolTipText(LOCTEXT("BtnImportOSMTip", "Import buildings and roads from an OpenStreetMap export. Get one from openstreetmap.org: pan to the area you want, click Export, and save the .osm file."))
+			.IsEnabled(this, &STerraDynePanel::IsOSMImportEnabled)
+			.OnClicked(this, &STerraDynePanel::OnImportOSMClicked)
+			.HAlign(HAlign_Center)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 1)
+		[
+			SNew(STextBlock).Text(LOCTEXT("OSMWhatHeader", "WHAT TO IMPORT")).Font(MicroFont).ColorAndOpacity(HudDim)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &STerraDynePanel::IsOSMBuildingsChecked)
+			.OnCheckStateChanged(this, &STerraDynePanel::OnOSMBuildingsCheckedChanged)
+			.ToolTipText(LOCTEXT("OSMBuildingsTip", "Closed building=* ways become spline buildings. building:levels sets the storey count, falling back to the height tag."))
+			[
+				SNew(STextBlock).Text(LOCTEXT("OSMBuildings", "Buildings")).Font(LabelFont).ColorAndOpacity(HudDim)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &STerraDynePanel::IsOSMRoadsChecked)
+			.OnCheckStateChanged(this, &STerraDynePanel::OnOSMRoadsCheckedChanged)
+			.ToolTipText(LOCTEXT("OSMRoadsTip", "Drivable highway=* ways become road splines. Footpaths, cycleways and steps are skipped. Width comes from the width tag, then lanes, then the road class."))
+			[
+				SNew(STextBlock).Text(LOCTEXT("OSMRoads", "Roads")).Font(LabelFont).ColorAndOpacity(HudDim)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 5, 0, 2)
+		[
+			SNew(STextBlock)
+			.Text(this, &STerraDynePanel::GetOSMStatusText)
+			.ColorAndOpacity(this, &STerraDynePanel::GetOSMStatusColor)
+			.Font(LabelFont)
+			.AutoWrapText(true)
+		];
+
 	// 5c. Content for SCENE OUTLINER section
 	TSharedRef<SWidget> OutlinerContent = SNew(SVerticalBox)
 		// Header row with live counter and refresh
@@ -1058,6 +1105,11 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						]
 
 						// 5c. SCENE OUTLINER SECTION
+						+ SScrollBox::Slot().Padding(0, 1)
+						[
+							MakeCollapsibleSection(LOCTEXT("SecOSM", "OPENSTREETMAP DATA"), bSectionOSMOpen, OSMContent, SectionHeaderFont)
+						]
+
 						+ SScrollBox::Slot().Padding(0, 1)
 						[
 							MakeCollapsibleSection(LOCTEXT("SecOutliner", "SCENE OUTLINER"), bSectionOutlinerOpen, OutlinerContent, SectionHeaderFont)
@@ -3742,6 +3794,90 @@ FSlateColor STerraDynePanel::GetOutlinerVisibilityColor(TWeakObjectPtr<AActor> A
 {
 	if (!ActorPtr.IsValid()) return FSlateColor(TerraDyneHud::Dim);
 	return ActorPtr->IsHidden() ? FSlateColor(TerraDyneHud::Dim) : FSlateColor(TerraDyneHud::Cyan);
+}
+
+
+//-----------------------------------------------------------------------------
+// OpenStreetMap ingestion
+//-----------------------------------------------------------------------------
+
+FReply STerraDynePanel::OnImportOSMClicked()
+{
+	if (OwnerWidget.IsValid())
+	{
+		OwnerWidget->OpenOSMImportPicker();
+	}
+	return FReply::Handled();
+}
+
+ECheckBoxState STerraDynePanel::IsOSMBuildingsChecked() const
+{
+	return (OwnerWidget.IsValid() && OwnerWidget->bOSMImportBuildings) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void STerraDynePanel::OnOSMBuildingsCheckedChanged(ECheckBoxState NewState)
+{
+	if (OwnerWidget.IsValid())
+	{
+		OwnerWidget->bOSMImportBuildings = (NewState == ECheckBoxState::Checked);
+	}
+}
+
+ECheckBoxState STerraDynePanel::IsOSMRoadsChecked() const
+{
+	return (OwnerWidget.IsValid() && OwnerWidget->bOSMImportRoads) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void STerraDynePanel::OnOSMRoadsCheckedChanged(ECheckBoxState NewState)
+{
+	if (OwnerWidget.IsValid())
+	{
+		OwnerWidget->bOSMImportRoads = (NewState == ECheckBoxState::Checked);
+	}
+}
+
+bool STerraDynePanel::IsOSMImportEnabled() const
+{
+	// Importing nothing would silently do nothing, which reads as a broken button.
+	return OwnerWidget.IsValid() && (OwnerWidget->bOSMImportBuildings || OwnerWidget->bOSMImportRoads);
+}
+
+FText STerraDynePanel::GetOSMStatusText() const
+{
+	if (OwnerWidget.IsValid() && !OwnerWidget->bOSMImportBuildings && !OwnerWidget->bOSMImportRoads)
+	{
+		return LOCTEXT("OSMNothingSelected", "Select at least one thing to import.");
+	}
+
+	if (const ATerraDyneEditController* PC = OwnerWidget.IsValid()
+		? Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()) : nullptr)
+	{
+		const FTerraDyneOSMImportSummary Summary = PC->GetLastOSMImportSummary();
+		if (Summary.bSuccess || !Summary.ErrorMessage.IsEmpty())
+		{
+			return FText::FromString(Summary.ToDisplayString());
+		}
+	}
+
+	return LOCTEXT("OSMIdle", "No OSM data imported yet. Export an area from openstreetmap.org, then import the .osm file.");
+}
+
+FSlateColor STerraDynePanel::GetOSMStatusColor() const
+{
+	if (const ATerraDyneEditController* PC = OwnerWidget.IsValid()
+		? Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()) : nullptr)
+	{
+		const FTerraDyneOSMImportSummary Summary = PC->GetLastOSMImportSummary();
+		if (!Summary.ErrorMessage.IsEmpty() && !Summary.bSuccess)
+		{
+			return FSlateColor(FLinearColor(0.9f, 0.25f, 0.2f));
+		}
+		if (Summary.bSuccess)
+		{
+			return FSlateColor(TerraDyneHud::Cyan);
+		}
+	}
+	return FSlateColor(TerraDyneHud::Dim);
 }
 
 #undef LOCTEXT_NAMESPACE

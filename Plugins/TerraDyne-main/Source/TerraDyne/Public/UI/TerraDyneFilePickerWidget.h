@@ -31,6 +31,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|FilePicker")
 	FString StartingDirectory;
 
+	/** Extensions to list, without dots. Empty keeps the raster set this picker originally shipped with. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|FilePicker")
+	TArray<FString> AllowedExtensions;
+
+	/** Replaces the panel's title line. Empty keeps the GeoTIFF wording. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|FilePicker")
+	FText TitleOverride;
+
 	/** Fired once, with the chosen file's full path, when the player confirms a selection. */
 	UPROPERTY(BlueprintAssignable, Category = "TerraDyne|FilePicker")
 	FTerraDyneOnGeoTIFFChosen OnFileChosen;

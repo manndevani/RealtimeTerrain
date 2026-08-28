@@ -16,6 +16,10 @@ class STerraDyneFilePickerPanel : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(STerraDyneFilePickerPanel) {}
 		SLATE_ARGUMENT(FString, StartingDirectory)
+		/** Extensions to list, without dots and case-insensitive. Empty keeps the raster default. */
+		SLATE_ARGUMENT(TArray<FString>, AllowedExtensions)
+		/** Replaces the panel's title line. Empty keeps the GeoTIFF wording. */
+		SLATE_ARGUMENT(FText, TitleOverride)
 		SLATE_EVENT(FTerraDyneFilePickerChosen, OnFileChosen)
 		SLATE_EVENT(FSimpleDelegate, OnCancelled)
 	SLATE_END_ARGS()
@@ -23,6 +27,13 @@ public:
 	void Construct(const FArguments& InArgs);
 
 private:
+	/**
+	 * When empty this panel lists whatever FTerraDyneArchiveHelper accepts, which is what every
+	 * raster caller wants. A caller that supplies extensions gets exactly those instead -- the panel
+	 * used to hardcode the raster set, so it could not be reused for anything else.
+	 */
+	TArray<FString> AllowedExtensions;
+
 	FString CurrentDirectory;
 	FString SelectedFilePath;
 	TArray<FString> Subdirectories;
@@ -34,6 +45,9 @@ private:
 	TSharedPtr<class SVerticalBox> ListContainer;
 	FButtonStyle HudButtonStyle;
 	FButtonStyle HudEntryStyle;
+
+	/** True when Filename should appear in the listing, honouring AllowedExtensions. */
+	bool IsAcceptedFile(const FString& Filename) const;
 
 	void NavigateToDirectory(const FString& Path);
 	void RefreshListing();

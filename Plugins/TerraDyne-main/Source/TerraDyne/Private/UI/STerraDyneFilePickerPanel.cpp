@@ -15,18 +15,11 @@
 
 #define LOCTEXT_NAMESPACE "TerraDyneFilePicker"
 
-namespace
-{
-	bool HasRasterExtension(const FString& Filename)
-	{
-		return FTerraDyneArchiveHelper::HasSupportedExtension(Filename);
-	}
-}
-
 void STerraDyneFilePickerPanel::Construct(const FArguments& InArgs)
 {
 	OnFileChosenDelegate = InArgs._OnFileChosen;
 	OnCancelledDelegate = InArgs._OnCancelled;
+	AllowedExtensions = InArgs._AllowedExtensions;
 
 	const FSlateFontInfo MicroFont = FCoreStyle::GetDefaultFontStyle("Bold", 7);
 	const FSlateFontInfo HeaderFont = FCoreStyle::GetDefaultFontStyle("Bold", 11);
@@ -71,7 +64,9 @@ void STerraDyneFilePickerPanel::Construct(const FArguments& InArgs)
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 1, 0, 10)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("Title", "SELECT A GEOTIFF  (.TIF / .TIFF)"))
+							.Text(InArgs._TitleOverride.IsEmpty()
+								? LOCTEXT("Title", "SELECT A GEOTIFF  (.TIF / .TIFF)")
+								: InArgs._TitleOverride)
 							.Font(HeaderFont)
 							.ColorAndOpacity(TerraDyneHud::Text)
 						]
@@ -177,6 +172,18 @@ void STerraDyneFilePickerPanel::Construct(const FArguments& InArgs)
 	NavigateToDirectory(Start);
 }
 
+bool STerraDyneFilePickerPanel::IsAcceptedFile(const FString& Filename) const
+{
+	if (AllowedExtensions.Num() == 0)
+	{
+		return FTerraDyneArchiveHelper::HasSupportedExtension(Filename);
+	}
+
+	const FString Ext = FPaths::GetExtension(Filename).ToLower();
+	return AllowedExtensions.ContainsByPredicate(
+		[&Ext](const FString& Allowed) { return Allowed.ToLower() == Ext; });
+}
+
 void STerraDyneFilePickerPanel::NavigateToDirectory(const FString& Path)
 {
 	FString Normalized = Path;
@@ -203,7 +210,7 @@ void STerraDyneFilePickerPanel::RefreshListing()
 		{
 			Subdirectories.Add(Entry);
 		}
-		else if (HasRasterExtension(Entry))
+		else if (IsAcceptedFile(Entry))
 		{
 			Files.Add(Entry);
 		}
@@ -265,7 +272,7 @@ void STerraDyneFilePickerPanel::RebuildListWidgets()
 	{
 		ListContainer->AddSlot().AutoHeight().Padding(0, 4)
 		[
-			SNew(STextBlock).Text(LOCTEXT("Empty", "(no subdirectories or .tif/.tiff files here)")).Font(RowFont).ColorAndOpacity(HudDim)
+			SNew(STextBlock).Text(LOCTEXT("Empty", "(nothing here matching this file type)")).Font(RowFont).ColorAndOpacity(HudDim)
 		];
 	}
 }

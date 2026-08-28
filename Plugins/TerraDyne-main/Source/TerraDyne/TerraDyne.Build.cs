@@ -46,7 +46,8 @@ public class TerraDyne : ModuleRules
             "Projects",
             "Json",
             "JsonUtilities",
-            "ImageWrapper"
+            "ImageWrapper",
+            "XmlParser"
 		});
 
 		if (Target.bBuildEditor)

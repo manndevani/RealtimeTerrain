@@ -7,6 +7,9 @@
 #include "Building/TerraDynePlacedModelActor.h"
 #include "Building/TerraDyneGizmoActor.h"
 #include "Core/TerraDyneAssetLibrarySubsystem.h"
+#include "IO/TerraDyneOSMParser.h"
+#include "IO/TerraDyneOSMIngest.h"
+#include "CesiumGeoreference.h"
 #include "Gizmo/GizmoManipulationSubsystem.h"
 #include "Gizmo/RuntimeGizmoActor.h"
 #include "Components/SplineComponent.h"
@@ -1987,4 +1990,150 @@ void ATerraDyneEditController::Server_DeleteModel_Implementation(ATerraDynePlace
 {
 	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
 	RequestDeleteModel(ModelActor);
+}
+
+//-----------------------------------------------------------------------------
+// OpenStreetMap ingestion
+//-----------------------------------------------------------------------------
+
+FTerraDyneOSMImportSummary ATerraDyneEditController::GetLastOSMImportSummary() const
+{
+	return LastOSMImportSummary;
+}
+
+void ATerraDyneEditController::RequestImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads)
+{
+	if (HasAuthority())
+	{
+		FTerraDyneOSMImportOptions Options;
+		Options.bImportBuildings = bImportBuildings;
+		Options.bImportRoads = bImportRoads;
+		LastOSMImportSummary = ImportOSMInternal(FilePath, Options);
+	}
+	else
+	{
+		Server_ImportOSM(FilePath, bImportBuildings, bImportRoads);
+	}
+}
+
+void ATerraDyneEditController::Server_ImportOSM_Implementation(const FString& FilePath, bool bImportBuildings, bool bImportRoads)
+{
+	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
+	RequestImportOSM(FilePath, bImportBuildings, bImportRoads);
+}
+
+FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FString& FilePath, const FTerraDyneOSMImportOptions& Options)
+{
+	FTerraDyneOSMImportSummary Summary;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		Summary.ErrorMessage = TEXT("No world to import into.");
+		return Summary;
+	}
+
+	const FTerraDyneOSMData Data = FTerraDyneOSMParser::ParseFile(FilePath);
+	if (!Data.bSuccess)
+	{
+		Summary.ErrorMessage = Data.ErrorMessage;
+		return Summary;
+	}
+
+	// Everything in an OSM document is lon/lat, so the whole import hangs off the level's Cesium
+	// georeference. Without one there is no defined mapping to world space and guessing would put
+	// the city somewhere arbitrary.
+	ACesiumGeoreference* Georeference = ACesiumGeoreference::GetDefaultGeoreference(World);
+	if (!Georeference)
+	{
+		Summary.ErrorMessage = TEXT("No CesiumGeoreference in this level -- OSM data is longitude/latitude and cannot be placed without one.");
+		return Summary;
+	}
+
+	auto LonLatToWorld = [Georeference](double Lon, double Lat) -> FVector
+	{
+		// Height 0: the footprint is placed on the georeference plane and each building resolves its
+		// own ground height from the terrain afterwards via SnapToPadHeight.
+		return Georeference->TransformLongitudeLatitudeHeightPositionToUnreal(FVector(Lon, Lat, 0.0));
+	};
+
+	int32 FeaturesCreated = 0;
+
+	for (const FTerraDyneOSMWay& Way : Data.Ways)
+	{
+		const bool bIsBuilding = Options.bImportBuildings && FTerraDyneOSMParser::IsBuilding(Way);
+		const bool bIsRoad = Options.bImportRoads && FTerraDyneOSMParser::IsDrivableHighway(Way);
+		if (!bIsBuilding && !bIsRoad)
+		{
+			continue;
+		}
+
+		if (FeaturesCreated >= Options.MaxFeatures)
+		{
+			// Counted, not silently dropped -- the summary says how much was left behind.
+			Summary.DroppedToLimit++;
+			continue;
+		}
+
+		TArray<FVector> WorldPoints;
+		if (!FTerraDyneOSMIngest::ResolveWayWorldPoints(Data, Way, LonLatToWorld, WorldPoints))
+		{
+			// A way reaching outside the extract's own bounds. Skip the whole way rather than
+			// building a shape with a corner missing.
+			bIsBuilding ? Summary.BuildingsSkipped++ : Summary.RoadsSkipped++;
+			continue;
+		}
+
+		if (bIsBuilding)
+		{
+			FVector Origin = FVector::ZeroVector;
+			const TArray<FVector> Local = FTerraDyneOSMIngest::BuildFootprintLocal(WorldPoints, Origin);
+			if (Local.Num() < 3)
+			{
+				Summary.BuildingsSkipped++;
+				continue;
+			}
+
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
+				ATerraDyneBuildingActor::StaticClass(), FTransform(Origin), SpawnParams);
+			if (!NewBuilding)
+			{
+				Summary.BuildingsSkipped++;
+				continue;
+			}
+
+			NewBuilding->SetFloorCount(FTerraDyneOSMParser::ResolveBuildingLevels(Way, Options.DefaultBuildingLevels));
+			NewBuilding->SetSplinePoints(Local);
+			NewBuilding->SnapToPadHeight();
+
+			Summary.BuildingsCreated++;
+			FeaturesCreated++;
+		}
+		else
+		{
+			const TArray<FVector> Centreline = FTerraDyneOSMIngest::BuildRoadCentreline(WorldPoints);
+			if (Centreline.Num() < 2)
+			{
+				Summary.RoadsSkipped++;
+				continue;
+			}
+
+			// Virtual: does nothing unless the game module's subclass is the active controller.
+			if (CreateRoadFromOSM(Centreline, FTerraDyneOSMParser::ResolveHighwayWidthMeters(Way)))
+			{
+				Summary.RoadsCreated++;
+				FeaturesCreated++;
+			}
+			else
+			{
+				Summary.RoadsSkipped++;
+			}
+		}
+	}
+
+	Summary.bSuccess = true;
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: OSM import of '%s' -- %s"), *FilePath, *Summary.ToDisplayString());
+	return Summary;
 }

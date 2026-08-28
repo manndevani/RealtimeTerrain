@@ -67,6 +67,7 @@ private:
 	bool bSectionRoadsOpen = true;
 	bool bSectionBuildingsOpen = true;
 	bool bSectionModelsOpen = true;
+	bool bSectionOSMOpen = true;
 	bool bSectionOutlinerOpen = true;
 	bool bSectionTelemetryOpen = false;
 	bool bSectionTiledCesiumOpen = true;
@@ -253,6 +254,16 @@ private:
 	 * and leaked on every rebuild, which the newly-automatic refresh would have made continuous.
 	 */
 	TArray<TSharedPtr<struct FSlateImageBrush>> ModelThumbnailBrushes;
+
+	// OpenStreetMap ingestion
+	FReply OnImportOSMClicked();
+	ECheckBoxState IsOSMBuildingsChecked() const;
+	void OnOSMBuildingsCheckedChanged(ECheckBoxState NewState);
+	ECheckBoxState IsOSMRoadsChecked() const;
+	void OnOSMRoadsCheckedChanged(ECheckBoxState NewState);
+	bool IsOSMImportEnabled() const;
+	FText GetOSMStatusText() const;
+	FSlateColor GetOSMStatusColor() const;
 
 	// Scene Outliner
 	TSharedRef<SWidget> MakeOutlinerRow(AActor* Actor, const FString& Label, const FString& TypeTag, const struct FSlateFontInfo& LabelFont, const struct FSlateFontInfo& MicroFont, const FLinearColor& HudText, const FLinearColor& HudDim, const FLinearColor& HudCyan);

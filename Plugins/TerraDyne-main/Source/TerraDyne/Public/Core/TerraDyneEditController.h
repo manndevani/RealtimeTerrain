@@ -6,6 +6,7 @@
 #include "Core/TerraDyneSaveGame.h"
 #include "World/TerraDyneTileData.h"
 #include "IO/TerraDyneRasterLayers.h"
+#include "IO/TerraDyneOSMIngest.h"
 #include "TerraDyneEditController.generated.h"
 
 class ATerraDyneManager;
@@ -140,6 +141,27 @@ public:
 
 	void SelectModelActor(class ATerraDynePlacedModelActor* ModelActor);
 	void ClearModelSelection();
+
+	//--- OpenStreetMap ingestion ---
+
+	/**
+	 * Imports a .osm document, spawning buildings and roads for the ways it contains. Routed through
+	 * the server like every other world edit; the summary of the last run is left in
+	 * LastOSMImportSummary for the panel to display.
+	 */
+	void RequestImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads);
+
+	/**
+	 * Builds one road from an OSM centreline in world space. Returns the actor created, or null.
+	 *
+	 * Virtual for the same reason HandleRoadClick is: road actors live in the game module, which
+	 * this plugin cannot reference. The base implementation does nothing, so a project without the
+	 * road module still imports buildings; ARealtimeRoadEditController overrides it.
+	 */
+	virtual AActor* CreateRoadFromOSM(const TArray<FVector>& WorldPoints, float WidthMeters) { return nullptr; }
+
+	/** Result of the most recent OSM import, for UI display. */
+	struct FTerraDyneOSMImportSummary GetLastOSMImportSummary() const;
 
 	//--- Population Requests ---
 	void RequestHarvestPopulation(const FGuid& PopulationId);
@@ -383,6 +405,14 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_StartSandboxMode();
+
+	UFUNCTION(Server, Reliable)
+	void Server_ImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads);
+
+	/** Does the actual work on the authority. */
+	FTerraDyneOSMImportSummary ImportOSMInternal(const FString& FilePath, const FTerraDyneOSMImportOptions& Options);
+
+	FTerraDyneOSMImportSummary LastOSMImportSummary;
 
 	ATerraDyneManager* GetManager() const;
 

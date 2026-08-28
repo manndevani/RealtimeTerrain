@@ -6,6 +6,8 @@ TSharedRef<SWidget> UTerraDyneFilePickerWidget::RebuildWidget()
 {
 	SAssignNew(Panel, STerraDyneFilePickerPanel)
 		.StartingDirectory(StartingDirectory)
+		.AllowedExtensions(AllowedExtensions)
+		.TitleOverride(TitleOverride)
 		.OnFileChosen(FTerraDyneFilePickerChosen::CreateUObject(this, &UTerraDyneFilePickerWidget::HandlePanelFileChosen))
 		.OnCancelled(FSimpleDelegate::CreateUObject(this, &UTerraDyneFilePickerWidget::HandlePanelCancelled));
 

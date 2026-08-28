@@ -827,8 +827,12 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
     * **glTF 2.0 & Binary glTF (`.gltf` & `.glb`)**: Complete JSON and binary container parsing via the open-source **`cgltf`** library, including PBR BaseColor materials and embedded/external PNG/JPG textures.
     * **Stereolithography STL (`.stl`)**: Both 80-byte header Binary and ASCII (`facet normal ... endfacet`).
     * **Polygon File Format PLY (`.ply`)**: Both ASCII and Binary header elements, vertex positions, normals, and face indices.
-  * **Zero External DLL / SDK Overhead**: Direct C++ parsing into `FDynamicMesh3` and dynamic material assignment.
+  * **Smart Multi-Source Texture Resolution (`FTerraDyneModelImporter::ResolveTexturePath`)**:
+    * Automatically resolves textures across FBX, glTF, and OBJ formats even when files contain broken or author-machine absolute paths (e.g. `C:\Users\Author\...`).
+    * Searches candidate locations: exact path, model directory, adjacent subfolders (`textures/`, `Textures/`, `images/`, `maps/`, `materials/`), parent directories, and format fallbacks (`.png`, `.jpg`, `.bmp` for `.tga`/`.tif`/`.psd` references).
+    * Embedded FBX binary textures decoded directly from internal memory blobs.
   * **Dynamic Image Wrapper**: Automatically loads `.png`, `.jpg`, and `.bmp` files (from external paths or embedded memory buffers) directly into transient `UTexture2D` instances.
+  * **Textured Material Binding**: `ApplyMaterials()` dynamically binds textures across standard parameter slots (`Texture`, `BaseColorTexture`, `EmissiveTexture`, `Diffuse`, `Albedo`) onto textured base materials.
   * **Automatic Normal & Bounds Computation**: Calculates bounding dimensions, polycounts (`tris • verts`), and overlays missing vertex normals via `FMeshNormals::InitializeOverlayToPerVertexNormals`.
 * **Placed Model Actor (`ATerraDynePlacedModelActor`)**:
   * Runtime-spawnable, selectable 3D scene actor using `UDynamicMeshComponent` for geometry and collision raycasting.
@@ -924,6 +928,64 @@ sole failure being the pre-existing `TerraDyne.Raster.Workflow` fixture gap.
 **Still open**: multiplayer needs the model file present on each machine (inherent to replicating a
 path rather than geometry); generated thumbnails need a real RHI and have not been inspected
 visually, only proven to no-op safely headless.
+
+---
+
+### 11. OpenStreetMap Data Ingestion
+
+Imports real-world buildings and roads from an OpenStreetMap export. Export an area from
+openstreetmap.org (pan to it, click **Export**), then use **🌍 Import OpenStreetMap (.osm)…** in the
+new **OPENSTREETMAP DATA** panel section. Offline and packaged-build safe — no network dependency.
+
+* **Reader (`FTerraDyneOSMParser`)** — OSM XML via the engine's runtime `XmlParser` module, so no
+  third-party dependency. Nodes, ways and tags; `<relation>` is deliberately ignored for now, since
+  what it mainly buys is multipolygon buildings with holes and neither the footprint spline nor the
+  road system can express a hole. Deliberately pure — no world, no UObject, no georeferencing — so
+  the fiddly decisions are testable with no map open.
+  * **Classification**: closed `building=*` ways become buildings (`building=no` excluded);
+    `highway=*` becomes a road only for values vehicles actually drive on — footways, cycleways,
+    steps and pedestrian areas are skipped rather than built as carriageways.
+  * **Tag interpretation**: `building:levels` → storeys, falling back to `height` in metres over a
+    3 m storey. Road width from `width`, then `lanes` × 3.5 m, then a per-class default. Numeric
+    tags are free text in OSM and routinely carry units (`"12 m"`), so the leading number is taken
+    and the rest ignored rather than rejecting the tag.
+  * **Line-oriented XML workaround**: `FXmlFile` cannot parse two elements sharing a line and
+    rejects the whole document with a bare "Failed to parse the loaded document". Exports from
+    openstreetmap.org are one element per line and load as-is, but anything minified failed for a
+    reason a user could never act on, so the reader splits element boundaries onto their own lines
+    first. Safe here specifically because OSM XML holds all its data in attributes, never in element
+    text, and a literal `><` cannot occur inside a properly escaped attribute value.
+* **Geometry (`FTerraDyneOSMIngest`)** — also pure. Drops OSM's repeated closing node and any
+  coincident corners, centres each footprint's origin on its centroid (so moving a building stays
+  one transform), and **normalises footprint winding counter-clockwise**.
+  * That last one is not cosmetic. `ResetToDefaultFootprint` winds counter-clockwise deliberately,
+    and wall generation and the terrain pad both read that ordering — a clockwise footprint builds
+    the building inside-out. It also cannot be decided from OSM's own ring convention, because this
+    project georeferences through Cesium in **East-South-Up**: latitude grows toward −Y, so the
+    conversion flips every ring's handedness on the way in. Normalising *after* conversion, in
+    Unreal space, is the only ordering that is actually correct.
+* **Placement** — lon/lat goes through the level's `ACesiumGeoreference` via
+  `TransformLongitudeLatitudeHeightPositionToUnreal`, the same call the GeoTIFF and tiled-Cesium
+  paths already use. The import refuses to run without a georeference rather than guessing.
+  Buildings resolve their own ground height through `SnapToPadHeight`; road centrelines are
+  vertically traced onto the terrain, since a `.osm` document carries no elevation and an untraced
+  road would sit at the georeference origin's height.
+* **Cross-module split** — buildings are built in-plugin. Roads cannot be: `ARealtimeRoadSplineActor`
+  lives in the game module the plugin cannot reference, so the importer calls out through a new
+  `ATerraDyneEditController::CreateRoadFromOSM` hook that `ARealtimeRoadEditController` overrides —
+  exactly the pattern `HandleRoadClick` already uses. A project without the road module still
+  imports buildings.
+* **Truncation is reported, not silent** — a city-sized extract holds hundreds of thousands of ways,
+  so imports stop at `MaxFeatures` (2000) and the summary says how many were left behind, alongside
+  counts of anything skipped for unresolvable node refs or too few usable points.
+
+Covered by seven tests: `TerraDyne.OSM.Parse`, `.Classify`, `.TagResolution`, `.MalformedInput`,
+`.FootprintWinding`, `.FootprintBuild` and `.Centreline`. Full suite **115/116**, the sole failure
+being the pre-existing `TerraDyne.Raster.Workflow` fixture gap.
+
+**Not yet done**: downloading an area straight from the OSM API (the reader already takes a string,
+so it is additive); `.osm.pbf`; multipolygon relations; and the end-to-end spawn path has unit
+coverage on every pure layer but has not been run against a real georeferenced level.
 
 ---
 

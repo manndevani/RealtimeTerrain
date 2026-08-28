@@ -127,6 +127,20 @@ public:
 	void OpenRasterLayerImportPicker(ETerraDyneRasterLayer Layer);
 
 	/**
+	 * Opens the runtime file picker filtered to .osm documents, and routes the chosen file to
+	 * ATerraDyneEditController::RequestImportOSM with the current entity toggles.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TerraDyne|Actions")
+	void OpenOSMImportPicker();
+
+	/** Which OSM entities the next import brings in. Driven by the panel's checkboxes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|OSM")
+	bool bOSMImportBuildings = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|OSM")
+	bool bOSMImportRoads = true;
+
+	/**
 	 * Shows the Sandbox/Import GIS File startup choice if (and only if) the manager's
 	 * bShowWorldModeChoiceOnBeginPlay is on and the world is still genuinely undecided -- not on a
 	 * reload of an already-imported level, not a second call while one is already up. Called once
@@ -158,6 +172,12 @@ private:
 
 	UFUNCTION()
 	void HandleGeoTIFFPickerCancelled();
+
+	/** True while the active picker is an OSM one, so the shared handlers route to the right import. */
+	bool bPickerIsForOSM = false;
+
+	UFUNCTION()
+	void HandleOSMChosen(const FString& FilePath);
 
 	/** The startup choice spawned by ShowWorldModeChoiceIfNeeded(), if one is currently up. */
 	UPROPERTY(Transient)

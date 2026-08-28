@@ -151,6 +151,43 @@ void UTerraDyneToolWidget::OpenRasterLayerImportPicker(ETerraDyneRasterLayer Lay
 	ActiveGeoTIFFPicker->AddToViewport(100);
 }
 
+void UTerraDyneToolWidget::OpenOSMImportPicker()
+{
+	if (ActiveGeoTIFFPicker)
+	{
+		// Already up -- avoid stacking a second picker on top of it.
+		return;
+	}
+
+	ActiveGeoTIFFPicker = CreateWidget<UTerraDyneFilePickerWidget>(GetOwningPlayer(), UTerraDyneFilePickerWidget::StaticClass());
+	if (!ActiveGeoTIFFPicker)
+	{
+		return;
+	}
+
+	bPickerIsForOSM = true;
+	ActiveGeoTIFFPicker->AllowedExtensions = { TEXT("osm"), TEXT("xml") };
+	ActiveGeoTIFFPicker->TitleOverride = NSLOCTEXT("TerraDyneUI", "OSMPickerTitle", "SELECT AN OPENSTREETMAP EXPORT  (.OSM)");
+	ActiveGeoTIFFPicker->OnFileChosen.AddDynamic(this, &UTerraDyneToolWidget::HandleOSMChosen);
+	ActiveGeoTIFFPicker->OnCancelled.AddDynamic(this, &UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled);
+	ActiveGeoTIFFPicker->AddToViewport(100);
+}
+
+void UTerraDyneToolWidget::HandleOSMChosen(const FString& FilePath)
+{
+	if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(GetOwningPlayer()))
+	{
+		PC->RequestImportOSM(FilePath, bOSMImportBuildings, bOSMImportRoads);
+	}
+
+	if (ActiveGeoTIFFPicker)
+	{
+		ActiveGeoTIFFPicker->RemoveFromParent();
+		ActiveGeoTIFFPicker = nullptr;
+	}
+	bPickerIsForOSM = false;
+}
+
 void UTerraDyneToolWidget::HandleGeoTIFFChosen(const FString& FilePath)
 {
 	FString ResolvedPath;
@@ -183,6 +220,15 @@ void UTerraDyneToolWidget::HandleGeoTIFFPickerCancelled()
 	{
 		ActiveGeoTIFFPicker->RemoveFromParent();
 		ActiveGeoTIFFPicker = nullptr;
+	}
+
+	// An OSM import is an ordinary in-session action, not the startup world-mode decision, so
+	// cancelling it must not drag the player back to the Sandbox/Import choice.
+	if (bPickerIsForOSM)
+	{
+		bPickerIsForOSM = false;
+		RevealToolPanelAfterChoice();
+		return;
 	}
 
 	// Cancelling the picker used to be a dead end: the choice widget was already gone, so the player
