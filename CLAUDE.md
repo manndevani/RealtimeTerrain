@@ -24,8 +24,7 @@ substitute.
   section) — don't assume the vanilla plugin behavior.
 - **Check what a fix could break elsewhere** before calling it done — a caller, another mode, or
   replication. A green build is not the same as "no regression."
-- **Never claim a test result you didn't get from a real run.** Always execute tests (via MCP when
-  the editor is running, or headless when closed) and report the actual output.
+- **Always use native OS file dialogs for importing/exporting.** Always use `IDesktopPlatform::OpenFileDialog`, `OpenDirectoryDialog`, and `SaveFileDialog` (via `FDesktopPlatformModule::Get()`) for all file and folder browsing (GeoTIFF, DEM, OSM, 3D Models, level saves). NEVER default to or pop up in-game Slate file picker UIs (`STerraDyneFilePickerPanel`) in editor/desktop workflows.
 - **Use MCP for live testing when Unreal Editor is open.** Epic's official `ModelContextProtocol`
   server runs on `http://127.0.0.1:8000/mcp`. Use it to trigger Live Coding compiles and execute
   automation tests live without restarting the editor.
@@ -150,19 +149,19 @@ Then inspect `Saved/Logs/RealtimeTerrain.log` (grep for `Test Started`/`Test Com
   `RoadMeshBuilder`, `RoadSpiral` (Euler-spiral/clothoid), `RoadElevationProfile` (height keys +
   auto-flyover), `RoadWidthProfile` (Scale-mode width keys), `RoadPierPlacement`, `RoadStylePresets`,
   `RoadXodrExport` (editor-only OpenDRIVE export).
-- **`Plugins/TerraDyne-main/Source/TerraDyne/`** (108 files across `TerraDyne` + `TerraDyneEditor` —
+- **`Plugins/TerraDyne-main/Source/TerraDyne/`** (120 files across `TerraDyne` + `TerraDyneEditor` —
   full detail in its `CODE_REFERENCE.md`), organized by subfolder:
-  - `Building/` — `ATerraDyneBuildingActor`, `ATerraDynePlacedModelActor` (runtime placed 3D model instance with `UDynamicMeshComponent`, replicated `Scale3D`, visibility toggles, and selection highlight), `ATerraDyneGizmoActor` (footprint-spline-vertex handles only).
+  - `Building/` — `ATerraDyneBuildingActor`, `ATerraDynePlacedModelActor` (runtime placed 3D model instance with `UDynamicMeshComponent`, replicated `Scale3D`, visibility toggles, and selection highlight), `ATerraDyneGizmoActor` (footprint-spline-vertex handles only), `TerraDyneModelTypes.h` (`FTerraDyneModelLibraryEntryData`/`FTerraDynePlacedModelData` — the save-game and undo-snapshot shapes for the model catalog and its placements), `TerraDyneBuildingKit.h`/`TerraDyneBuildingTypes.h` (building-kit data types).
   - `Gizmo/` — the reusable transform gizmo: `GizmoTypes.h` (enums/state), `GizmoManipulationMath.h/.cpp` (pure math, no UObject refs), `ARuntimeGizmoActor` (visual handles for Translate, Rotate, Scale with screen-rotation ring), `UGizmoManipulationSubsystem` (`UWorldSubsystem`, single stateful owner). Drives buildings, placed 3D models, and road points identically.
-  - `IO/` — `TerraDyneModelImporter` (zero-external-dependency runtime loader for `.obj`, `.stl`, `.ply` + `.mtl` diffuse colors and companion `.png`/`.jpg` textures into `FDynamicMesh3`), `TerraDyneSerializer`/`TerraDyneAsyncSaver`/`TerraDyneArchiveHelper` (save-game I/O), `TerraDyneGeoTIFFReader`/`TerraDyneGeoTIFFHeightSource`/`TerraDyneDEMMeshBuilder`/`TerraDyneRasterLayers` (GDAL/DEM import pipeline).
-  - `Core/` — `ATerraDyneManager`, `UTerraDyneAssetLibrarySubsystem` (`UWorldSubsystem` catalog of imported 3D models with PNG thumbnail resolution, dimensions, and polycounts), `UTerraDyneSubsystem`, `ATerraDyneEditController` (runtime placement tool `PlaceModel`, raycast selection of placed models, holographic terrain ghosting, gizmo integration), `ATerraDyneEditPawn`, `ATerraDyneWorldPreset`, `ATerraDyneProceduralGenerator`, `UTerraDyneSaveGame`/`TerraDyneWorldTypes.h`.
+  - `IO/` — `TerraDyneModelImporter` (zero-external-dependency runtime loader for `.obj`, `.stl`, `.ply`, `.fbx`, `.gltf`, `.glb` + `.mtl` diffuse colors and companion `.png`/`.jpg` textures into `FDynamicMesh3`, via vendored `ufbx`/`cgltf` under `Private/ThirdParty/`), `TerraDyneModelThumbnail` (runtime scene-capture thumbnail generation, cached to `Saved/TerraDyne/ModelThumbnails/`), `TerraDyneOSMParser`/`TerraDyneOSMIngest` (OpenStreetMap `.osm` XML parsing + geometry ingest — buildings and drivable roads, pure/world-free), `TerraDyneSerializer`/`TerraDyneAsyncSaver`/`TerraDyneArchiveHelper` (save-game I/O), `TerraDyneGeoTIFFReader`/`TerraDyneGeoTIFFHeightSource`/`TerraDyneDEMMeshBuilder`/`TerraDyneRasterLayers` (GDAL/DEM import pipeline).
+  - `Core/` — `ATerraDyneManager`, `UTerraDyneAssetLibrarySubsystem` (`UWorldSubsystem` catalog of imported 3D models with PNG thumbnail resolution, dimensions, and polycounts), `UTerraDyneSubsystem`, `ATerraDyneEditController` (runtime placement tool `PlaceModel`, raycast selection of placed models, holographic terrain ghosting, gizmo integration, OpenStreetMap import — Tick-budgeted actor spawning, its own building/model/OSM undo stack chained alongside road undo), `ATerraDyneEditPawn`, `ATerraDyneWorldPreset`, `ATerraDyneProceduralGenerator`, `UTerraDyneSaveGame`/`TerraDyneWorldTypes.h`.
   - `World/` — `ATerraDyneChunk` (the sculptable `FDynamicMesh3` + VHFM chunk actor),
     `ATerraDyneOrchestrator`, `TerraDyneSceneSetup`, `TerraDyneDemoMarkerActor`/`TerraDyneProjectile`.
-  - `UI/` — `STerraDynePanel` (the left-anchored Slate HUD with collapsible **"3D Models & Assets"** palette displaying **PNG photo thumbnails** and **"Scene Outliner"** with live item count, focus `🎯`, visibility `👁️`, and deletion `🗑️`), `STerraDyneFilePickerPanel`, `STerraDyneWorldModeChoicePanel`.
+  - `UI/` — `STerraDynePanel` (the left-anchored Slate HUD with collapsible **"3D Models & Assets"** palette displaying **PNG photo thumbnails** and **"Scene Outliner"** with live item count, focus `🎯`, visibility `👁️`, and deletion `🗑️`, plus **"OpenStreetMap Data"** import with a progress bar), `STerraDyneFilePickerPanel` (extension-filterable — GeoTIFF and OSM both reuse it), `STerraDyneWorldModeChoicePanel`.
   - `Physics/` — `TerraDyneCollision` (chunk raycast/traceability), `TerraDyneMeshUtils`.
   - `Settings/` — `UTerraDyneSettings`. Module entry: `TerraDyneModule.cpp`.
   - `TerraDyneEditor/` (separate module) — `TerraDyneBaker`, `TerraDyneFactory`, `STerraDyneTools`.
-  - `Private/Tests/` — all `TerraDyne.*` automation tests (17 files, including `TerraDyneModelImportTests.cpp`).
+  - `Private/Tests/` — all `TerraDyne.*` automation tests (20 files, including `TerraDyneModelImportTests.cpp`, `TerraDyneOSMParserTests.cpp`, `TerraDyneOSMIngestTests.cpp`, `TerraDyneActorUndoTests.cpp`).
   - **Content dependency gotcha, verified by reading the actual asset binaries**: the Gizmo materials
     (`Content/Gizmo/Materials/M_GizmoAxis.uasset`, `M_ScreenRotation.uasset`) reference
     `MF_OccludedPixels`, which lives in `Content/Mytaverse/` — the third-party demo pack. Deleting
@@ -195,4 +194,28 @@ Then inspect `Saved/Logs/RealtimeTerrain.log` (grep for `Test Started`/`Test Com
   `-Point.Y` for a North bound is correct, not a bug.
 - A geometry/mesh claim needs a test that checks the actual downstream contract (winding, ordering,
   normals, measured world-space values) — "doesn't crash" has hidden real bugs before.
+
+---
+
+## 🎨 Mandatory UX & Interaction Design Principles
+
+1. **Jakob’s Law & Platform Familiarity (Never Reinvent OS Primitives)**:
+   - Always use native OS file and directory dialogs (`IDesktopPlatform::OpenFileDialog`, `OpenDirectoryDialog`, `SaveFileDialog`) for loading, importing, and saving. Never force users to navigate folder trees inside an in-engine Slate UI.
+   - Adhere to industry-standard 3D tool conventions: `Shift+W` (Translate), `Shift+E` (Rotate), `Shift+R` (Scale), `F` (Focus/Frame Selected), `Alt+Drag` (Duplicate), `Escape` (Cancel tool/selection).
+
+2. **Hick’s Law & Progressive Disclosure**:
+   - Do not overwhelm the HUD or viewport with dozens of raw numeric sliders or technical debug matrices.
+   - Provide high-level, human-friendly presets with sensible defaults (e.g. "2-Lane Asphalt", "4-Lane Highway", "T-Junction"); hide deep geometric tuning inside clean collapsible accordion panels.
+
+3. **Visibility of System Status (Nielsen Heuristic #1)**:
+   - Every background task (OSM parsing, DEM/GeoTIFF raster loading, road spline baking, model importing) must provide immediate feedback (status line, progress bar, or holographic preview ghost).
+   - Never freeze the game thread or leave interaction buttons in unresponsive/silent states without clear error messaging.
+
+4. **Forgiving Interactions & Non-Destructive Workflows**:
+   - Every spatial transformation, road edit, or model placement must support cancellation (`Escape`) and clean undo (`Ctrl+Z`).
+   - Edits must never destroy underlying terrain or assets without explicit non-destructive layers (e.g. dynamic reversible terrain pads instead of permanent destructive sculpts).
+
+5. **Fitts’s Law & Spatial Ergonomics**:
+   - Gizmo handles and hit-testing discs must have generous grab reach ($Reach + Tolerance$), view-plane billboarding, and screen-space camera scaling so they remain effortlessly clickable whether zooming in close or flying high.
+   - Flight pawn speeds must scale gracefully with altitude ($20\text{ m/s}$ at ground level) rather than launching at uncontrollable hypersonic speeds.
 

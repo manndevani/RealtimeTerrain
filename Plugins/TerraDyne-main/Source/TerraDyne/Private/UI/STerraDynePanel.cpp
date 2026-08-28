@@ -866,6 +866,15 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			.ColorAndOpacity(this, &STerraDynePanel::GetOSMStatusColor)
 			.Font(LabelFont)
 			.AutoWrapText(true)
+		]
+		// Import spawns are budgeted a few per tick rather than all in one call (a city-sized
+		// extract can be thousands of buildings), so this bar has real progress to show rather than
+		// jumping straight from empty to full.
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+		[
+			SNew(SProgressBar)
+			.Percent(this, &STerraDynePanel::GetOSMImportProgressFraction)
+			.Visibility(this, &STerraDynePanel::GetOSMImportProgressVisibility)
 		];
 
 	// 5c. Content for SCENE OUTLINER section
@@ -3803,6 +3812,34 @@ FSlateColor STerraDynePanel::GetOutlinerVisibilityColor(TWeakObjectPtr<AActor> A
 
 FReply STerraDynePanel::OnImportOSMClicked()
 {
+#if WITH_EDITOR
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		TArray<FString> OutFiles;
+		const bool bPicked = DesktopPlatform->OpenFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			TEXT("Import OpenStreetMap Export"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("OpenStreetMap Data (*.osm;*.xml)|*.osm;*.xml|All Files (*.*)|*.*"),
+			EFileDialogFlags::None,
+			OutFiles);
+
+		if (bPicked && OutFiles.Num() > 0)
+		{
+			if (OwnerWidget.IsValid())
+			{
+				if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+				{
+					PC->RequestImportOSM(OutFiles[0], OwnerWidget->bOSMImportBuildings, OwnerWidget->bOSMImportRoads);
+				}
+			}
+		}
+		return FReply::Handled();
+	}
+#endif
+
 	if (OwnerWidget.IsValid())
 	{
 		OwnerWidget->OpenOSMImportPicker();
@@ -3838,8 +3875,18 @@ void STerraDynePanel::OnOSMRoadsCheckedChanged(ECheckBoxState NewState)
 
 bool STerraDynePanel::IsOSMImportEnabled() const
 {
-	// Importing nothing would silently do nothing, which reads as a broken button.
-	return OwnerWidget.IsValid() && (OwnerWidget->bOSMImportBuildings || OwnerWidget->bOSMImportRoads);
+	// Importing nothing would silently do nothing, which reads as a broken button. A second import
+	// while one is already draining is refused the same way -- disabling the button here is the
+	// visible half of the guard RequestImportOSM itself also enforces.
+	if (!OwnerWidget.IsValid() || (!OwnerWidget->bOSMImportBuildings && !OwnerWidget->bOSMImportRoads))
+	{
+		return false;
+	}
+	if (const ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
+	{
+		return !PC->IsOSMImportInProgress();
+	}
+	return true;
 }
 
 FText STerraDynePanel::GetOSMStatusText() const
@@ -3852,6 +3899,13 @@ FText STerraDynePanel::GetOSMStatusText() const
 	if (const ATerraDyneEditController* PC = OwnerWidget.IsValid()
 		? Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()) : nullptr)
 	{
+		if (PC->IsOSMImportInProgress())
+		{
+			int32 Done = 0, Total = 0;
+			PC->GetOSMImportProgress(Done, Total);
+			return FText::Format(LOCTEXT("OSMImportingFmt", "Importing… {0} / {1}"), FText::AsNumber(Done), FText::AsNumber(Total));
+		}
+
 		const FTerraDyneOSMImportSummary Summary = PC->GetLastOSMImportSummary();
 		if (Summary.bSuccess || !Summary.ErrorMessage.IsEmpty())
 		{
@@ -3860,6 +3914,28 @@ FText STerraDynePanel::GetOSMStatusText() const
 	}
 
 	return LOCTEXT("OSMIdle", "No OSM data imported yet. Export an area from openstreetmap.org, then import the .osm file.");
+}
+
+TOptional<float> STerraDynePanel::GetOSMImportProgressFraction() const
+{
+	if (const ATerraDyneEditController* PC = OwnerWidget.IsValid()
+		? Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()) : nullptr)
+	{
+		int32 Done = 0, Total = 0;
+		return PC->GetOSMImportProgress(Done, Total);
+	}
+	return 0.0f;
+}
+
+EVisibility STerraDynePanel::GetOSMImportProgressVisibility() const
+{
+	if (const ATerraDyneEditController* PC = OwnerWidget.IsValid()
+		? Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()) : nullptr)
+	{
+		// Collapse once done so the bar doesn't sit at a permanent full 100% under the status text.
+		return PC->IsOSMImportInProgress() ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+	return EVisibility::Collapsed;
 }
 
 FSlateColor STerraDynePanel::GetOSMStatusColor() const

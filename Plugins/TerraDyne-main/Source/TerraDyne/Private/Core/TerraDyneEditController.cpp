@@ -602,18 +602,146 @@ void ATerraDyneEditController::OnLeftClickStop()
 
 void ATerraDyneEditController::OnUndoPressed()
 {
-	// Road history first. Only fall through to terrain when there was no road edit to take back.
-	if (!TryRoadUndo())
+	// Priority chain: road edits, then building/model/OSM actor spawns, then terrain sculpting as
+	// the fallback -- each tries its own history and only falls through when it had nothing to
+	// take back, exactly the pattern road undo already established here.
+	if (!TryRoadUndo() && !TryActorUndo())
 	{
 		RequestUndo();
 	}
 }
 void ATerraDyneEditController::OnRedoPressed()
 {
-	if (!TryRoadRedo())
+	if (!TryRoadRedo() && !TryActorRedo())
 	{
 		RequestRedo();
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Building/model/OSM actor undo
+//-----------------------------------------------------------------------------
+
+void ATerraDyneEditController::PushActorUndoEntry(FTerraDyneActorUndoEntry&& Entry)
+{
+	ActorUndoStack.Add(MoveTemp(Entry));
+	if (ActorUndoStack.Num() > MaxActorUndoHistory)
+	{
+		ActorUndoStack.RemoveAt(0);
+	}
+	// A fresh action invalidates whatever redo history was sitting ahead of it -- matches
+	// CommitStroke's identical handling of RedoStacks for terrain sculpting.
+	ActorRedoStack.Reset();
+}
+
+void ATerraDyneEditController::DestroyActorsInEntry(FTerraDyneActorUndoEntry& Entry)
+{
+	for (FTerraDyneActorSnapshot& Snap : Entry.Actors)
+	{
+		if (AActor* Live = Snap.LiveActor.Get())
+		{
+			Live->Destroy();
+		}
+		Snap.LiveActor = nullptr;
+	}
+}
+
+void ATerraDyneEditController::RespawnActorsInEntry(FTerraDyneActorUndoEntry& Entry)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	for (FTerraDyneActorSnapshot& Snap : Entry.Actors)
+	{
+		switch (Snap.Kind)
+		{
+		case ETerraDyneActorSnapshotKind::Building:
+		{
+			ATerraDyneBuildingActor* Restored = World->SpawnActor<ATerraDyneBuildingActor>(
+				ATerraDyneBuildingActor::StaticClass(),
+				FTransform(Snap.BuildingData.Rotation, Snap.BuildingData.Origin), SpawnParams);
+			if (Restored)
+			{
+				Restored->ApplyData(Snap.BuildingData, true);
+			}
+			Snap.LiveActor = Restored;
+			break;
+		}
+		case ETerraDyneActorSnapshotKind::Model:
+		{
+			ATerraDynePlacedModelActor* Restored = World->SpawnActor<ATerraDynePlacedModelActor>(
+				ATerraDynePlacedModelActor::StaticClass(), Snap.ModelData.WorldTransform, SpawnParams);
+			if (Restored)
+			{
+				Restored->ApplyData(Snap.ModelData); // ApplyData resolves geometry itself
+			}
+			Snap.LiveActor = Restored;
+			break;
+		}
+		case ETerraDyneActorSnapshotKind::Road:
+			// No plugin-side ToData()/ApplyData() exists for a road; replaying the same virtual
+			// call that created it in the first place, from its own resolved centreline/width, is
+			// the only reconstruction available from here.
+			Snap.LiveActor = CreateRoadFromOSM(Snap.RoadWorldPoints, Snap.RoadWidthMeters);
+			break;
+		}
+	}
+}
+
+bool ATerraDyneEditController::TryActorUndo()
+{
+	if (!HasAuthority() || ActorUndoStack.Num() == 0)
+	{
+		return false;
+	}
+
+	FTerraDyneActorUndoEntry Entry = ActorUndoStack.Pop();
+	if (Entry.Op == ETerraDyneActorUndoOp::Spawn)
+	{
+		DestroyActorsInEntry(Entry);
+	}
+	else
+	{
+		RespawnActorsInEntry(Entry);
+	}
+
+	ActorRedoStack.Add(MoveTemp(Entry));
+	if (ActorRedoStack.Num() > MaxActorUndoHistory)
+	{
+		ActorRedoStack.RemoveAt(0);
+	}
+	return true;
+}
+
+bool ATerraDyneEditController::TryActorRedo()
+{
+	if (!HasAuthority() || ActorRedoStack.Num() == 0)
+	{
+		return false;
+	}
+
+	FTerraDyneActorUndoEntry Entry = ActorRedoStack.Pop();
+	if (Entry.Op == ETerraDyneActorUndoOp::Spawn)
+	{
+		RespawnActorsInEntry(Entry);
+	}
+	else
+	{
+		DestroyActorsInEntry(Entry);
+	}
+
+	ActorUndoStack.Add(MoveTemp(Entry));
+	if (ActorUndoStack.Num() > MaxActorUndoHistory)
+	{
+		ActorUndoStack.RemoveAt(0);
+	}
+	return true;
 }
 
 void ATerraDyneEditController::OnCancelManipulationPressed()
@@ -885,6 +1013,11 @@ void ATerraDyneEditController::Tick(float DeltaTime)
 
 	UpdateHolographicPreview();
 	UpdateHolographicModelPreview();
+
+	// Must run before the early-return below, which only guards the chunk-sync catch-up loop --
+	// an OSM import queued here would otherwise only ever drain on ticks that happen to coincide
+	// with a pending chunk sync.
+	ProcessOSMSpawnQueue();
 
 	if (PendingChunkSyncs.Num() == 0)
 	{
@@ -1303,6 +1436,15 @@ void ATerraDyneEditController::RequestPlaceBuilding(TSubclassOf<ATerraDyneBuildi
 			{
 				ToolUI->SelectedBuilding = NewBuilding;
 			}
+
+			FTerraDyneActorSnapshot Snap;
+			Snap.Kind = ETerraDyneActorSnapshotKind::Building;
+			Snap.BuildingData = NewBuilding->ToData();
+			Snap.LiveActor = NewBuilding;
+			FTerraDyneActorUndoEntry UndoEntry;
+			UndoEntry.Op = ETerraDyneActorUndoOp::Spawn;
+			UndoEntry.Actors.Add(MoveTemp(Snap));
+			PushActorUndoEntry(MoveTemp(UndoEntry));
 		}
 	}
 	else
@@ -1470,6 +1612,14 @@ void ATerraDyneEditController::RequestDeleteBuilding(ATerraDyneBuildingActor* Bu
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FTerraDyneActorSnapshot Snap;
+		Snap.Kind = ETerraDyneActorSnapshotKind::Building;
+		Snap.BuildingData = Building->ToData(); // taken before Destroy() -- this IS the restore payload
+		FTerraDyneActorUndoEntry UndoEntry;
+		UndoEntry.Op = ETerraDyneActorUndoOp::Delete;
+		UndoEntry.Actors.Add(MoveTemp(Snap));
+		PushActorUndoEntry(MoveTemp(UndoEntry));
+
 		Building->Destroy();
 	}
 	else
@@ -1931,6 +2081,15 @@ void ATerraDyneEditController::RequestPlaceModel(const FGuid& AssetId, const FTr
 					}
 				}
 				SelectModelActor(NewModel);
+
+				FTerraDyneActorSnapshot Snap;
+				Snap.Kind = ETerraDyneActorSnapshotKind::Model;
+				Snap.ModelData = NewModel->ToData();
+				Snap.LiveActor = NewModel;
+				FTerraDyneActorUndoEntry UndoEntry;
+				UndoEntry.Op = ETerraDyneActorUndoOp::Spawn;
+				UndoEntry.Actors.Add(MoveTemp(Snap));
+				PushActorUndoEntry(MoveTemp(UndoEntry));
 			}
 		}
 	}
@@ -1978,6 +2137,15 @@ void ATerraDyneEditController::RequestDeleteModel(ATerraDynePlacedModelActor* Mo
 				ClearModelSelection();
 			}
 		}
+
+		FTerraDyneActorSnapshot Snap;
+		Snap.Kind = ETerraDyneActorSnapshotKind::Model;
+		Snap.ModelData = ModelActor->ToData(); // taken before Destroy()
+		FTerraDyneActorUndoEntry UndoEntry;
+		UndoEntry.Op = ETerraDyneActorUndoOp::Delete;
+		UndoEntry.Actors.Add(MoveTemp(Snap));
+		PushActorUndoEntry(MoveTemp(UndoEntry));
+
 		ModelActor->Destroy();
 	}
 	else
@@ -2005,6 +2173,17 @@ void ATerraDyneEditController::RequestImportOSM(const FString& FilePath, bool bI
 {
 	if (HasAuthority())
 	{
+		if (IsOSMImportInProgress())
+		{
+			// Reported through the same summary the status line already reads, rather than a
+			// silently-dropped click -- the UX rule is "never leave a button press unresponsive
+			// without clear error messaging."
+			FTerraDyneOSMImportSummary Busy;
+			Busy.ErrorMessage = TEXT("An OSM import is already in progress -- wait for it to finish before starting another.");
+			LastOSMImportSummary = Busy;
+			return;
+		}
+
 		FTerraDyneOSMImportOptions Options;
 		Options.bImportBuildings = bImportBuildings;
 		Options.bImportRoads = bImportRoads;
@@ -2057,7 +2236,14 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FSt
 		return Georeference->TransformLongitudeLatitudeHeightPositionToUnreal(FVector(Lon, Lat, 0.0));
 	};
 
-	int32 FeaturesCreated = 0;
+	// Classification, coordinate conversion, footprint winding/centroid and centreline cleanup are
+	// all CPU-only and cheap even for thousands of ways -- none of it is what would hitch the game
+	// thread. Only the engine-side cost (SpawnActor, wall/mesh generation, terrain-height sampling,
+	// road mesh sweeping) is deferred to ProcessOSMSpawnQueue's ticked drain below, mirroring how
+	// ATerraDyneManager::ProcessStreamingQueues budgets chunk spawns across ticks rather than
+	// introducing a new async/threading pattern into a codebase that has neither.
+	PendingOSMSpawnQueue.Reset();
+	int32 FeaturesQueued = 0;
 
 	for (const FTerraDyneOSMWay& Way : Data.Ways)
 	{
@@ -2068,7 +2254,7 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FSt
 			continue;
 		}
 
-		if (FeaturesCreated >= Options.MaxFeatures)
+		if (FeaturesQueued >= Options.MaxFeatures)
 		{
 			// Counted, not silently dropped -- the summary says how much was left behind.
 			Summary.DroppedToLimit++;
@@ -2094,22 +2280,12 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FSt
 				continue;
 			}
 
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-			ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
-				ATerraDyneBuildingActor::StaticClass(), FTransform(Origin), SpawnParams);
-			if (!NewBuilding)
-			{
-				Summary.BuildingsSkipped++;
-				continue;
-			}
-
-			NewBuilding->SetFloorCount(FTerraDyneOSMParser::ResolveBuildingLevels(Way, Options.DefaultBuildingLevels));
-			NewBuilding->SetSplinePoints(Local);
-			NewBuilding->SnapToPadHeight();
-
-			Summary.BuildingsCreated++;
-			FeaturesCreated++;
+			FTerraDyneOSMSpawnJob Job;
+			Job.bIsBuilding = true;
+			Job.Origin = Origin;
+			Job.LocalFootprint = Local;
+			Job.Levels = FTerraDyneOSMParser::ResolveBuildingLevels(Way, Options.DefaultBuildingLevels);
+			PendingOSMSpawnQueue.Add(MoveTemp(Job));
 		}
 		else
 		{
@@ -2120,20 +2296,135 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FSt
 				continue;
 			}
 
-			// Virtual: does nothing unless the game module's subclass is the active controller.
-			if (CreateRoadFromOSM(Centreline, FTerraDyneOSMParser::ResolveHighwayWidthMeters(Way)))
+			FTerraDyneOSMSpawnJob Job;
+			Job.bIsBuilding = false;
+			Job.WorldPoints = Centreline;
+			Job.WidthMeters = FTerraDyneOSMParser::ResolveHighwayWidthMeters(Way);
+			PendingOSMSpawnQueue.Add(MoveTemp(Job));
+		}
+
+		++FeaturesQueued;
+	}
+
+	OSMImportTotalJobs = PendingOSMSpawnQueue.Num();
+	InProgressOSMSummary = Summary; // carries forward the Skipped/DroppedToLimit counts already known
+	InProgressOSMUndoEntry = FTerraDyneActorUndoEntry();
+	InProgressOSMUndoEntry.Op = ETerraDyneActorUndoOp::Spawn;
+	InProgressOSMFilePath = FilePath;
+
+	if (PendingOSMSpawnQueue.Num() == 0)
+	{
+		// Nothing matched, or everything that did was skipped. Finish immediately rather than
+		// leaving a phantom "in progress" state -- an empty queue would never be seen by
+		// ProcessOSMSpawnQueue's Tick-driven drain, since that only runs while the queue is non-empty.
+		Summary.bSuccess = true;
+		UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: OSM import of '%s' -- %s"), *FilePath, *Summary.ToDisplayString());
+		return Summary;
+	}
+
+	Summary.bSuccess = true; // queued successfully; BuildingsCreated/RoadsCreated fill in as the queue drains
+	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: OSM import of '%s' -- %d feature(s) queued."), *FilePath, PendingOSMSpawnQueue.Num());
+	return Summary;
+}
+
+void ATerraDyneEditController::ProcessOSMSpawnQueue()
+{
+	if (!HasAuthority() || PendingOSMSpawnQueue.Num() == 0)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		// The world went away mid-import (level teardown) -- drop the queue rather than spin on it
+		// forever with nothing left to spawn into.
+		PendingOSMSpawnQueue.Reset();
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	int32 Processed = 0;
+	// Pop() rather than dequeuing from the front: O(1) instead of RemoveAt(0)'s O(n) shift, which
+	// matters when a city-sized extract queues thousands of jobs. Ways are independent and
+	// unordered, so draining LIFO instead of FIFO changes nothing about correctness.
+	while (Processed < MaxOSMFeaturesPerTick && PendingOSMSpawnQueue.Num() > 0)
+	{
+		const FTerraDyneOSMSpawnJob Job = PendingOSMSpawnQueue.Pop();
+		++Processed;
+
+		if (Job.bIsBuilding)
+		{
+			ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
+				ATerraDyneBuildingActor::StaticClass(), FTransform(Job.Origin), SpawnParams);
+			if (NewBuilding)
 			{
-				Summary.RoadsCreated++;
-				FeaturesCreated++;
+				NewBuilding->SetFloorCount(Job.Levels);
+				NewBuilding->SetSplinePoints(Job.LocalFootprint);
+				NewBuilding->SnapToPadHeight();
+
+				InProgressOSMSummary.BuildingsCreated++;
+
+				FTerraDyneActorSnapshot Snap;
+				Snap.Kind = ETerraDyneActorSnapshotKind::Building;
+				Snap.BuildingData = NewBuilding->ToData();
+				Snap.LiveActor = NewBuilding;
+				InProgressOSMUndoEntry.Actors.Add(MoveTemp(Snap));
 			}
 			else
 			{
-				Summary.RoadsSkipped++;
+				InProgressOSMSummary.BuildingsSkipped++;
+			}
+		}
+		else
+		{
+			// Virtual: does nothing unless the game module's road controller subclass is active.
+			AActor* NewRoad = CreateRoadFromOSM(Job.WorldPoints, Job.WidthMeters);
+			if (NewRoad)
+			{
+				InProgressOSMSummary.RoadsCreated++;
+
+				FTerraDyneActorSnapshot Snap;
+				Snap.Kind = ETerraDyneActorSnapshotKind::Road;
+				Snap.RoadWorldPoints = Job.WorldPoints;
+				Snap.RoadWidthMeters = Job.WidthMeters;
+				Snap.LiveActor = NewRoad;
+				InProgressOSMUndoEntry.Actors.Add(MoveTemp(Snap));
+			}
+			else
+			{
+				InProgressOSMSummary.RoadsSkipped++;
 			}
 		}
 	}
 
-	Summary.bSuccess = true;
-	UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: OSM import of '%s' -- %s"), *FilePath, *Summary.ToDisplayString());
-	return Summary;
+	if (PendingOSMSpawnQueue.Num() == 0)
+	{
+		InProgressOSMSummary.bSuccess = true;
+		LastOSMImportSummary = InProgressOSMSummary;
+		UE_LOG(LogTerraDyne, Log, TEXT("TerraDyne: OSM import of '%s' -- %s"), *InProgressOSMFilePath, *LastOSMImportSummary.ToDisplayString());
+
+		// One undo entry for the whole import, not one per feature -- a single Ctrl+Z reverses
+		// everything the import created.
+		if (InProgressOSMUndoEntry.Actors.Num() > 0)
+		{
+			PushActorUndoEntry(MoveTemp(InProgressOSMUndoEntry));
+		}
+		InProgressOSMUndoEntry = FTerraDyneActorUndoEntry();
+		OSMImportTotalJobs = 0;
+	}
+}
+
+float ATerraDyneEditController::GetOSMImportProgress(int32& OutDone, int32& OutTotal) const
+{
+	OutTotal = OSMImportTotalJobs;
+	if (OutTotal <= 0)
+	{
+		OutDone = 0;
+		return 1.0f;
+	}
+	OutDone = OutTotal - PendingOSMSpawnQueue.Num();
+	return static_cast<float>(OutDone) / static_cast<float>(OutTotal);
 }

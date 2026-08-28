@@ -7,10 +7,89 @@
 #include "World/TerraDyneTileData.h"
 #include "IO/TerraDyneRasterLayers.h"
 #include "IO/TerraDyneOSMIngest.h"
+#include "Building/TerraDyneBuildingTypes.h"
+#include "Building/TerraDyneModelTypes.h"
 #include "TerraDyneEditController.generated.h"
 
 class ATerraDyneManager;
 class UGizmoManipulationSubsystem;
+
+/**
+ * What kind of thing an FTerraDyneActorUndoEntry recorded, so Undo/Redo know which direction is
+ * "backward". Spawn: the action created actor(s) -- Undo destroys them, Redo re-creates them from
+ * the snapshot taken right after they were spawned. Delete: the action removed actor(s) -- Undo
+ * re-creates them from a snapshot taken just before the delete, Redo destroys them again.
+ */
+UENUM()
+enum class ETerraDyneActorUndoOp : uint8
+{
+	Spawn,
+	Delete
+};
+
+/** Which actor type (and therefore which data member) a snapshot describes. */
+UENUM()
+enum class ETerraDyneActorSnapshotKind : uint8
+{
+	Building,
+	Model,
+	/** An OSM-created road. There is no road ToData()/ApplyData() reachable from this plugin
+	 *  module (roads live in the game module), so a road is reconstructed by replaying the same
+	 *  CreateRoadFromOSM call that created it in the first place, from the centreline/width that
+	 *  were resolved at import time. */
+	Road
+};
+
+/**
+ * Enough to reconstruct, or to find and destroy, one actor a building/model/OSM operation touched.
+ *
+ * Deliberately reuses ATerraDyneBuildingActor::ToData()/FTerraDyneBuildingData and
+ * ATerraDynePlacedModelActor::ToData()/FTerraDynePlacedModelData rather than inventing a lighter
+ * snapshot -- those structs are already exactly "what's needed to reconstruct this actor" (they
+ * were built for save-game persistence), and undoing a delete needs precisely that payload. The
+ * only variant needing anything of its own is Road, since no such struct exists for it here.
+ */
+USTRUCT()
+struct FTerraDyneActorSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	ETerraDyneActorSnapshotKind Kind = ETerraDyneActorSnapshotKind::Building;
+
+	UPROPERTY()
+	FTerraDyneBuildingData BuildingData;
+
+	UPROPERTY()
+	FTerraDynePlacedModelData ModelData;
+
+	UPROPERTY()
+	TArray<FVector> RoadWorldPoints;
+
+	UPROPERTY()
+	float RoadWidthMeters = 6.5f;
+
+	/** Valid while the actor this snapshot describes currently exists in the world. */
+	UPROPERTY()
+	TWeakObjectPtr<AActor> LiveActor;
+};
+
+/**
+ * One undoable building/model/OSM action. Actors.Num() is 1 for a single place/delete and N for an
+ * OSM import's batch of buildings and roads, so one Ctrl+Z reverses the whole import in one step
+ * rather than needing N presses.
+ */
+USTRUCT()
+struct FTerraDyneActorUndoEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	ETerraDyneActorUndoOp Op = ETerraDyneActorUndoOp::Spawn;
+
+	UPROPERTY()
+	TArray<FTerraDyneActorSnapshot> Actors;
+};
 
 /**
  * Network routing for terrain edits.
@@ -160,8 +239,29 @@ public:
 	 */
 	virtual AActor* CreateRoadFromOSM(const TArray<FVector>& WorldPoints, float WidthMeters) { return nullptr; }
 
-	/** Result of the most recent OSM import, for UI display. */
+	/** Result of the most recent (or in-progress) OSM import, for UI display. */
 	struct FTerraDyneOSMImportSummary GetLastOSMImportSummary() const;
+
+	/**
+	 * Mirrors ATerraDyneManager::GetGeoTIFFLoadProgress's shape exactly: OutDone/OutTotal are the
+	 * spawn queue's progress, return value is the fraction (1.0f when nothing is queued -- "done").
+	 * An OSM import queues its actual spawns and drains them a few per Tick rather than spawning
+	 * everything in one call, so a large extract (a city-sized document can be thousands of ways)
+	 * does not hitch the game thread the way GeoTIFF decode does today.
+	 */
+	float GetOSMImportProgress(int32& OutDone, int32& OutTotal) const;
+
+	/** True while a queued OSM import still has spawns left to drain. */
+	bool IsOSMImportInProgress() const { return PendingOSMSpawnQueue.Num() > 0; }
+
+	/**
+	 * Drains up to MaxOSMFeaturesPerTick queued spawns; a no-op when nothing is queued or off
+	 * authority. Tick() (protected, called by the engine's tick manager) is this function's only
+	 * real caller -- exposed here as well because automation tests spawn a bare
+	 * ATerraDyneEditController with FAutomationEditorCommonUtils::CreateNewMap(), which never
+	 * actually runs a frame loop, so a test has no other way to pump the drain forward.
+	 */
+	void ProcessOSMSpawnQueue();
 
 	//--- Population Requests ---
 	void RequestHarvestPopulation(const FGuid& PopulationId);
@@ -238,6 +338,31 @@ private:
 	void OnRedoPressed();
 	void OnCancelManipulationPressed();
 
+	//--- Building/model/OSM actor undo ---
+	//
+	// A separate stack alongside terrain's UndoStacks (owned by ATerraDyneManager, keyed by
+	// controller because one Manager singleton serves every player) and road undo (owned by
+	// URealtimeRoadBuilderComponent). This one needs no such map: ATerraDyneEditController already
+	// exists once per player -- both on the owning client and, authoritatively, on the server -- so
+	// `this` already IS the per-player scope terrain's map exists to fake. Composed into
+	// OnUndoPressed/OnRedoPressed by priority, exactly like TryRoadUndo/TryRoadRedo, per the ground
+	// rule that no existing road/terrain undo behavior changes as a side effect of this.
+	static constexpr int32 MaxActorUndoHistory = 20; // matches ATerraDyneManager's MaxUndoHistory default
+
+	UPROPERTY(Transient)
+	TArray<FTerraDyneActorUndoEntry> ActorUndoStack;
+
+	UPROPERTY(Transient)
+	TArray<FTerraDyneActorUndoEntry> ActorRedoStack;
+
+	void PushActorUndoEntry(FTerraDyneActorUndoEntry&& Entry);
+
+	/** Undo of a Spawn, or redo of a Delete: destroys every live actor a snapshot still points to. */
+	void DestroyActorsInEntry(FTerraDyneActorUndoEntry& Entry);
+
+	/** Undo of a Delete, or redo of a Spawn: reconstructs every actor from its snapshot data. */
+	void RespawnActorsInEntry(FTerraDyneActorUndoEntry& Entry);
+
 	/** Shift+W/E/R -- switches the shared gizmo's mode. One binding serves both consumers, same as OnCancelManipulationPressed. */
 	void OnSetGizmoModeTranslate();
 	void OnSetGizmoModeRotate();
@@ -284,6 +409,15 @@ public:
 	 */
 	virtual bool TryRoadUndo() { return false; }
 	virtual bool TryRoadRedo() { return false; }
+
+	/**
+	 * Building/model/OSM actor undo/redo. Public alongside TryRoadUndo/TryRoadRedo above for the
+	 * same reason: OnUndoPressed/OnRedoPressed (which chain both by priority) are private, but the
+	 * individual Try* steps are public -- here additionally so a test can drive undo/redo directly
+	 * without needing input simulation.
+	 */
+	bool TryActorUndo();
+	bool TryActorRedo();
 
 	/** Removes the selected road control point, if there is one. */
 	virtual void DeleteSelectedRoadPoint() {}
@@ -409,8 +543,39 @@ private:
 	UFUNCTION(Server, Reliable)
 	void Server_ImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads);
 
-	/** Does the actual work on the authority. */
+	/**
+	 * One already-fully-resolved OSM feature waiting to be spawned. All the CPU-only work --
+	 * parsing, classification, lon/lat -> world conversion, footprint winding/centroid, centreline
+	 * cleanup -- happens synchronously up front in ImportOSMInternal, because none of it is what
+	 * hitches the game thread. Only the engine-side cost (SpawnActor, wall/mesh generation,
+	 * terrain-height sampling, road mesh sweeping) is deferred to the ticked drain below.
+	 */
+	struct FTerraDyneOSMSpawnJob
+	{
+		bool bIsBuilding = false;
+
+		// Building:
+		FVector Origin = FVector::ZeroVector;
+		TArray<FVector> LocalFootprint;
+		int32 Levels = 2;
+
+		// Road:
+		TArray<FVector> WorldPoints;
+		float WidthMeters = 6.5f;
+	};
+
+	/** Starts (synchronously resolves and queues) an OSM import; the actual spawns drain from Tick. */
 	FTerraDyneOSMImportSummary ImportOSMInternal(const FString& FilePath, const FTerraDyneOSMImportOptions& Options);
+
+	static constexpr int32 MaxOSMFeaturesPerTick = 8;
+
+	TArray<FTerraDyneOSMSpawnJob> PendingOSMSpawnQueue;
+	int32 OSMImportTotalJobs = 0;
+
+	/** Accumulates as PendingOSMSpawnQueue drains; finalized into LastOSMImportSummary and pushed as one undo entry once the queue empties. */
+	FTerraDyneOSMImportSummary InProgressOSMSummary;
+	FTerraDyneActorUndoEntry InProgressOSMUndoEntry;
+	FString InProgressOSMFilePath;
 
 	FTerraDyneOSMImportSummary LastOSMImportSummary;
 

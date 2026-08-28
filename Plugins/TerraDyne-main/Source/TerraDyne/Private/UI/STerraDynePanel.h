@@ -264,6 +264,8 @@ private:
 	bool IsOSMImportEnabled() const;
 	FText GetOSMStatusText() const;
 	FSlateColor GetOSMStatusColor() const;
+	TOptional<float> GetOSMImportProgressFraction() const;
+	EVisibility GetOSMImportProgressVisibility() const;
 
 	// Scene Outliner
 	TSharedRef<SWidget> MakeOutlinerRow(AActor* Actor, const FString& Label, const FString& TypeTag, const struct FSlateFontInfo& LabelFont, const struct FSlateFontInfo& MicroFont, const FLinearColor& HudText, const FLinearColor& HudDim, const FLinearColor& HudCyan);
