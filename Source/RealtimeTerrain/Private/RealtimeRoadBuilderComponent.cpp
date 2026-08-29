@@ -976,6 +976,14 @@ void URealtimeRoadBuilderComponent::HandleWorldClick(const FVector& ClickedWorld
 				ActiveRoad->RebuildRoad();
 			}
 
+			// Growing the road can newly cross some other road the same way dragging an existing
+			// point already does (see the throttled call in the drag-tick above and the full one in
+			// EndPointDrag) -- without this, a road drawn straight across another just visually
+			// overlapped it with no junction, no lane cut, no gore fill. A single click is a
+			// one-shot commit-time event like those, not a per-frame poll, so this runs the full,
+			// authoritative reconciliation rather than the drag path's scoped variant.
+			ActiveRoad->RefreshAffectedJunctions();
+
 			// Follow the point that just grew, so consecutive clicks keep extending in the same
 			// direction and the overlay highlights the point the user is actually looking at.
 			SelectRoadPoint(ActiveRoad, NewSelectedIndex);
@@ -1201,6 +1209,12 @@ ARealtimeRoadSplineActor* URealtimeRoadBuilderComponent::SpawnRoadAuthoritative(
 	Road->RoadType = RoadType;
 	Road->SetPointsRealtime(WorldPoints);
 	Road->RebuildRoad();
+
+	// Covers both callers of this function (FinishRoadDraft and Server_CommitRoad_Implementation)
+	// in one place: a multi-point road committed whole, exactly like one grown click-by-click, can
+	// cross an existing road along its length and needs the same reconciliation -- see the
+	// identical call added to HandleWorldClick's extend branch for the full reasoning.
+	Road->RefreshAffectedJunctions();
 	return Road;
 }
 

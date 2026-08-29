@@ -148,5 +148,14 @@ AActor* ARealtimeRoadEditController::CreateRoadFromOSM(const TArray<FVector>& Wo
 	Road->CrossSectionSettings.RoadWidth = FMath::Max(WidthMeters, 1.0f) * 100.0f;
 	Road->SetPointsRealtime(Grounded);
 
+	// A road built whole (rather than grown click-by-click) can still cross an existing road along
+	// its length -- see the identical addition to HandleWorldClick's extend branch and
+	// SpawnRoadAuthoritative for the full reasoning. Scoped (false), not the default full network
+	// reconcile: an OSM import can create hundreds of roads in one batch, and re-solving every
+	// auto-generated junction in the level after each one would be O(roads^2) work rather than the
+	// O(roads) this road-against-the-rest scoping gives, exactly the reason the interactive drag
+	// path already uses the scoped variant instead of the default.
+	Road->RefreshAffectedJunctions(false);
+
 	return Road;
 }
