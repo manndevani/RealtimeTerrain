@@ -103,6 +103,17 @@ struct FGizmoManipulationState
 	FGizmoGetTransform GetTransformFn;
 	FGizmoSetTransform SetTransformFn;
 
+	/**
+	 * Whether the gizmo may grow beyond its normal screen-space size to reach past Target's owning
+	 * actor's bounds. Correct when Target really is the whole thing being moved (SetTarget's "one
+	 * actor to move/rotate/scale" case) -- wrong when Target is only a nominal identity for a
+	 * single point on a much larger actor (a road/junction point drag via
+	 * SetTargetTransformAccessors), where the owning actor's full bounding box has nothing to do
+	 * with the local area the gizmo actually needs to reach.
+	 */
+	UPROPERTY()
+	bool bScaleGizmoToTargetBounds = true;
+
 	UPROPERTY()
 	EGizmoMode Mode = EGizmoMode::Translate;
 

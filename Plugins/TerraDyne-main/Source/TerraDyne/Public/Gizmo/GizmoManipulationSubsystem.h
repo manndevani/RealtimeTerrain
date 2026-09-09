@@ -56,8 +56,15 @@ public:
 	 * functions instead of assuming "the target's owning actor's whole transform" is the right
 	 * thing to read and mutate. NominalTarget is identity-only (GetTarget()/the delegates' payload);
 	 * it does not have to be the actual thing GetTransform/SetTransform touch.
+	 *
+	 * bScaleGizmoToTargetBounds defaults to false here (unlike SetTarget, which always wants it):
+	 * NominalTarget's owning actor is explicitly documented as unrelated to what's actually being
+	 * moved, so growing the gizmo to that actor's full bounding box -- e.g. an entire road or
+	 * junction, when the real target is one point on it -- has no relationship to the local area
+	 * the gizmo needs to reach. Pass true only when NominalTarget's owner genuinely bounds the
+	 * moved geometry despite the accessors being custom.
 	 */
-	void SetTargetTransformAccessors(FGizmoGetTransform GetTransform, FGizmoSetTransform SetTransform, USceneComponent* NominalTarget);
+	void SetTargetTransformAccessors(FGizmoGetTransform GetTransform, FGizmoSetTransform SetTransform, USceneComponent* NominalTarget, bool bScaleGizmoToTargetBounds = false);
 
 	void ClearTarget();
 	USceneComponent* GetTarget() const { return State.Target.Get(); }

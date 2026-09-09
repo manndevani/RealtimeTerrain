@@ -140,28 +140,22 @@ Then inspect `Saved/Logs/RealtimeTerrain.log` (grep for `Test Started`/`Test Com
 
 ## 🗺️ Architecture Map
 
-- **`Source/RealtimeTerrain/`** (56 files — full detail in its `CODE_REFERENCE.md`) — game module.
-  Road actors: `RealtimeRoadSplineActor` (the swept-mesh road actor itself), `RealtimeRoadJunctionActor`,
-  `RealtimeRoadBuilderComponent` (point-editing input), `RealtimeRoadEditController` (the
-  `PlayerController` this project actually assigns, via `RealtimeTerrainEditGameMode`),
-  `RoadEditOverlayActor`/`RoadNetworkDebugLibrary`. Road graph/solving: `RoadCurveGraph`, `RoadNetwork`,
-  `RoadNetworkSolver` (junction lane routing, gore fill, ramp classification). Road geometry math:
-  `RoadMeshBuilder`, `RoadSpiral` (Euler-spiral/clothoid), `RoadElevationProfile` (height keys +
-  auto-flyover), `RoadWidthProfile` (Scale-mode width keys), `RoadPierPlacement`, `RoadStylePresets`,
-  `RoadXodrExport` (editor-only OpenDRIVE export).
-- **`Plugins/TerraDyne-main/Source/TerraDyne/`** (120 files across `TerraDyne` + `TerraDyneEditor` —
+- **`Source/RealtimeTerrain/`** — game module.
+  Contains project-specific game mode (`RealtimeTerrainEditGameMode`) and edit controller (`RealtimeRoadEditController`) inheriting directly from `ATerraDyneEditController`.
+- **`Plugins/TerraDyne-main/Source/TerraDyne/`** (157 files across `TerraDyne` + `TerraDyneEditor` —
   full detail in its `CODE_REFERENCE.md`), organized by subfolder:
+  - `Road/` — complete, self-contained runtime road network and geometry system: `ARealtimeRoadSplineActor` (swept solid cross-section road actor with dynamic conform, elevation/width keys, spiral centreline, piers, and scatter HISM), `ARealtimeRoadJunctionActor` (multi-way N-arm junction solver, gore markings, fillet arcs, and ramp classification), `URealtimeRoadBuilderComponent` (runtime click-and-drag road drafting), `RoadCurveGraph` (Hermite offset curve graph & lane boundaries), `RoadNetwork` (spatial intersection sweeps & auto-junction creation), `RoadNetworkSolver` (fillet geometry, ray-intersection fallback, gore apex, lane routing), `RoadMeshBuilder` (style-driven cross-section sweeping & gore fill), `RoadElevationProfile` (cubic-Hermite elevation keys & auto-flyovers), `RoadWidthProfile` (Scale-mode width keys), `RoadSpiral` (Euler-spiral/clothoid Fresnel integrals), `RoadPierPlacement`, `RoadStylePresets`, `RoadXodrExport` (OpenDRIVE export), `RoadEditOverlayActor`/`RoadNetworkDebugLibrary`.
   - `Building/` — `ATerraDyneBuildingActor`, `ATerraDynePlacedModelActor` (runtime placed 3D model instance with `UDynamicMeshComponent`, replicated `Scale3D`, visibility toggles, and selection highlight), `ATerraDyneGizmoActor` (footprint-spline-vertex handles only), `TerraDyneModelTypes.h` (`FTerraDyneModelLibraryEntryData`/`FTerraDynePlacedModelData` — the save-game and undo-snapshot shapes for the model catalog and its placements), `TerraDyneBuildingKit.h`/`TerraDyneBuildingTypes.h` (building-kit data types).
   - `Gizmo/` — the reusable transform gizmo: `GizmoTypes.h` (enums/state), `GizmoManipulationMath.h/.cpp` (pure math, no UObject refs), `ARuntimeGizmoActor` (visual handles for Translate, Rotate, Scale with screen-rotation ring), `UGizmoManipulationSubsystem` (`UWorldSubsystem`, single stateful owner). Drives buildings, placed 3D models, and road points identically.
   - `IO/` — `TerraDyneModelImporter` (zero-external-dependency runtime loader for `.obj`, `.stl`, `.ply`, `.fbx`, `.gltf`, `.glb` + `.mtl` diffuse colors and companion `.png`/`.jpg` textures into `FDynamicMesh3`, via vendored `ufbx`/`cgltf` under `Private/ThirdParty/`), `TerraDyneModelThumbnail` (runtime scene-capture thumbnail generation, cached to `Saved/TerraDyne/ModelThumbnails/`), `TerraDyneOSMParser`/`TerraDyneOSMIngest` (OpenStreetMap `.osm` XML parsing + geometry ingest — buildings and drivable roads, pure/world-free), `TerraDyneSerializer`/`TerraDyneAsyncSaver`/`TerraDyneArchiveHelper` (save-game I/O), `TerraDyneGeoTIFFReader`/`TerraDyneGeoTIFFHeightSource`/`TerraDyneDEMMeshBuilder`/`TerraDyneRasterLayers` (GDAL/DEM import pipeline).
-  - `Core/` — `ATerraDyneManager`, `UTerraDyneAssetLibrarySubsystem` (`UWorldSubsystem` catalog of imported 3D models with PNG thumbnail resolution, dimensions, and polycounts), `UTerraDyneSubsystem`, `ATerraDyneEditController` (runtime placement tool `PlaceModel`, raycast selection of placed models, holographic terrain ghosting, gizmo integration, OpenStreetMap import — Tick-budgeted actor spawning, its own building/model/OSM undo stack chained alongside road undo), `ATerraDyneEditPawn`, `ATerraDyneWorldPreset`, `ATerraDyneProceduralGenerator`, `UTerraDyneSaveGame`/`TerraDyneWorldTypes.h`.
+  - `Core/` — `ATerraDyneManager`, `UTerraDyneAssetLibrarySubsystem` (`UWorldSubsystem` catalog of imported 3D models with PNG thumbnail resolution, dimensions, and polycounts), `UTerraDyneSubsystem`, `ATerraDyneEditController` (runtime placement tool `PlaceModel`, raycast selection of placed models, holographic terrain ghosting, gizmo integration, OpenStreetMap import — frame-time budgeted 4.0ms tick draining, O(1) DEM height lookups, deferred batch junction resolution, its own building/model/road/OSM undo stack), `ATerraDyneEditPawn`, `ATerraDyneWorldPreset`, `ATerraDyneProceduralGenerator`, `UTerraDyneSaveGame`/`TerraDyneWorldTypes.h`.
   - `World/` — `ATerraDyneChunk` (the sculptable `FDynamicMesh3` + VHFM chunk actor),
     `ATerraDyneOrchestrator`, `TerraDyneSceneSetup`, `TerraDyneDemoMarkerActor`/`TerraDyneProjectile`.
   - `UI/` — `STerraDynePanel` (the left-anchored Slate HUD with collapsible **"3D Models & Assets"** palette displaying **PNG photo thumbnails** and **"Scene Outliner"** with live item count, focus `🎯`, visibility `👁️`, and deletion `🗑️`, plus **"OpenStreetMap Data"** import with a progress bar), `STerraDyneFilePickerPanel` (extension-filterable — GeoTIFF and OSM both reuse it), `STerraDyneWorldModeChoicePanel`.
   - `Physics/` — `TerraDyneCollision` (chunk raycast/traceability), `TerraDyneMeshUtils`.
   - `Settings/` — `UTerraDyneSettings`. Module entry: `TerraDyneModule.cpp`.
   - `TerraDyneEditor/` (separate module) — `TerraDyneBaker`, `TerraDyneFactory`, `STerraDyneTools`.
-  - `Private/Tests/` — all `TerraDyne.*` automation tests (20 files, including `TerraDyneModelImportTests.cpp`, `TerraDyneOSMParserTests.cpp`, `TerraDyneOSMIngestTests.cpp`, `TerraDyneActorUndoTests.cpp`).
+  - `Private/Tests/` — all `TerraDyne.*` automation tests (45 test files, including 37 `TerraDyne.Road.*` tests, `TerraDyneModelImportTests.cpp`, `TerraDyneOSMParserTests.cpp`, `TerraDyneOSMIngestTests.cpp`, `TerraDyneActorUndoTests.cpp`).
   - **Content dependency gotcha, verified by reading the actual asset binaries**: the Gizmo materials
     (`Content/Gizmo/Materials/M_GizmoAxis.uasset`, `M_ScreenRotation.uasset`) reference
     `MF_OccludedPixels`, which lives in `Content/Mytaverse/` — the third-party demo pack. Deleting

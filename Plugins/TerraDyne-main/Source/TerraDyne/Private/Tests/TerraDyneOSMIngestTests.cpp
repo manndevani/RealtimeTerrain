@@ -110,27 +110,13 @@ bool FTerraDyneOSMFootprintTest::RunTest(const FString& Parameters)
 }
 
 // -----------------------------------------------------------------------------
-// Road centrelines and node resolution.
+// Node resolution.
 // -----------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTerraDyneOSMCentrelineTest, "TerraDyne.OSM.Centreline",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FTerraDyneOSMCentrelineTest::RunTest(const FString& Parameters)
 {
-	const TArray<FVector> Open = { FVector(0,0,0), FVector(100,0,0), FVector(200,0,0) };
-	TestEqual(TEXT("An open centreline keeps every point"),
-		FTerraDyneOSMIngest::BuildRoadCentreline(Open).Num(), 3);
-
-	// A roundabout: closed, so the repeated final node would leave a zero-length segment for the
-	// mesh builder to divide by.
-	const TArray<FVector> Roundabout = { FVector(0,0,0), FVector(100,0,0), FVector(100,100,0), FVector(0,0,0) };
-	TestEqual(TEXT("A closed way drops its repeated final node"),
-		FTerraDyneOSMIngest::BuildRoadCentreline(Roundabout).Num(), 3);
-
-	const TArray<FVector> WithDupes = { FVector(0,0,0), FVector(0,0,0), FVector(100,0,0), FVector(100,0,0) };
-	TestEqual(TEXT("Consecutive duplicate points are collapsed"),
-		FTerraDyneOSMIngest::BuildRoadCentreline(WithDupes).Num(), 2);
-
 	// Node resolution against a real parsed document.
 	const FTerraDyneOSMData Data = FTerraDyneOSMParser::ParseString(
 		TEXT("<?xml version='1.0' encoding='UTF-8'?>\n<osm version='0.6'>\n")

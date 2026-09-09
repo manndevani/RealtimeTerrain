@@ -75,8 +75,8 @@ struct TERRADYNE_API FTerraDyneDynamicRasterLayer
 	GENERATED_BODY()
 
 	/** Unique ID for this dynamic layer instance. */
-	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")
-	FGuid LayerId = FGuid::NewGuid();
+	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster", meta = (IgnoreForMemberInitializationTest))
+	FGuid LayerId = FGuid();
 
 	/** Detected or assigned raster type. */
 	UPROPERTY(BlueprintReadOnly, Category = "TerraDyne|Raster")

@@ -43,6 +43,12 @@ struct TERRADYNE_API FTerraDyneOSMData
 	TMap<uint64, FTerraDyneOSMNode> Nodes;
 	TArray<FTerraDyneOSMWay> Ways;
 
+	/** Topological node-to-way index: which ways reference each node id. */
+	TMap<uint64, TArray<int32>> NodeToWayIndices;
+
+	/** Node IDs referenced by multiple drivable ways (topological intersections). */
+	TSet<uint64> JunctionNodeIds;
+
 	/** From the document's <bounds> element when present, otherwise the extent of the nodes read. */
 	FBox2D LonLatBounds = FBox2D(ForceInit);
 };

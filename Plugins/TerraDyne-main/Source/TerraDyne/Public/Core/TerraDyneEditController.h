@@ -32,12 +32,7 @@ UENUM()
 enum class ETerraDyneActorSnapshotKind : uint8
 {
 	Building,
-	Model,
-	/** An OSM-created road. There is no road ToData()/ApplyData() reachable from this plugin
-	 *  module (roads live in the game module), so a road is reconstructed by replaying the same
-	 *  CreateRoadFromOSM call that created it in the first place, from the centreline/width that
-	 *  were resolved at import time. */
-	Road
+	Model
 };
 
 /**
@@ -46,8 +41,7 @@ enum class ETerraDyneActorSnapshotKind : uint8
  * Deliberately reuses ATerraDyneBuildingActor::ToData()/FTerraDyneBuildingData and
  * ATerraDynePlacedModelActor::ToData()/FTerraDynePlacedModelData rather than inventing a lighter
  * snapshot -- those structs are already exactly "what's needed to reconstruct this actor" (they
- * were built for save-game persistence), and undoing a delete needs precisely that payload. The
- * only variant needing anything of its own is Road, since no such struct exists for it here.
+ * were built for save-game persistence), and undoing a delete needs precisely that payload.
  */
 USTRUCT()
 struct FTerraDyneActorSnapshot
@@ -63,12 +57,6 @@ struct FTerraDyneActorSnapshot
 	UPROPERTY()
 	FTerraDynePlacedModelData ModelData;
 
-	UPROPERTY()
-	TArray<FVector> RoadWorldPoints;
-
-	UPROPERTY()
-	float RoadWidthMeters = 6.5f;
-
 	/** Valid while the actor this snapshot describes currently exists in the world. */
 	UPROPERTY()
 	TWeakObjectPtr<AActor> LiveActor;
@@ -76,8 +64,8 @@ struct FTerraDyneActorSnapshot
 
 /**
  * One undoable building/model/OSM action. Actors.Num() is 1 for a single place/delete and N for an
- * OSM import's batch of buildings and roads, so one Ctrl+Z reverses the whole import in one step
- * rather than needing N presses.
+ * OSM import's batch of buildings, so one Ctrl+Z reverses the whole import in one step rather than
+ * needing N presses.
  */
 USTRUCT()
 struct FTerraDyneActorUndoEntry
@@ -224,20 +212,11 @@ public:
 	//--- OpenStreetMap ingestion ---
 
 	/**
-	 * Imports a .osm document, spawning buildings and roads for the ways it contains. Routed through
+	 * Imports a .osm document, spawning buildings for the ways it contains. Routed through
 	 * the server like every other world edit; the summary of the last run is left in
 	 * LastOSMImportSummary for the panel to display.
 	 */
-	void RequestImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads);
-
-	/**
-	 * Builds one road from an OSM centreline in world space. Returns the actor created, or null.
-	 *
-	 * Virtual for the same reason HandleRoadClick is: road actors live in the game module, which
-	 * this plugin cannot reference. The base implementation does nothing, so a project without the
-	 * road module still imports buildings; ARealtimeRoadEditController overrides it.
-	 */
-	virtual AActor* CreateRoadFromOSM(const TArray<FVector>& WorldPoints, float WidthMeters) { return nullptr; }
+	void RequestImportOSM(const FString& FilePath, bool bImportBuildings);
 
 	/** Result of the most recent (or in-progress) OSM import, for UI display. */
 	struct FTerraDyneOSMImportSummary GetLastOSMImportSummary() const;
@@ -294,7 +273,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<class ATerraDyneGizmoActor> ActiveMoveGizmo;
 
-	/** Lazily fetched the first time UpdateMoveGizmo runs -- see RealtimeRoadBuilderComponent's identical pattern. */
+	/** Lazily fetched the first time UpdateMoveGizmo runs. */
 	UPROPERTY(Transient)
 	TObjectPtr<UGizmoManipulationSubsystem> GizmoSubsystem;
 
@@ -321,7 +300,7 @@ private:
 	bool bFlattenHeightLocked = false;
 	float LockedFlattenHeight = 0.0f;
 
-	/** Whether the drag currently in progress is the shared gizmo (as opposed to a plain spline-vertex handle). Mirrors bIsGizmoDrag on RealtimeRoadBuilderComponent -- BeginManipulation can return None, so this can't just be inferred from GizmoSubsystem->IsManipulating(). */
+	/** Whether the drag currently in progress is the shared gizmo (as opposed to a plain spline-vertex handle). BeginManipulation can return None, so this can't just be inferred from GizmoSubsystem->IsManipulating(). */
 	bool bIsGizmoAxisDrag = false;
 	FVector GizmoDragStartIntersection = FVector::ZeroVector;
 	FPlane GizmoDragPlane;
@@ -341,12 +320,11 @@ private:
 	//--- Building/model/OSM actor undo ---
 	//
 	// A separate stack alongside terrain's UndoStacks (owned by ATerraDyneManager, keyed by
-	// controller because one Manager singleton serves every player) and road undo (owned by
-	// URealtimeRoadBuilderComponent). This one needs no such map: ATerraDyneEditController already
-	// exists once per player -- both on the owning client and, authoritatively, on the server -- so
-	// `this` already IS the per-player scope terrain's map exists to fake. Composed into
-	// OnUndoPressed/OnRedoPressed by priority, exactly like TryRoadUndo/TryRoadRedo, per the ground
-	// rule that no existing road/terrain undo behavior changes as a side effect of this.
+	// controller because one Manager singleton serves every player). This one needs no such map:
+	// ATerraDyneEditController already exists once per player -- both on the owning client and,
+	// authoritatively, on the server -- so `this` already IS the per-player scope terrain's map
+	// exists to fake. Composed into OnUndoPressed/OnRedoPressed by priority, per the ground rule
+	// that no existing terrain undo behavior changes as a side effect of this.
 	static constexpr int32 MaxActorUndoHistory = 20; // matches ATerraDyneManager's MaxUndoHistory default
 
 	UPROPERTY(Transient)
@@ -389,63 +367,14 @@ private:
 
 public:
 	/**
-	 * Road tool press and release.
-	 *
-	 * Virtual because road actors live in the game module, which this plugin cannot reference. The
-	 * base implementations reach for them by name through reflection, which works but cannot see
-	 * their real API; a subclass in the game module overrides these to call it directly.
-	 */
-	virtual void HandleRoadClick();
-
-	/** Called on mouse release while a road tool is active. Nothing to release by default. */
-	virtual void HandleRoadRelease() {}
-
-	/**
-	 * Road editing history and point removal.
-	 *
-	 * Roads live in the game module and are invisible from here, so a subclass supplies these. The
-	 * undo hooks are tried before the terrain stack: if a road edit was undone, the sculpt history
-	 * is left alone, so one shortcut serves both without either stealing the other's steps.
-	 */
-	virtual bool TryRoadUndo() { return false; }
-	virtual bool TryRoadRedo() { return false; }
-
-	/**
-	 * Building/model/OSM actor undo/redo. Public alongside TryRoadUndo/TryRoadRedo above for the
-	 * same reason: OnUndoPressed/OnRedoPressed (which chain both by priority) are private, but the
-	 * individual Try* steps are public -- here additionally so a test can drive undo/redo directly
+	 * Building/model/OSM actor undo/redo. Public so OnUndoPressed/OnRedoPressed (private, chains
+	 * this before the terrain stack) can call it, and so a test can drive undo/redo directly
 	 * without needing input simulation.
 	 */
 	bool TryActorUndo();
 	bool TryActorRedo();
 
-	/** Removes the selected road control point, if there is one. */
-	virtual void DeleteSelectedRoadPoint() {}
-
-	/** Whether a road control point is currently selected, for enabling UI. */
-	virtual bool HasRoadPointSelected() const { return false; }
-
-	/**
-	 * Clears the currently selected road/point, if any. Called on switching away from a road tool
-	 * mode -- without this a stuck highlight/gizmo used to survive the switch, since selection was
-	 * otherwise only ever cleared by road-specific actions (deleting a point, loading a world).
-	 */
-	virtual void ClearRoadSelection() {}
-
-	/**
-	 * The currently selected road actor, or null. Typed as the generic AActor rather than the
-	 * concrete road class for the same reason DeleteSelectedRoadPoint is virtual -- road actors live
-	 * in the game module, invisible from here -- but a caller only needing base AActor API (location,
-	 * bounds, for a "focus camera on selected road" button) can use this directly.
-	 */
-	AActor* GetSelectedRoadActor() const { return SelectedRoadActor.Get(); }
-
 protected:
-	UPROPERTY(Transient)
-	TWeakObjectPtr<AActor> SelectedRoadActor;
-
-	int32 SelectedRoadPointIndex = INDEX_NONE;
-
 	/** Traces the cursor against terrain and buildings. Returns false when nothing was hit. */
 	bool TraceUnderCursor(FHitResult& OutHit) const;
 
@@ -541,33 +470,27 @@ private:
 	void Server_StartSandboxMode();
 
 	UFUNCTION(Server, Reliable)
-	void Server_ImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads);
+	void Server_ImportOSM(const FString& FilePath, bool bImportBuildings);
 
 	/**
 	 * One already-fully-resolved OSM feature waiting to be spawned. All the CPU-only work --
-	 * parsing, classification, lon/lat -> world conversion, footprint winding/centroid, centreline
-	 * cleanup -- happens synchronously up front in ImportOSMInternal, because none of it is what
-	 * hitches the game thread. Only the engine-side cost (SpawnActor, wall/mesh generation,
-	 * terrain-height sampling, road mesh sweeping) is deferred to the ticked drain below.
+	 * parsing, classification, lon/lat -> world conversion, footprint winding/centroid -- happens
+	 * synchronously up front in ImportOSMInternal, because none of it is what hitches the game
+	 * thread. Only the engine-side cost (SpawnActor, wall/mesh generation, terrain-height sampling)
+	 * is deferred to the ticked drain below.
 	 */
 	struct FTerraDyneOSMSpawnJob
 	{
-		bool bIsBuilding = false;
-
-		// Building:
 		FVector Origin = FVector::ZeroVector;
 		TArray<FVector> LocalFootprint;
 		int32 Levels = 2;
-
-		// Road:
-		TArray<FVector> WorldPoints;
-		float WidthMeters = 6.5f;
 	};
 
 	/** Starts (synchronously resolves and queues) an OSM import; the actual spawns drain from Tick. */
 	FTerraDyneOSMImportSummary ImportOSMInternal(const FString& FilePath, const FTerraDyneOSMImportOptions& Options);
 
 	static constexpr int32 MaxOSMFeaturesPerTick = 8;
+	static constexpr double MaxOSMMillisecondsPerTick = 4.0;
 
 	TArray<FTerraDyneOSMSpawnJob> PendingOSMSpawnQueue;
 	int32 OSMImportTotalJobs = 0;

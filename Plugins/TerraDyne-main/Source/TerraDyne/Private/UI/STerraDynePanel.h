@@ -14,7 +14,6 @@ enum class ETerraDyneUIMode : uint8
 {
 	GIS,
 	Sculpt,
-	Roads,
 	Buildings,
 	Project
 };
@@ -64,24 +63,12 @@ private:
 	bool bSectionGeoTIFFOpen = true;
 	bool bSectionSculptOpen = true;
 	bool bSectionGizmoOpen = true;
-	bool bSectionRoadsOpen = true;
 	bool bSectionBuildingsOpen = true;
 	bool bSectionModelsOpen = true;
 	bool bSectionOSMOpen = true;
 	bool bSectionOutlinerOpen = true;
 	bool bSectionTelemetryOpen = false;
 	bool bSectionTiledCesiumOpen = true;
-
-	// Road UI state
-	float RoadWidth = 8.0f;
-	int32 RoadPointCount = 0;
-	FReply OnAddRoadPointClicked();
-	FReply OnRemoveRoadPointClicked();
-	FReply OnResetRoadPointsClicked();
-	float GetRoadWidth() const;
-	void OnRoadWidthChanged(float NewValue);
-	FText GetRoadWidthText() const;
-	FText GetRoadPointsText() const;
 
 	// Building UI state
 	int32 BuildingPointCount = 0;
@@ -102,7 +89,7 @@ private:
 	class ATerraDyneManager* GetManager() const;
 	class UGizmoManipulationSubsystem* GetGizmoSubsystem() const;
 
-	//--- Gizmo section (shared by Roads and Buildings -- one runtime gizmo, not per-tool state) ---
+	//--- Gizmo section (Buildings/Models -- one runtime gizmo, not per-tool state) ---
 	ECheckBoxState IsGizmoWorldSpaceChecked() const;
 	void OnGizmoWorldSpaceCheckedChanged(ECheckBoxState NewState);
 	ECheckBoxState IsGizmoSnappingChecked() const;
@@ -131,9 +118,6 @@ private:
 	// Tools
 	FReply SetToolMode(ETerraDyneToolMode NewMode);
 
-	FReply DeleteRoadPoint();
-	bool HasRoadPointSelected() const;
-	FReply OnFocusRoadClicked();
 	FSlateColor GetToolModeColor(ETerraDyneToolMode Mode) const;
 	FReply SetActiveLayer(ETerraDyneLayer NewLayer);
 	FSlateColor GetLayerColor(ETerraDyneLayer Layer) const;
@@ -259,8 +243,6 @@ private:
 	FReply OnImportOSMClicked();
 	ECheckBoxState IsOSMBuildingsChecked() const;
 	void OnOSMBuildingsCheckedChanged(ECheckBoxState NewState);
-	ECheckBoxState IsOSMRoadsChecked() const;
-	void OnOSMRoadsCheckedChanged(ECheckBoxState NewState);
 	bool IsOSMImportEnabled() const;
 	FText GetOSMStatusText() const;
 	FSlateColor GetOSMStatusColor() const;
@@ -286,9 +268,6 @@ private:
 	FReply OnToggleOutlinerVisibilityClicked(TWeakObjectPtr<AActor> ActorPtr);
 	FReply OnDeleteOutlinerActorClicked(TWeakObjectPtr<AActor> ActorPtr);
 	FSlateColor GetOutlinerVisibilityColor(TWeakObjectPtr<AActor> ActorPtr) const;
-
-	// Roads & Junctions
-	FText GetRoadStatusText() const;
 
 	// Visualization
 	FText GetStatsText() const;

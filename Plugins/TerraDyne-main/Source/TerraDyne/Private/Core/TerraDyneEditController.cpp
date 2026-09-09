@@ -363,17 +363,13 @@ void ATerraDyneEditController::OnLeftClickStart()
 		}
 	}
 
-	if (ToolUI && (IsBuildingToolMode(ToolUI->CurrentTool) || IsRoadToolMode(ToolUI->CurrentTool) || IsModelToolMode(ToolUI->CurrentTool)))
+	if (ToolUI && (IsBuildingToolMode(ToolUI->CurrentTool) || IsModelToolMode(ToolUI->CurrentTool)))
 	{
 		// Deliberately does NOT set bIsClicking: that flag is what makes Tick keep re-applying the
 		// action, which is right for a brush and wrong for placing an actor.
 		if (IsBuildingToolMode(ToolUI->CurrentTool))
 		{
 			HandleBuildingClick();
-		}
-		else if (IsRoadToolMode(ToolUI->CurrentTool))
-		{
-			HandleRoadClick();
 		}
 		else if (IsModelToolMode(ToolUI->CurrentTool))
 		{
@@ -383,129 +379,6 @@ void ATerraDyneEditController::OnLeftClickStart()
 	}
 
 	bIsClicking = true;
-}
-
-void ATerraDyneEditController::HandleRoadClick()
-{
-	UTerraDyneToolWidget* ToolUI = GetToolWidget();
-	if (!ToolUI)
-	{
-		return;
-	}
-
-	FHitResult Hit;
-	if (!TraceUnderCursor(Hit))
-	{
-		return;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	UClass* SplineRoadClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadSplineActor"));
-	UClass* JunctionClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadJunctionActor"));
-
-	if (ToolUI->CurrentTool == ETerraDyneToolMode::PlaceJunction)
-	{
-		if (JunctionClass)
-		{
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-			World->SpawnActor<AActor>(JunctionClass, Hit.Location, FRotator::ZeroRotator, SpawnParams);
-		}
-		return;
-	}
-
-	if (ToolUI->CurrentTool == ETerraDyneToolMode::DrawPavedRoad || ToolUI->CurrentTool == ETerraDyneToolMode::DrawRoughRoad)
-	{
-		if (!SplineRoadClass)
-		{
-			return;
-		}
-
-		const uint8 TargetRoadType = (ToolUI->CurrentTool == ETerraDyneToolMode::DrawPavedRoad) ? 1 : 0; // 0 = Rough, 1 = Paved
-
-		// 1. If we already have a selected road, extend it to the clicked destination!
-		if (SelectedRoadActor.IsValid())
-		{
-			AActor* Road = SelectedRoadActor.Get();
-			UFunction* ExtendFunc = Road->FindFunction(FName("ExtendFromPointToLocation"));
-			if (ExtendFunc)
-			{
-				// This struct's layout must mirror ARealtimeRoadSplineActor::ExtendFromPointToLocation's
-				// UFUNCTION signature exactly (params in order, then the return value last) -- this
-				// plugin can't include the game module's RealtimeRoadSplineActor.h (wrong dependency
-				// direction), so the call has to go through reflection instead of a typed pointer.
-				// ReturnValue is deliberately AActor*, not the real return type: a pointer's size and
-				// layout don't depend on its static type, and this code never needs to call anything
-				// on it -- it only has to occupy the right slot so ProcessEvent doesn't write past
-				// the end of this struct.
-				struct FExtendParams
-				{
-					int32 FromPointIndex;
-					FVector TargetWorldLocation;
-					int32 OutSelectedPointIndex;
-					float MaxSegmentSpacing;
-					AActor* ReturnValue;
-				};
-				FExtendParams Params;
-				Params.FromPointIndex = SelectedRoadPointIndex != INDEX_NONE ? SelectedRoadPointIndex : 0;
-				Params.TargetWorldLocation = Hit.Location;
-				Params.OutSelectedPointIndex = INDEX_NONE;
-				Params.MaxSegmentSpacing = 800.0f;
-				Params.ReturnValue = nullptr;
-				Road->ProcessEvent(ExtendFunc, &Params);
-
-				// Extending from an interior point branches into a new road -- follow the selection
-				// there instead of leaving it pointed at the unchanged original.
-				if (Params.ReturnValue)
-				{
-					SelectedRoadActor = Params.ReturnValue;
-				}
-				if (Params.OutSelectedPointIndex != INDEX_NONE)
-				{
-					SelectedRoadPointIndex = Params.OutSelectedPointIndex;
-				}
-			}
-			return;
-		}
-
-		// 2. Otherwise: spawn a brand new road at the clicked location
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		AActor* NewRoad = World->SpawnActor<AActor>(SplineRoadClass, Hit.Location, FRotator::ZeroRotator, SpawnParams);
-		if (NewRoad)
-		{
-			// Set RoadType byte/enum property
-			if (FByteProperty* TypeProp = CastField<FByteProperty>(NewRoad->GetClass()->FindPropertyByName(FName("RoadType"))))
-			{
-				TypeProp->SetPropertyValue_InContainer(NewRoad, TargetRoadType);
-			}
-			else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(NewRoad->GetClass()->FindPropertyByName(FName("RoadType"))))
-			{
-				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(EnumProp->ContainerPtrToValuePtr<void>(NewRoad), static_cast<int64>(TargetRoadType));
-			}
-
-			// Add initial point
-			UFunction* SetPointsFunc = NewRoad->FindFunction(FName("SetPointsRealtime"));
-			if (SetPointsFunc)
-			{
-				struct FSetPointsParams
-				{
-					TArray<FVector> WorldPoints;
-				};
-				FSetPointsParams Params;
-				Params.WorldPoints.Add(Hit.Location);
-				NewRoad->ProcessEvent(SetPointsFunc, &Params);
-			}
-
-			SelectedRoadActor = NewRoad;
-			SelectedRoadPointIndex = 0;
-		}
-	}
 }
 
 void ATerraDyneEditController::HandleBuildingClick()
@@ -545,18 +418,6 @@ void ATerraDyneEditController::OnLeftClickStop()
 {
 	bIsClicking = false;
 	bFlattenHeightLocked = false;
-
-	// Road tools get the release too, so a subclass can end a point drag. Road and building modes
-	// are mutually exclusive, and a road press never begins a stroke, so there is nothing below
-	// this that a road release needs to fall through to.
-	if (const UTerraDyneToolWidget* RoadToolUI = GetToolWidget())
-	{
-		if (IsRoadToolMode(RoadToolUI->CurrentTool))
-		{
-			HandleRoadRelease();
-			return;
-		}
-	}
 
 	if (DraggingSplinePointIndex != INDEX_NONE)
 	{
@@ -602,17 +463,16 @@ void ATerraDyneEditController::OnLeftClickStop()
 
 void ATerraDyneEditController::OnUndoPressed()
 {
-	// Priority chain: road edits, then building/model/OSM actor spawns, then terrain sculpting as
-	// the fallback -- each tries its own history and only falls through when it had nothing to
-	// take back, exactly the pattern road undo already established here.
-	if (!TryRoadUndo() && !TryActorUndo())
+	// Priority chain: building/model/OSM actor spawns, then terrain sculpting as the fallback --
+	// each tries its own history and only falls through when it had nothing to take back.
+	if (!TryActorUndo())
 	{
 		RequestUndo();
 	}
 }
 void ATerraDyneEditController::OnRedoPressed()
 {
-	if (!TryRoadRedo() && !TryActorRedo())
+	if (!TryActorRedo())
 	{
 		RequestRedo();
 	}
@@ -684,12 +544,6 @@ void ATerraDyneEditController::RespawnActorsInEntry(FTerraDyneActorUndoEntry& En
 			Snap.LiveActor = Restored;
 			break;
 		}
-		case ETerraDyneActorSnapshotKind::Road:
-			// No plugin-side ToData()/ApplyData() exists for a road; replaying the same virtual
-			// call that created it in the first place, from its own resolved centreline/width, is
-			// the only reconstruction available from here.
-			Snap.LiveActor = CreateRoadFromOSM(Snap.RoadWorldPoints, Snap.RoadWidthMeters);
-			break;
 		}
 	}
 }
@@ -2169,7 +2023,7 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::GetLastOSMImportSummary() c
 	return LastOSMImportSummary;
 }
 
-void ATerraDyneEditController::RequestImportOSM(const FString& FilePath, bool bImportBuildings, bool bImportRoads)
+void ATerraDyneEditController::RequestImportOSM(const FString& FilePath, bool bImportBuildings)
 {
 	if (HasAuthority())
 	{
@@ -2186,19 +2040,18 @@ void ATerraDyneEditController::RequestImportOSM(const FString& FilePath, bool bI
 
 		FTerraDyneOSMImportOptions Options;
 		Options.bImportBuildings = bImportBuildings;
-		Options.bImportRoads = bImportRoads;
 		LastOSMImportSummary = ImportOSMInternal(FilePath, Options);
 	}
 	else
 	{
-		Server_ImportOSM(FilePath, bImportBuildings, bImportRoads);
+		Server_ImportOSM(FilePath, bImportBuildings);
 	}
 }
 
-void ATerraDyneEditController::Server_ImportOSM_Implementation(const FString& FilePath, bool bImportBuildings, bool bImportRoads)
+void ATerraDyneEditController::Server_ImportOSM_Implementation(const FString& FilePath, bool bImportBuildings)
 {
 	TERRADYNE_REQUIRE_EDIT_AUTHORITY();
-	RequestImportOSM(FilePath, bImportBuildings, bImportRoads);
+	RequestImportOSM(FilePath, bImportBuildings);
 }
 
 FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FString& FilePath, const FTerraDyneOSMImportOptions& Options)
@@ -2236,42 +2089,37 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FSt
 		return Georeference->TransformLongitudeLatitudeHeightPositionToUnreal(FVector(Lon, Lat, 0.0));
 	};
 
-	// Classification, coordinate conversion, footprint winding/centroid and centreline cleanup are
-	// all CPU-only and cheap even for thousands of ways -- none of it is what would hitch the game
-	// thread. Only the engine-side cost (SpawnActor, wall/mesh generation, terrain-height sampling,
-	// road mesh sweeping) is deferred to ProcessOSMSpawnQueue's ticked drain below, mirroring how
-	// ATerraDyneManager::ProcessStreamingQueues budgets chunk spawns across ticks rather than
-	// introducing a new async/threading pattern into a codebase that has neither.
+	// Classification, coordinate conversion, and footprint winding/centroid are all CPU-only and
+	// cheap even for thousands of ways -- none of it is what would hitch the game thread. Only the
+	// engine-side cost (SpawnActor, wall/mesh generation, terrain-height sampling) is deferred to
+	// ProcessOSMSpawnQueue's ticked drain below, mirroring how ATerraDyneManager::ProcessStreamingQueues
+	// budgets chunk spawns across ticks rather than introducing a new async/threading pattern into a
+	// codebase that has neither.
 	PendingOSMSpawnQueue.Reset();
 	int32 FeaturesQueued = 0;
 
-	for (const FTerraDyneOSMWay& Way : Data.Ways)
+	if (Options.bImportBuildings)
 	{
-		const bool bIsBuilding = Options.bImportBuildings && FTerraDyneOSMParser::IsBuilding(Way);
-		const bool bIsRoad = Options.bImportRoads && FTerraDyneOSMParser::IsDrivableHighway(Way);
-		if (!bIsBuilding && !bIsRoad)
+		for (const FTerraDyneOSMWay& Way : Data.Ways)
 		{
-			continue;
-		}
+			if (!FTerraDyneOSMParser::IsBuilding(Way))
+			{
+				continue;
+			}
 
-		if (FeaturesQueued >= Options.MaxFeatures)
-		{
-			// Counted, not silently dropped -- the summary says how much was left behind.
-			Summary.DroppedToLimit++;
-			continue;
-		}
+			if (FeaturesQueued >= Options.MaxFeatures)
+			{
+				Summary.DroppedToLimit++;
+				continue;
+			}
 
-		TArray<FVector> WorldPoints;
-		if (!FTerraDyneOSMIngest::ResolveWayWorldPoints(Data, Way, LonLatToWorld, WorldPoints))
-		{
-			// A way reaching outside the extract's own bounds. Skip the whole way rather than
-			// building a shape with a corner missing.
-			bIsBuilding ? Summary.BuildingsSkipped++ : Summary.RoadsSkipped++;
-			continue;
-		}
+			TArray<FVector> WorldPoints;
+			if (!FTerraDyneOSMIngest::ResolveWayWorldPoints(Data, Way, LonLatToWorld, WorldPoints))
+			{
+				Summary.BuildingsSkipped++;
+				continue;
+			}
 
-		if (bIsBuilding)
-		{
 			FVector Origin = FVector::ZeroVector;
 			const TArray<FVector> Local = FTerraDyneOSMIngest::BuildFootprintLocal(WorldPoints, Origin);
 			if (Local.Num() < 3)
@@ -2281,29 +2129,12 @@ FTerraDyneOSMImportSummary ATerraDyneEditController::ImportOSMInternal(const FSt
 			}
 
 			FTerraDyneOSMSpawnJob Job;
-			Job.bIsBuilding = true;
 			Job.Origin = Origin;
 			Job.LocalFootprint = Local;
 			Job.Levels = FTerraDyneOSMParser::ResolveBuildingLevels(Way, Options.DefaultBuildingLevels);
 			PendingOSMSpawnQueue.Add(MoveTemp(Job));
+			++FeaturesQueued;
 		}
-		else
-		{
-			const TArray<FVector> Centreline = FTerraDyneOSMIngest::BuildRoadCentreline(WorldPoints);
-			if (Centreline.Num() < 2)
-			{
-				Summary.RoadsSkipped++;
-				continue;
-			}
-
-			FTerraDyneOSMSpawnJob Job;
-			Job.bIsBuilding = false;
-			Job.WorldPoints = Centreline;
-			Job.WidthMeters = FTerraDyneOSMParser::ResolveHighwayWidthMeters(Way);
-			PendingOSMSpawnQueue.Add(MoveTemp(Job));
-		}
-
-		++FeaturesQueued;
 	}
 
 	OSMImportTotalJobs = PendingOSMSpawnQueue.Num();
@@ -2346,57 +2177,39 @@ void ATerraDyneEditController::ProcessOSMSpawnQueue()
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	int32 Processed = 0;
-	// Pop() rather than dequeuing from the front: O(1) instead of RemoveAt(0)'s O(n) shift, which
-	// matters when a city-sized extract queues thousands of jobs. Ways are independent and
-	// unordered, so draining LIFO instead of FIFO changes nothing about correctness.
-	while (Processed < MaxOSMFeaturesPerTick && PendingOSMSpawnQueue.Num() > 0)
+	const double StartTimeSec = FPlatformTime::Seconds();
+	const double MaxBudgetSec = MaxOSMMillisecondsPerTick * 0.001;
+
+	while (PendingOSMSpawnQueue.Num() > 0)
 	{
 		const FTerraDyneOSMSpawnJob Job = PendingOSMSpawnQueue.Pop();
-		++Processed;
 
-		if (Job.bIsBuilding)
+		ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
+			ATerraDyneBuildingActor::StaticClass(), FTransform(Job.Origin), SpawnParams);
+		if (NewBuilding)
 		{
-			ATerraDyneBuildingActor* NewBuilding = World->SpawnActor<ATerraDyneBuildingActor>(
-				ATerraDyneBuildingActor::StaticClass(), FTransform(Job.Origin), SpawnParams);
-			if (NewBuilding)
-			{
-				NewBuilding->SetFloorCount(Job.Levels);
-				NewBuilding->SetSplinePoints(Job.LocalFootprint);
-				NewBuilding->SnapToPadHeight();
+			NewBuilding->bFlattenTerrain = false; // Prevents triggering heavy terrain distance-field pad stamping thousands of times!
+			NewBuilding->SetFloorCount(Job.Levels);
+			NewBuilding->SetSplinePoints(Job.LocalFootprint);
+			NewBuilding->SnapToPadHeight();
 
-				InProgressOSMSummary.BuildingsCreated++;
+			InProgressOSMSummary.BuildingsCreated++;
 
-				FTerraDyneActorSnapshot Snap;
-				Snap.Kind = ETerraDyneActorSnapshotKind::Building;
-				Snap.BuildingData = NewBuilding->ToData();
-				Snap.LiveActor = NewBuilding;
-				InProgressOSMUndoEntry.Actors.Add(MoveTemp(Snap));
-			}
-			else
-			{
-				InProgressOSMSummary.BuildingsSkipped++;
-			}
+			FTerraDyneActorSnapshot Snap;
+			Snap.Kind = ETerraDyneActorSnapshotKind::Building;
+			Snap.BuildingData = NewBuilding->ToData();
+			Snap.LiveActor = NewBuilding;
+			InProgressOSMUndoEntry.Actors.Add(MoveTemp(Snap));
 		}
 		else
 		{
-			// Virtual: does nothing unless the game module's road controller subclass is active.
-			AActor* NewRoad = CreateRoadFromOSM(Job.WorldPoints, Job.WidthMeters);
-			if (NewRoad)
-			{
-				InProgressOSMSummary.RoadsCreated++;
+			InProgressOSMSummary.BuildingsSkipped++;
+		}
 
-				FTerraDyneActorSnapshot Snap;
-				Snap.Kind = ETerraDyneActorSnapshotKind::Road;
-				Snap.RoadWorldPoints = Job.WorldPoints;
-				Snap.RoadWidthMeters = Job.WidthMeters;
-				Snap.LiveActor = NewRoad;
-				InProgressOSMUndoEntry.Actors.Add(MoveTemp(Snap));
-			}
-			else
-			{
-				InProgressOSMSummary.RoadsSkipped++;
-			}
+		// Frame-time budgeting: stop draining when we've spent our budget for this tick
+		if ((FPlatformTime::Seconds() - StartTimeSec) >= MaxBudgetSec)
+		{
+			break;
 		}
 	}
 
@@ -2428,3 +2241,4 @@ float ATerraDyneEditController::GetOSMImportProgress(int32& OutDone, int32& OutT
 	OutDone = OutTotal - PendingOSMSpawnQueue.Num();
 	return static_cast<float>(OutDone) / static_cast<float>(OutTotal);
 }
+

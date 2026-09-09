@@ -10,7 +10,6 @@ class UWorld;
 struct TERRADYNE_API FTerraDyneOSMImportOptions
 {
 	bool bImportBuildings = true;
-	bool bImportRoads = true;
 
 	/** Storeys for a building way that tags neither building:levels nor height. */
 	int32 DefaultBuildingLevels = 2;
@@ -30,11 +29,9 @@ struct TERRADYNE_API FTerraDyneOSMImportSummary
 	FString ErrorMessage;
 
 	int32 BuildingsCreated = 0;
-	int32 RoadsCreated = 0;
 
-	/** Ways that classified as a building or road but could not be built -- too few usable points, unresolved node refs. */
+	/** Ways that classified as a building but could not be built -- too few usable points, unresolved node refs. */
 	int32 BuildingsSkipped = 0;
-	int32 RoadsSkipped = 0;
 
 	/** Features dropped because MaxFeatures was reached. Non-zero means the import was truncated. */
 	int32 DroppedToLimit = 0;
@@ -80,12 +77,6 @@ public:
 	 * empty array when fewer than three distinct corners survive.
 	 */
 	static TArray<FVector> BuildFootprintLocal(const TArray<FVector>& WorldPoints, FVector& OutOrigin);
-
-	/**
-	 * Cleans a road centreline: drops consecutive duplicates and, if the way is closed, its
-	 * repeated final node. Returns fewer than two points when nothing usable is left.
-	 */
-	static TArray<FVector> BuildRoadCentreline(const TArray<FVector>& WorldPoints);
 
 	/**
 	 * Resolves a way's node ids to world positions through the supplied converter.

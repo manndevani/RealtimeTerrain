@@ -67,11 +67,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "RoadBuilder",
-			"Enabled": true,
-			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/be3bd259012f46fb9ca86a6cd9e9ec97"
-		},
-		{
 			"Name": "ModelContextProtocol",
 			"Enabled": true
 		},

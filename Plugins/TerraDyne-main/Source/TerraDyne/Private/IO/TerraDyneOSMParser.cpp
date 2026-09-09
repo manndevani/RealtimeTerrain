@@ -209,6 +209,32 @@ FTerraDyneOSMData FTerraDyneOSMParser::ParseString(const FString& XmlContent)
 		return Result;
 	}
 
+	// Build topological node-to-way index (like fullike / OpenDRIVE)
+	for (int32 WayIdx = 0; WayIdx < Result.Ways.Num(); ++WayIdx)
+	{
+		const FTerraDyneOSMWay& Way = Result.Ways[WayIdx];
+		for (uint64 NodeId : Way.NodeIds)
+		{
+			Result.NodeToWayIndices.FindOrAdd(NodeId).Add(WayIdx);
+		}
+	}
+
+	for (const auto& Pair : Result.NodeToWayIndices)
+	{
+		int32 DrivableCount = 0;
+		for (int32 WayIdx : Pair.Value)
+		{
+			if (Result.Ways.IsValidIndex(WayIdx) && IsDrivableHighway(Result.Ways[WayIdx]))
+			{
+				++DrivableCount;
+			}
+		}
+		if (DrivableCount > 1)
+		{
+			Result.JunctionNodeIds.Add(Pair.Key);
+		}
+	}
+
 	Result.bSuccess = true;
 	return Result;
 }

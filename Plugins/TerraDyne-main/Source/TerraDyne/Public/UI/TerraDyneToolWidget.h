@@ -26,17 +26,14 @@ enum class ETerraDyneToolMode : uint8
 	/** Next terrain click drops an imported 3D model. */
 	PlaceModel,
 
-	/** Draw interactive realtime paved road */
-	DrawPavedRoad,
-	/** Draw interactive realtime rough dirt trail */
-	DrawRoughRoad,
-	/**
-	 * Retired. Junctions are detected where roads cross rather than placed by hand, so nothing
-	 * selects this mode any more. Kept so saved assets referencing the value still resolve.
-	 */
+	/** Retired along with the road system. Kept so saved assets referencing the value still resolve. */
+	DrawPavedRoad UMETA(Hidden),
+	/** Retired along with the road system. Kept so saved assets referencing the value still resolve. */
+	DrawRoughRoad UMETA(Hidden),
+	/** Retired. Kept so saved assets referencing the value still resolve. */
 	PlaceJunction UMETA(Hidden),
-	/** Clicks select and drag existing road control points instead of drawing new road. */
-	SelectRoad,
+	/** Retired along with the road system. Kept so saved assets referencing the value still resolve. */
+	SelectRoad UMETA(Hidden),
 
 	/**
 	 * Clicks select an already-placed 3D model instead of placing another.
@@ -55,13 +52,6 @@ inline bool IsBuildingToolMode(ETerraDyneToolMode Mode)
 inline bool IsModelToolMode(ETerraDyneToolMode Mode)
 {
 	return Mode == ETerraDyneToolMode::PlaceModel || Mode == ETerraDyneToolMode::SelectModel;
-}
-
-inline bool IsRoadToolMode(ETerraDyneToolMode Mode)
-{
-	return Mode == ETerraDyneToolMode::DrawPavedRoad
-		|| Mode == ETerraDyneToolMode::DrawRoughRoad
-		|| Mode == ETerraDyneToolMode::SelectRoad;
 }
 
 /**
@@ -136,9 +126,6 @@ public:
 	/** Which OSM entities the next import brings in. Driven by the panel's checkboxes. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|OSM")
 	bool bOSMImportBuildings = true;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TerraDyne|OSM")
-	bool bOSMImportRoads = true;
 
 	/**
 	 * Shows the Sandbox/Import GIS File startup choice if (and only if) the manager's

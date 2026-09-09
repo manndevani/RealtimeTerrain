@@ -1,167 +1,17 @@
-# RealtimeTerrain (Unreal Engine 5.8)
+﻿# RealtimeTerrain (Unreal Engine 5.8)
 
 ## 📋 Project Status
 
-**Goal**: Port RoadBuilder plugin's boundary/lane/junction/elevation engineering into the runtime
-road system (`ARealtimeRoadSplineActor`/`ARealtimeRoadJunctionActor`), keeping it replicated and
-usable in-game. Full plan + phase breakdown: `C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
-Detailed history of how each phase was built is in git log (`road-system-rewrite` branch) —
-this section tracks current state only, not a running journal.
-
-### Phase 1 — COMPLETE ✅ (boundary/lane graph, style presets, replication, actor wiring)
-- `RoadCurveGraph.h`/`.cpp`: `URealtimeRoadCurve`/`URealtimeRoadLane`/`URealtimeRoadBoundary`
-  (cubic-Hermite offset math, Cut/Join) + `SerializeGraph`/`DeserializeGraph` replication.
-- `RoadStylePresets.h`/`.cpp`: `URoadLaneMarkStyle`/`URoadLaneShape`/`URoadStylePreset` (`UDataAsset`).
-- `RoadMeshBuilder::BuildRoadSectionFromStyle`: composite section from a style's lane list.
-- `ARealtimeRoadSplineActor::StylePreset`: optional, replicated; drives `GenerateRoadMesh` when set,
-  fully backward-compatible when unset. `CrossSectionSettings.RoadWidth` still independently
-  drives terrain-pad/junction width even with a style set — no auto-derivation yet.
-- Tests: 8 across `RoadCurveGraph`/`RoadStylePresets`/`RoadMeshBuilder`/`RoadSplineActor`.
-
-### Phase 2 — COMPLETE ✅ (junction lane routing + gore markings)
-- `RoadNetworkSolver`: `IsRampConnection` (shallow angle + lane-count mismatch = ramp, classified
-  on both `SolveNode` corner paths — the bevel path was initially missed, since generous
-  curb+footpath width is exactly what triggers it for a realistic ramp), `RampCornerRadiusMultiplier`
-  (wider fillet at ramp corners), `FindGoreApex` (driving-surface convergence point),
-  `MapLaneConnections` + `BuildLaneConnectorCentreline` (per-lane connectivity across a corner).
-- `RoadMesh::AppendGoreFill`: raised gore-island triangle fan, self-correcting winding (verified
-  against real `FDynamicMesh3::GetTriNormal`, not just "doesn't crash").
-- `ARealtimeRoadJunctionActor`: wires all of the above into `RebuildJunction`'s mesh —
-  `SolvedIsRampCorner`/`SolvedGoreApex`/`SolvedConnectors`, `GetRampCornerCount()`/`GetConnectorCount()`.
-- Verified with a live 3-actor integration test (2-lane through-road + 1-lane ramp at 20°, the real
-  highway on/off-ramp shape): exactly 1 ramp corner, exactly 4 per-lane connectors, hand-derived
-  and matched exactly.
-- Deferred, not blocking: `URealtimeRoadBoundary`/`URealtimeRoadLane` (Phase 1's graph classes)
-  aren't consumed here — connector geometry comes from arm-level driving-width/lane-count data
-  instead, which was sufficient for correct, tested connectivity. Wiring the graph in for
-  asymmetric/tapered lanes is a real future enhancement, not required for what Phase 2 set out to do.
-- Tests: 9 in `RoadNetworkSolver`'s suite + 1 live integration test. **Full regression sweep across
-  every touched suite at Phase 2 completion: 25 tests, 0 regressions.**
-
-### Phase 3 — COMPLETE ✅ (elevation profile + automatic flyover + pier instancing)
-- `RoadElevationProfile.h`/`.cpp`: `FRoadHeightKey` + `EvaluateHeight` — cubic-Hermite height-vs-
-  distance profile, ported from RoadBuilder's `FHeightPoint`/`FHeightSegment` (`RoadActor.h`).
-  Reuses `RoadCurveGraph::FindElementIndex`'s binary search rather than duplicating it. Test:
-  `TerraDyne.RoadElevationProfile.HeightMath` (flat, S-curve climb, 3-key climb-hold-descend).
-- `RoadElevationProfile::DetectFlyoverBridges`: scans a terrain height sequence for stretches
-  whose local grade exceeds a threshold for a long-enough run and returns zero-slope bridging key
-  pairs (a comfortable departure/return grade). New behavior, not a RoadBuilder port — RoadBuilder's
-  own height keys are always hand-authored. Test: `TerraDyne.RoadElevationProfile.AutoFlyoverDetection`
-  (sawtooth stretch correctly bridged at its exact boundaries; flat sequence produces no bridge;
-  a too-short steep step is gated out by the minimum-run-length check).
-- `ARealtimeRoadSplineActor`: `HeightKeys` (replicated, optional, empty by default — a road with
-  keys stops following terrain over that stretch), `bAutoFlyover`/`MaxComfortableGradeDegrees`/
-  `MinFlyoverRunLength`, and `ApplyElevationProfile(Points, Distances)` — merges auto-detected
-  bridges with any authored keys (an authored key anywhere inside an auto bridge's span suppresses
-  that whole bridge pair, full stop) and overwrites `Points[i].Z` in place. Wired into
-  `BuildConformedCentreline` right after terrain conforming/smoothing.
-  `FRoadHeightKey`'s `USTRUCT` needed the `BlueprintType` specifier (not just `USTRUCT()`) since
-  `HeightKeys` is `BlueprintReadWrite` — UHT rejects a `BlueprintReadWrite` `TArray` of a non-
-  `BlueprintType` struct at compile time.
-  Test: `TerraDyne.RoadSplineActor.ApplyElevationProfile` (sawtooth auto-bridges to 454.40 at
-  station 10; two bracketing user keys override the same stretch to exactly 5000.0).
-- `RoadPierPlacement.h`/`.cpp`: `RoadPierPlacement::PlacePiers` — pure placement math (no HISM/mesh
-  dependency, same testable-in-isolation pattern as `DetectFlyoverBridges`), walking a run's
-  stations at `SpacingAlongRoad` intervals and placing a pier wherever the final road height clears
-  `MinGap` above the raw terrain sample. New behavior; RoadBuilder has no pier geometry at all —
-  its "Elevated" style is visual only.
-- `FRoadPierSettings` (`RoadTypes.h`, mirrors `FRoadScatterSettings`'s shape) + a dedicated
-  `PierHISMComponent` on `ARealtimeRoadSplineActor` (a separate component from `ScatterHISMComponent`
-  since piers and rough-road debris need different meshes/scaling, not one shared instance buffer).
-  `GeneratePiers` builds per-station distance/XY/road-underside-height/ground-height arrays straight
-  from the already-computed `RunFrames` (reusing `SampleTerrainHeightAtXY`, the same call
-  `GenerateScatter` already makes) and feeds them to `PlacePiers` — no extra data needed through
-  `BuildConformedCentreline`. Piers regenerate only on the settle pass, same as scatter and the
-  terrain pad.
-  Test: `TerraDyne.RoadPierPlacement.ElevatedStretchOnly` (piers land only within a synthetic
-  500–1500cm elevated stretch, each spanning the full 500cm deck height; a flat road gets none).
-- **Full regression sweep after this increment: 30 tests, 0 regressions.**
-
-### Phase 4 — COMPLETE ✅ (Euler-spiral/clothoid centreline smoothing)
-- `RoadSpiral.h`/`.cpp`: `GetSpiralPos`/`GetSpiralRadian`/`ComputeSpiralLength` ported near-verbatim
-  from RoadBuilder's `Spiral.h`/`Spiral.cpp`, including its full Fresnel sine/cosine integral
-  numeric library (Chebyshev/asymptotic-series approximations) — not a simplified re-derivation,
-  since a wrong Fresnel coefficient is exactly the kind of bug a "looks plausible" approximation
-  would hide. Every internal helper (`fresnel_sin`, `Power_Series_S`, etc.) made `static` file-scope
-  to avoid symbol collisions under Unreal's unity builds; only the 3 functions above plus
-  `BuildSpiralCentreline` are externally visible, all under `namespace RoadSpiral`.
-  Tests: `TerraDyne.RoadSpiral.StraightAndArcClosedForm` (the two degenerate closed-form branches:
-  a straight line and a circular arc, verified against exact geometry — arc points land exactly
-  1/curvature from the arc's centre), `TerraDyne.RoadSpiral.ClothoidConsistency` (the general
-  Fresnel-integral branch: `ComputeSpiralLength`'s algebraic inverse round-trips through
-  `GetSpiralRadian` to 1e-9, and `GetSpiralPos`'s numeric tangent — central difference — matches
-  `GetSpiralRadian`'s heading to 3 decimals, confirming the ported Fresnel numerics actually
-  integrate the heading they claim to).
-- `RoadSpiral::BuildSpiralCentreline`: new code (not a RoadBuilder port, though it walks the same
-  algorithm as `ARoadActor::UpdateCurve`'s corner-fit loop) — fits a spiral-arc-spiral transition at
-  every interior point of a control polyline, bisecting on curvature until the transition's midpoint
-  lands on the corner's own position, exactly mirroring RoadBuilder's own bisection. `MaxRadius`
-  caps how tight a fitted arc may get; `CurvatureBlend` splits each corner between spiral portions
-  and a constant-curvature arc (0 = pure arc, 1 = pure spiral), matching RoadBuilder's own
-  `RoadPoint.CurvatureBlend` semantics. Resamples the whole fitted path into a dense point/distance
-  array — a drop-in replacement for the XY half of `BuildConformedCentreline`'s existing spline-
-  sampling loop.
-  Test: `TerraDyne.RoadSpiral.CentrelineCornerIsContinuous` (a 500-radius 90° corner: path departs/
-  arrives exactly along the incoming/outgoing arm directions, no sample-to-sample heading jump
-  exceeds a few degrees — the actual curvature-continuity property a raw polyline corner lacks —
-  and the fitted length, 1761.85cm, is meaningfully shorter than the sharp 2000cm corner it rounds).
-- `ARealtimeRoadSplineActor`: `bUseSpiralCentreline` (off by default — every existing road's XY
-  shape is provably unchanged), `SpiralCornerMaxRadius`, `SpiralCurvatureBlend`. Wired into
-  `BuildConformedCentreline` via a new `bAllowSpiralFit` parameter, gated to the settle pass only
-  (`bUpdateCollision == true`) — live-drag always keeps the cheap raw spline sampling, matching
-  every other settle-only feature on this actor (scatter, piers, terrain pad). Falls back to the
-  plain spline sampling if the spiral fit produces fewer than 2 points (a degenerate control-point
-  layout), so turning the feature on can never leave a road with no centreline at all.
-- **Full regression sweep after this increment: 33 tests, 0 regressions** (critical here since
-  `bUseSpiralCentreline` defaults off — confirms every pre-existing road/test is untouched).
-
-### Phase 5 — COMPLETE ✅ (OpenDrive/.xodr export)
-- `RoadXodrExport.h`/`.cpp`: self-contained, editor-only, pure module adapted from RoadBuilder's
-  `ExportXodr` methods (`RoadActor.cpp`/`RoadBoundary.cpp`/`RoadLane.cpp`/`RoadScene.cpp`) — no
-  runtime/replication cost, no `FXmlNode` leaked in its public API. Builds an in-memory `FXmlNode`
-  tree the same way RoadBuilder's own exporter does, then serialises it to a UTF-8 XML `FString` via
-  a locally reimplemented `WriteXmlNode` (matching `FXmlFile::WriteNodeHierarchy`'s exact algorithm
-  — that method turned out to be `private`, unreachable from outside the engine's XmlParser module).
-  No disk I/O inside `ExportOpenDrive` itself, so it stays directly testable.
-- Deliberately scoped, documented rather than faked (see the header's class comment): planView
-  geometry exports as a sequence of straight `<line>` records between the road's already-sampled
-  centreline stations (a standard, honest discretization for a spline-authored road, not the exact
-  analytic spiral/arc/line records `RoadSpiral::BuildSpiralCentreline` could in principle produce);
-  elevationProfile exports the road's *authored* `HeightKeys` verbatim, not the runtime auto-flyover
-  bridges (those depend on live terrain sampling, not portable design geometry); lanes export as one
-  laneSection spanning the whole road (no lane-width variation along a road yet); junctions are not
-  exported as XODR `<junction>` elements and junction-spanning roads aren't split into per-arm
-  records the way RoadBuilder's `Slots`/`CutRoadSegments` does.
-- `CalcElevationPolynomial`: a fresh cubic-Hermite-to-power-basis derivation, not a straight port —
-  cross-checking RoadBuilder's own elevation `ExportXodr` call site (`CalcABCD` fed `Dir*0.01`)
-  against its own actively-used height evaluator (`FHeightSegment::Get`, which correctly scales by
-  `Dir*Length`) shows the export call site never multiplies its tangent by the segment length,
-  an apparent unexercised bug in the third-party plugin. This port does the scaling correctly.
-  Test: `TerraDyne.RoadXodrExport.ElevationPolynomialRoundTrip` (the returned polynomial's value and
-  derivative at both endpoints reproduce the inputs exactly).
-- `ARealtimeRoadSplineActor::ExportRoadToXodr()`: `CallInEditor` entry point, `#if WITH_EDITOR`.
-  Builds the road's centreline (spiral-fit if enabled), gathers `HeightKeys` and lane data (from
-  `StylePreset` if set, else `GetDrivingLaneCount()`'s own established 2-lane-paved/1-lane-rough
-  fallback split across `GetDrivingSurfaceHalfWidth()`), and saves to `Saved/Export/<RoadName>.xodr`.
-  Thin glue over already-tested logic, so it has no dedicated test of its own — same precedent as
-  `GeneratePiers`' actor wiring in Phase 3.
-  Test: `TerraDyne.RoadXodrExport.ExportedDocumentStructureAndValues` (re-parses the module's own
-  output and checks real numeric attributes — road length, per-segment x/y/heading/length, the
-  elevation polynomial evaluated at its endpoint, and lane ids/types/widths — against known inputs).
-- **Full regression sweep after this increment: 35 tests, 0 regressions — the final sweep of the
-  entire 5-phase port.**
-
-## ✅ RoadBuilder port — all 5 phases complete
-
-Boundary/lane graph, junction lane routing + gore markings, elevation/auto-flyover/piers,
-Euler-spiral centreline smoothing, and OpenDRIVE export are all implemented, tested (35 automation
-tests, 0 regressions), committed, and pushed to `road-system-rewrite`. Each phase's section above
-describes what was actually built and why (the plan file this was built from now holds the
-in-progress Gizmo System plan below, per this project's workflow of one live plan document at a
-time — see git log for the RoadBuilder port's original phase-by-phase history). Every new feature
-defaults to its pre-existing behavior when unset (`StylePreset`, `HeightKeys`,
-`bUseSpiralCentreline` all off/empty by default), so no existing road in the project changed
-behavior as a side effect of this work.
+**Road/junction system removed (2026-08-31).** The runtime spline road/junction system
+(`ARealtimeRoadSplineActor`, `ARealtimeRoadJunctionActor`, `URealtimeRoadBuilderComponent`, the
+`RoadGraphCore`/`RoadMeshBuilder`/`RoadNetwork`/`RoadCurveGraph`/`RoadElevationProfile`/`RoadSpiral`/
+`RoadPierPlacement`/`RoadStylePresets`/`RoadXodrExport`/`RoadNetworkDebugLibrary` modules, the
+third-party `RoadBuilder-master` plugin, and every UI/OSM/undo hook wired into it) was deleted at
+the user's request, along with its 45+ automation tests. `ATerraDyneEditController` and
+`STerraDynePanel` no longer reference roads at all; OpenStreetMap import now brings in buildings
+only. The full development history of that system (RoadBuilder port phases 1-5, the junction
+fillet-solver rewrite) is preserved in git history on the `road-system-rewrite` branch up to the
+commit before this removal, and is no longer duplicated here.
 
 ## 🎯 Gizmo System — reusable runtime transform gizmo (COMPLETE ✅)
 
@@ -709,7 +559,7 @@ pre-existing, unrelated `TerraDyne.Raster.Workflow` GIS-import test noted throug
 
 ---
 
-A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, spline road networks, modular buildings, and world persistence.
+A high-performance, runtime-editable chunk terrain and GIS framework for Unreal Engine 5.8. Built for planetary/regional geographic datasets, real-time procedural sculpting, dynamic multi-band GIS/DEM raster ingestion with auto-detection, modular buildings, and world persistence.
 
 ---
 
@@ -737,7 +587,6 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
        ├─────────────────────────────────────────────────────────┤
        │ • High-Speed FDynamicMesh3 & Dynamic Collisions         │
        │ • Cesium DynamicPawn (WGS84, ESU Horizon, Spd, TopView) │
-       │ • Procedural Spline Roads & Junction Networks           │
        │ • Modular Spline Buildings & Dynamic-Step Pad Leveling  │
        │ • Full Undo/Redo (Ctrl+Z/Y) & Disk Persistence          │
        │ • Dynamic Slate HUD (Auto-Detect, Load/Unload, Delete)  │
@@ -749,7 +598,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 ## ✨ Features & Capabilities
 
 ### 1. Dual Independent Session Modes
-* **Sandbox Mode**: Instant procedural grid initialization ready for immediate brush sculpting, layer editing, road drawing, and building placement.
+* **Sandbox Mode**: Instant procedural grid initialization ready for immediate brush sculpting, layer editing, and building placement.
 * **GIS DEM Mode**: Dedicated geospatial workflow designed for massive real-world GeoTIFF datasets ($435+\text{ km}$). Bypasses procedural noise, allocates exact elevation samples, and loads macro-scale terrain tiles seamlessly.
 
 ### 2. Cesium DynamicPawn Camera Navigation
@@ -779,39 +628,27 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **Dynamic Overlay Stack**: Real-time list of added GIS layers with active emerald highlighting and `● ACTIVE` status badge.
   * **Top View Button**: One-click framing of active terrain footprints.
   * **Sculpting Accordion**: Brush selection (`Raise`, `Lower`, `Smooth`, `Flatten`), radius/strength sliders, and layer routing.
-  * **Roads Accordion**: Spline node placement, road width adjustment, and mesh building with $\pm 200\text{ km}$ elevation raytracing.
   * **Buildings Accordion**: Footprint spline placement, floor stepper, and dynamic-step pad leveling.
 
-### 5. Procedural Spline Roads & Junction Networks
-* Interactive spline curve authoring with dynamic mesh generation.
-* Automated N-way road intersection/junction detection and topological solving.
-* Real-time road width scaling with automatic curb extrusion.
-* Ground raytrace bounds expanded to $\pm 200\text{ km}$ to support extreme high-altitude Himalayan terrain ($3000\text{–}7000\text{ m}$).
-* **Placeable on Tiled Cesium Import terrain**: TerraDyne's own chunk heightfield doesn't cover a locally-imported Cesium tile (see §9), so height sampling (`RoadMesh::SampleGroundHeight`) falls back to a $\pm 200\text{ km}$ line trace against the tile's real collision geometry whenever no TerraDyne chunk is under a station — same mechanism the ground raytrace above already used, just now able to tell TerraDyne terrain and "some other collidable ground" apart.
-* **Gentle cross-slope banking over Cesium tile terrain**: rough roads have always banked to the terrain's lateral slope; paved roads stayed deliberately flat, since a flat road reads as correctly engineered on Sandbox/GDAL-imported terrain. Over a locally-imported Cesium tile specifically — real-world terrain that can be steep enough for a rigidly flat road to look wrong — a paved road now banks gently too (`MaxPavedCrossSlopeDegrees`, default $8°$), gated on the same fallback signal above so Sandbox/GDAL paved roads are completely unaffected.
-* **Focus button**: frames the camera on the currently selected road (or road point) from the Roads panel section.
-* **Delete Point removes the whole road once nothing's left**: a road can't render below two points, so deleting the last one deletes the road itself (re-solving any junction it was pinned to) instead of silently refusing — previously there was no way to remove a two-point stub road at all.
-* **Junctions clean up after themselves**: deleting a connected road makes the junction re-solve from whatever's left; once fewer than two roads remain, the junction actor removes itself and un-pins the last survivor (if any) back to a normal, uncut road, instead of leaving stale, disconnected geometry behind. A freshly-placed junction with no roads drawn to it yet is unaffected — only one that had previously solved from real roads and then lost its connections is treated as orphaned.
-
-### 6. Modular Spline Buildings & Dynamic Terraforming
+### 5. Modular Spline Buildings & Dynamic Terraforming
 * Arbitrary polygon footprint definition using spline nodes.
 * Live floor count stepper controls.
 * Macro chunk step-scaled pad terraforming (`EffectiveFalloff = Max(Falloff, Step * 1.5)`) ensuring smooth foundations on all grid resolutions.
-* **Pad leveling on Tiled Cesium Import terrain**: `ResolvePadTargetWorldZ`'s footprint samples fall back to the same line-trace-against-collision approach as roads (above) wherever no TerraDyne chunk covers a sample point, so a building's pad still levels correctly when placed on a locally-imported Cesium tile instead of TerraDyne's own terrain.
+* **Pad leveling on Tiled Cesium Import terrain**: `ResolvePadTargetWorldZ`'s footprint samples fall back to a $\pm 200\text{ km}$ line-trace-against-collision approach wherever no TerraDyne chunk covers a sample point, so a building's pad still levels correctly when placed on a locally-imported Cesium tile instead of TerraDyne's own terrain.
 * **Focus button**: frames the camera on the currently selected building from the Buildings panel section.
 
-### 7. World Persistence & Transaction History
-* Complete disk serialization format for terrain state, building transforms, and road splines.
+### 6. World Persistence & Transaction History
+* Complete disk serialization format for terrain state and building transforms.
 * Multi-layer height buffers (**Base**, **Sculpt**, **Detail**).
 * Full undo and redo transaction history (`Ctrl+Z`, `Ctrl+Y`).
 
-### 8. 100% Multiplayer & Network Replication
+### 7. 100% Multiplayer & Network Replication
 * **Authoritative Server Architecture**: Strictly validated through `HasEditAuthority()`. Unauthorized edits are rejected on the server.
 * **Delta-Broadcasting**: Raw $64 \times 64$ height buffers are deterministically evaluated locally; live sculpting strokes are multicast via lightweight geometric parameters (`Multicast_BroadcastBrushStroke`), consuming minimal bandwidth.
-* **Full Actor & Property Replication**: `RasterLayerSlots`, `DynamicRasterLayers`, `BuildingActors`, and `RoadSplineActors` automatically synchronize with `DOREPLIFETIME` and `OnRep` handlers.
+* **Full Actor & Property Replication**: `RasterLayerSlots`, `DynamicRasterLayers`, and `BuildingActors` automatically synchronize with `DOREPLIFETIME` and `OnRep` handlers.
 * **Multi-User Streaming**: Throttled view reporting (`Server_ReportViewLocation`) keeps server-side chunk streaming centered around all connected players.
 
-### 9. Tiled Cesium Import (Local Quantized-Mesh Terrain & XYZ Imagery)
+### 8. Tiled Cesium Import (Local Quantized-Mesh Terrain & XYZ Imagery)
 * **DEM-only**: only available once a world is Imported/GIS-DEM (or already has an elevation layer) — a real-world tile pyramid has no meaningful place next to Sandbox's procedural terrain, so the panel section and the underlying `ATerraDyneManager` calls both gate on it.
 * **No hardcoded paths**: `Import Terrain Tileset Folder…` / `Import Imagery Overlay Folder…` open a native folder picker; the last folder picked per pyramid type is remembered across editor sessions via `GConfig` (`GEditorPerProjectIni`), never baked into source.
 * **Terrain**: points a `ACesium3DTileset` (`FromUrl`) at a local Cesium `quantized-mesh-1.0` pyramid — a folder containing `layer.json` and `{z}/{x}/{y}.terrain` tiles.
@@ -819,7 +656,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Fully offline**: both use `file:///` URLs, which `UnrealAssetAccessor` short-circuits before ever reaching `FHttpModule` or Cesium Ion — no network access, no Cesium ion token required. Actors are spawned deferred (`SpawnActorDeferred`) with the tileset source set before `FinishSpawning()`, since `ACesium3DTileset` otherwise defaults to `FromCesiumIon` and calls `LoadTileset()` from `OnConstruction` immediately on spawn.
 * **Auto-fly-to-footprint**: each successful import reads the pyramid's own geographic extent (from its deepest zoom level's actual tile index range, not the often-boilerplate `bounds` field in `layer.json`) and flies the camera to an aerial top-down view centred over it — the same framing angle as the existing "Top View" feature, altitude scaled to the footprint's size so it fits comfortably in frame.
 * **Cuts a hole in the backdrop globe** (toggle: *Cut Out Backdrop Globe*, on by default): a successful terrain import clips every other `ACesium3DTileset` already in the world — e.g. a placed "Cesium World Terrain" used as the level's default globe backdrop — via a `UCesiumPolygonRasterOverlay` on a rectangle matching the imported footprint, so the backdrop stops rendering real terrain geometry for that ground (which would otherwise visibly overlap/z-fight with the local import) while staying fully visible everywhere else. Turn the toggle off if the computed footprint looks wrong and the cutout lands in the wrong spot. (Imagery-only imports don't touch this: the bare ellipsoid they spawn has no relief of its own to compete with the backdrop.)
-### 10. 3D Model Importer, Placement, Asset Palette & Scene Outliner
+### 9. 3D Model Importer, Placement, Asset Palette & Scene Outliner
 * **Runtime 3D Model Importers (`FTerraDyneModelImporter`)**:
   * **6 Supported Formats**:
     * **Wavefront OBJ (`.obj` & `.mtl`)**: Positions, normals, UVs, n-gon fan triangulation, material groups, diffuse colors (`Kd`), and texture files (`map_Kd`).
@@ -847,7 +684,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **Terrain Placement Mode**: Shows a holographic preview ghost following the cursor projected onto terrain chunks. Clicking drops and spawns an `ATerraDynePlacedModelActor` and attaches the transform gizmo immediately.
 * **Slate HUD: Scene Outliner / Hierarchy Panel**:
   * Live object counter header (e.g. `SCENE OUTLINER (7)`).
-  * Complete hierarchy listing placed 3D models (`[Model]`), procedural buildings (`[Building]`), and spline roads (`[Road]`).
+  * Complete hierarchy listing placed 3D models (`[Model]`) and procedural buildings (`[Building]`).
   * **Row Actions**:
     * **Click Label / Row**: Selects the entity in the viewport and attaches the standard transform gizmo.
     * **`🎯` Focus**: Smoothly flies the camera to center and frame the object.
@@ -908,7 +745,7 @@ non-zero source-Z vertex, asserting it lands on **+Y**; under the old setting it
 * **Live outliner.** The panel polls a per-type count signature twice a second and rebuilds only
   when it changes, instead of waiting for the Refresh button.
 * **Model selection is gated on a model tool.** A new `SelectModel` mode joins `PlaceModel`, with
-  Place/Select buttons matching the Roads and Buildings sections. The selection trace previously ran
+  Place/Select buttons matching the Buildings section. The selection trace previously ran
   a 500 km line trace on *every* left click in *every* mode, so clicking a model mid-sculpt silently
   abandoned the brush stroke.
 * **Thumbnail brush leak.** The palette raw-`new`'d an `FSlateImageBrush` per tile and never freed
@@ -931,24 +768,21 @@ visually, only proven to no-op safely headless.
 
 ---
 
-### 11. OpenStreetMap Data Ingestion
+### 10. OpenStreetMap Data Ingestion
 
-Imports real-world buildings and roads from an OpenStreetMap export. Export an area from
+Imports real-world buildings from an OpenStreetMap export. Export an area from
 openstreetmap.org (pan to it, click **Export**), then use **🌍 Import OpenStreetMap (.osm)…** in the
 new **OPENSTREETMAP DATA** panel section. Offline and packaged-build safe — no network dependency.
 
 * **Reader (`FTerraDyneOSMParser`)** — OSM XML via the engine's runtime `XmlParser` module, so no
   third-party dependency. Nodes, ways and tags; `<relation>` is deliberately ignored for now, since
-  what it mainly buys is multipolygon buildings with holes and neither the footprint spline nor the
-  road system can express a hole. Deliberately pure — no world, no UObject, no georeferencing — so
-  the fiddly decisions are testable with no map open.
-  * **Classification**: closed `building=*` ways become buildings (`building=no` excluded);
-    `highway=*` becomes a road only for values vehicles actually drive on — footways, cycleways,
-    steps and pedestrian areas are skipped rather than built as carriageways.
+  what it mainly buys is multipolygon buildings with holes and the footprint spline cannot express
+  a hole. Deliberately pure — no world, no UObject, no georeferencing — so the fiddly decisions are
+  testable with no map open.
+  * **Classification**: closed `building=*` ways become buildings (`building=no` excluded).
   * **Tag interpretation**: `building:levels` → storeys, falling back to `height` in metres over a
-    3 m storey. Road width from `width`, then `lanes` × 3.5 m, then a per-class default. Numeric
-    tags are free text in OSM and routinely carry units (`"12 m"`), so the leading number is taken
-    and the rest ignored rather than rejecting the tag.
+    3 m storey. Numeric tags are free text in OSM and routinely carry units (`"12 m"`), so the
+    leading number is taken and the rest ignored rather than rejecting the tag.
   * **Line-oriented XML workaround**: `FXmlFile` cannot parse two elements sharing a line and
     rejects the whole document with a bare "Failed to parse the loaded document". Exports from
     openstreetmap.org are one element per line and load as-is, but anything minified failed for a
@@ -967,14 +801,7 @@ new **OPENSTREETMAP DATA** panel section. Offline and packaged-build safe — no
 * **Placement** — lon/lat goes through the level's `ACesiumGeoreference` via
   `TransformLongitudeLatitudeHeightPositionToUnreal`, the same call the GeoTIFF and tiled-Cesium
   paths already use. The import refuses to run without a georeference rather than guessing.
-  Buildings resolve their own ground height through `SnapToPadHeight`; road centrelines are
-  vertically traced onto the terrain, since a `.osm` document carries no elevation and an untraced
-  road would sit at the georeference origin's height.
-* **Cross-module split** — buildings are built in-plugin. Roads cannot be: `ARealtimeRoadSplineActor`
-  lives in the game module the plugin cannot reference, so the importer calls out through a new
-  `ATerraDyneEditController::CreateRoadFromOSM` hook that `ARealtimeRoadEditController` overrides —
-  exactly the pattern `HandleRoadClick` already uses. A project without the road module still
-  imports buildings.
+  Buildings resolve their own ground height through `SnapToPadHeight`.
 * **Truncation is reported, not silent** — a city-sized extract holds hundreds of thousands of ways,
   so imports stop at `MaxFeatures` (2000) and the summary says how many were left behind, alongside
   counts of anything skipped for unresolvable node refs or too few usable points.
@@ -1004,13 +831,7 @@ coverage on every pure layer but has not been run against a real georeferenced l
     working from static source alone. Enabled project-side in `RealtimeTerrain.uproject`; start it
     in a running editor session with the console command `ModelContextProtocol.StartServer`
     (defaults to `http://127.0.0.1:8000/mcp`), then connect it as an MCP client.
-  * `RoadBuilder` ([Plugins/RoadBuilder-master](Plugins/RoadBuilder-master)) — third-party spline road/junction editor (street, highway, elevated, tunnel styles; OpenDrive export), retargeted from its stock UE 5.3 release to 5.8. Depends on `GeoReferencing` and `PCG` (both enabled). Local build fixes on top of the vanilla plugin, all scoped to `Plugins/RoadBuilder-master`:
-    * `Settings.h`/`Settings.cpp` renamed to `RoadBuilderSettings.h`/`.cpp` — the bare name collided with a new 5.8 engine header (`Engine/Source/Editor/WorldBookmark/.../Settings.h`) and UHT rejects duplicate header names project-wide.
-    * `URoadLane` renamed to `URoadBuilderLane` — collided with `FRoadLane` from the MetaRoad plugin at the UHT reflected-name level (case/prefix-insensitive). No serialized content referenced the old name (only `FRoadLaneStyle`, which was already asset-mapped under a distinct name).
-    * `RoadMarking.h`'s `DisallowedClasses` metadata now uses the long-form path `/Script/RoadBuilder.PolygonMarkStyle` — 5.8's UHT rejects short class names in that metadata key.
-    * `RoadBuilderEditor.Build.cs` now lists `PCG` directly (previously relied on transitively inheriting it through the `RoadBuilder` module dependency), fixing an `LNK2001` on `PCG::Private::LogNotLoadedObjectNotOnGameThread` introduced by 5.8's PCG module.
-    * `RoadBuilderSettings.cpp`'s `USettings_Global` constructor had a stray trailing `'` baked into the `DefaultGoreMarking` object path (`ChevronRegion.ChevronRegion'` instead of `ChevronRegion.ChevronRegion`) — a pre-existing upstream bug that only surfaces once the plugin's optional `Content.zip` (marking styles) is extracted into `Plugins/RoadBuilder-master/Content/`, since without that content the load was already failing for the unrelated reason of the asset not existing.
-  * The plugin's marking-style/prop content ships separately from its GitHub source as `Content.zip` (see [Plugins/RoadBuilder-master/Readme.md](Plugins/RoadBuilder-master/Readme.md)) — extract it into `Plugins/RoadBuilder-master/Content/` to get the built-in road styles' referenced assets (crosswalks, chevron/crosshatch gore markings, props, etc.).
+  * (Formerly also depended on the third-party `RoadBuilder` plugin for the now-removed road/junction system — no longer required.)
 
 ### GDAL Third-Party Setup
 The DEM raster pipeline utilizes GDAL for geospatial raster parsing. To bootstrap vcpkg and build local GDAL binaries:
@@ -1037,7 +858,6 @@ To compile the project via Unreal Build Tool (UBT):
 | **Flight Speed Adjust** | Mouse Wheel Scroll Up / Down |
 | **Frame Whole Map (Top View)** | `F` or `Home` |
 | **Terrain Sculpting** | Left Mouse Button + Drag on terrain |
-| **Road Spline Authoring** | Left Click on terrain in Road mode |
 | **Building Placement** | Left Click on terrain in Building mode |
 | **3D Model Placement** | Click `[Place]` in 3D Asset Palette $\rightarrow$ Left Click on terrain |
 | **Select 3D Model / Building** | Left Click on object in viewport or in Scene Outliner |

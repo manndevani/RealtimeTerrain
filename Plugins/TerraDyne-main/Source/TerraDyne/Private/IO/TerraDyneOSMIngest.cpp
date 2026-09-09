@@ -29,10 +29,10 @@ FString FTerraDyneOSMImportSummary::ToDisplayString() const
 		return ErrorMessage.IsEmpty() ? TEXT("OSM import failed.") : ErrorMessage;
 	}
 
-	FString Text = FString::Printf(TEXT("%d buildings, %d roads"), BuildingsCreated, RoadsCreated);
-	if (BuildingsSkipped > 0 || RoadsSkipped > 0)
+	FString Text = FString::Printf(TEXT("%d buildings"), BuildingsCreated);
+	if (BuildingsSkipped > 0)
 	{
-		Text += FString::Printf(TEXT("  (skipped %d/%d unusable)"), BuildingsSkipped, RoadsSkipped);
+		Text += FString::Printf(TEXT("  (skipped %d unusable)"), BuildingsSkipped);
 	}
 	if (DroppedToLimit > 0)
 	{
@@ -107,20 +107,6 @@ TArray<FVector> FTerraDyneOSMIngest::BuildFootprintLocal(const TArray<FVector>& 
 
 	NormalizeFootprintWinding(Local);
 	return Local;
-}
-
-TArray<FVector> FTerraDyneOSMIngest::BuildRoadCentreline(const TArray<FVector>& WorldPoints)
-{
-	TArray<FVector> Cleaned = DropConsecutiveDuplicates(WorldPoints);
-
-	// A closed way used as a road (a roundabout, a cul-de-sac loop) still repeats its first node.
-	// Keeping it would leave a zero-length final segment for the mesh builder to divide by.
-	if (Cleaned.Num() >= 3 && FVector::DistSquaredXY(Cleaned[0], Cleaned.Last()) <= DuplicatePointToleranceSq)
-	{
-		Cleaned.Pop();
-	}
-
-	return Cleaned;
 }
 
 bool FTerraDyneOSMIngest::ResolveWayWorldPoints(

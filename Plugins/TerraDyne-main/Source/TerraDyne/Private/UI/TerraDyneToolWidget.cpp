@@ -247,7 +247,7 @@ void UTerraDyneToolWidget::HandleOSMChosen(const FString& FilePath)
 {
 	if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(GetOwningPlayer()))
 	{
-		PC->RequestImportOSM(FilePath, bOSMImportBuildings, bOSMImportRoads);
+		PC->RequestImportOSM(FilePath, bOSMImportBuildings);
 	}
 
 	if (ActiveGeoTIFFPicker)

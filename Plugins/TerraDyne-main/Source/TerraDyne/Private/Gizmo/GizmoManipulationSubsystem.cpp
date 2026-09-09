@@ -71,7 +71,7 @@ void UGizmoManipulationSubsystem::UpdateGizmoTransform()
 	GizmoActor->SetActorRotation(Rotation);
 
 	float TargetExtent = 0.0f;
-	if (State.Target.IsValid())
+	if (State.bScaleGizmoToTargetBounds && State.Target.IsValid())
 	{
 		if (AActor* Owner = State.Target->GetOwner())
 		{
@@ -114,14 +114,16 @@ void UGizmoManipulationSubsystem::SetTarget(USceneComponent* NewTarget)
 				OwnerWeak->SetActorTransform(NewTransform);
 			}
 		}),
-		NewTarget);
+		NewTarget,
+		/*bScaleGizmoToTargetBounds=*/true);
 }
 
-void UGizmoManipulationSubsystem::SetTargetTransformAccessors(FGizmoGetTransform GetTransform, FGizmoSetTransform SetTransform, USceneComponent* NominalTarget)
+void UGizmoManipulationSubsystem::SetTargetTransformAccessors(FGizmoGetTransform GetTransform, FGizmoSetTransform SetTransform, USceneComponent* NominalTarget, bool bScaleGizmoToTargetBounds)
 {
 	State.Target = NominalTarget;
 	State.GetTransformFn = MoveTemp(GetTransform);
 	State.SetTransformFn = MoveTemp(SetTransform);
+	State.bScaleGizmoToTargetBounds = bScaleGizmoToTargetBounds;
 
 	if (ARuntimeGizmoActor* Gizmo = EnsureGizmoActor())
 	{

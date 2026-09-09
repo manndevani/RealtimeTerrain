@@ -483,7 +483,7 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			.OnValueChanged(this, &STerraDynePanel::OnBrushStrengthChanged)
 		];
 
-	// 3b. Content for GIZMO section -- shared by Roads and Buildings, since it's one runtime gizmo
+	// 3b. Content for GIZMO section -- shared by Buildings and Models, since it's one runtime gizmo
 	// and one subsystem's worth of state, not a per-tool setting.
 	TSharedRef<SWidget> GizmoContent = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
@@ -519,106 +519,6 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			.Font(MicroFont)
 			.ColorAndOpacity(HudDim)
 			.AutoWrapText(true)
-		];
-
-	// 4. Content for ROADS section
-	TSharedRef<SWidget> RoadsContent = SNew(SVerticalBox)
-		// Draw / Select
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
-			[
-				SNew(SButton)
-				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("ModeDrawRoad", "Draw"))
-				.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::DrawPavedRoad); })
-				.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::DrawPavedRoad)
-				.HAlign(HAlign_Center)
-			]
-			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
-			[
-				SNew(SButton)
-				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("ModeSelectRoad", "Select"))
-				.OnClicked_Lambda([this](){ return SetToolMode(ETerraDyneToolMode::SelectRoad); })
-				.ButtonColorAndOpacity(this, &STerraDynePanel::GetToolModeColor, ETerraDyneToolMode::SelectRoad)
-				.HAlign(HAlign_Center)
-			]
-		]
-		// ROAD WIDTH Slider
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 1)
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
-			[
-				SNew(STextBlock).Text(LOCTEXT("RoadWidthLabel", "ROAD WIDTH")).Font(MicroFont).ColorAndOpacity(HudDim)
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-			[
-				SNew(STextBlock).Text(this, &STerraDynePanel::GetRoadWidthText).Font(MicroFont).ColorAndOpacity(HudAccent)
-			]
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1, 0, 2)
-		[
-			SNew(SSlider)
-			.Value(this, &STerraDynePanel::GetRoadWidth)
-			.OnValueChanged(this, &STerraDynePanel::OnRoadWidthChanged)
-		]
-		// ROAD SPLINE
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 2)
-		[
-			SNew(STextBlock).Text(LOCTEXT("RoadSplineHeader", "ROAD SPLINE")).Font(MicroFont).ColorAndOpacity(HudDim)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
-			[
-				SNew(SButton)
-				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("BtnRoadAddPoint", "+ Point"))
-				.ToolTipText(LOCTEXT("BtnRoadAddPointTip", "Click terrain in 3D viewport to draw and extend road"))
-				.OnClicked(this, &STerraDynePanel::OnAddRoadPointClicked)
-				.HAlign(HAlign_Center)
-			]
-			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
-			[
-				SNew(SButton)
-				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("BtnRoadRemovePoint", "– Point"))
-				.ToolTipText(LOCTEXT("BtnRoadRemovePointTip", "Delete currently selected road spline point"))
-				.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
-				.OnClicked(this, &STerraDynePanel::DeleteRoadPoint)
-				.HAlign(HAlign_Center)
-			]
-			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
-			[
-				SNew(SButton)
-				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("BtnRoadReset", "Reset"))
-				.ToolTipText(LOCTEXT("BtnRoadResetTip", "Clear selected road"))
-				.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
-				.OnClicked(this, &STerraDynePanel::OnResetRoadPointsClicked)
-				.HAlign(HAlign_Center)
-			]
-			+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(1)
-			[
-				SNew(SButton)
-				.ButtonStyle(&HudButtonStyle)
-				.Text(LOCTEXT("BtnFocusRoad", "Focus"))
-				.ToolTipText(LOCTEXT("BtnFocusRoadTip", "Fly the camera to frame the selected road"))
-				.IsEnabled(this, &STerraDynePanel::HasRoadPointSelected)
-				.OnClicked(this, &STerraDynePanel::OnFocusRoadClicked)
-				.HAlign(HAlign_Center)
-			]
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
-		[
-			SNew(STextBlock)
-			.Text(this, &STerraDynePanel::GetRoadStatusText)
-			.Font(LabelFont)
-			.ColorAndOpacity(HudDim)
 		];
 
 	// 5. Content for BUILDINGS section
@@ -781,8 +681,8 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 				.HAlign(HAlign_Center)
 			]
 		]
-		// Place / Select, mirroring the Roads and Buildings sections. Selection is gated on one of
-		// these being active -- otherwise clicking a model while sculpting would abandon the stroke.
+		// Place / Select, mirroring the Buildings section. Selection is gated on one of these being
+		// active -- otherwise clicking a model while sculpting would abandon the stroke.
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 1)
 		[
 			SNew(SHorizontalBox)
@@ -821,16 +721,16 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			SAssignNew(ModelAssetListBox, SVerticalBox)
 		];
 
-	// 5b-bis. Content for OPENSTREETMAP section. Buildings become footprint-spline buildings and
-	// drivable highways become road splines; both are placed through the level's Cesium
-	// georeference, which is why the import refuses to run without one.
+	// 5b-bis. Content for OPENSTREETMAP section. Buildings become footprint-spline buildings,
+	// placed through the level's Cesium georeference, which is why the import refuses to run
+	// without one.
 	TSharedRef<SWidget> OSMContent = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
 		[
 			SNew(SButton)
 			.ButtonStyle(&HudButtonStyle)
 			.Text(LOCTEXT("BtnImportOSM", "🌍 Import OpenStreetMap (.osm)…"))
-			.ToolTipText(LOCTEXT("BtnImportOSMTip", "Import buildings and roads from an OpenStreetMap export. Get one from openstreetmap.org: pan to the area you want, click Export, and save the .osm file."))
+			.ToolTipText(LOCTEXT("BtnImportOSMTip", "Import buildings from an OpenStreetMap export. Get one from openstreetmap.org: pan to the area you want, click Export, and save the .osm file."))
 			.IsEnabled(this, &STerraDynePanel::IsOSMImportEnabled)
 			.OnClicked(this, &STerraDynePanel::OnImportOSMClicked)
 			.HAlign(HAlign_Center)
@@ -847,16 +747,6 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 			.ToolTipText(LOCTEXT("OSMBuildingsTip", "Closed building=* ways become spline buildings. building:levels sets the storey count, falling back to the height tag."))
 			[
 				SNew(STextBlock).Text(LOCTEXT("OSMBuildings", "Buildings")).Font(LabelFont).ColorAndOpacity(HudDim)
-			]
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 1)
-		[
-			SNew(SCheckBox)
-			.IsChecked(this, &STerraDynePanel::IsOSMRoadsChecked)
-			.OnCheckStateChanged(this, &STerraDynePanel::OnOSMRoadsCheckedChanged)
-			.ToolTipText(LOCTEXT("OSMRoadsTip", "Drivable highway=* ways become road splines. Footpaths, cycleways and steps are skipped. Width comes from the width tag, then lanes, then the road class."))
-			[
-				SNew(STextBlock).Text(LOCTEXT("OSMRoads", "Roads")).Font(LabelFont).ColorAndOpacity(HudDim)
 			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 5, 0, 2)
@@ -1083,22 +973,26 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 							]
 						]
 
+						// 2b. OPENSTREETMAP DATA SECTION -- DEM worlds only
+						+ SScrollBox::Slot().Padding(0, 1)
+						[
+							SNew(SBox)
+							.Visibility(this, &STerraDynePanel::GetGeoTIFFSectionVisibility)
+							[
+								MakeCollapsibleSection(LOCTEXT("SecOSM", "OPENSTREETMAP DATA"), bSectionOSMOpen, OSMContent, SectionHeaderFont)
+							]
+						]
+
 						// 3. SCULPTING SECTION
 						+ SScrollBox::Slot().Padding(0, 1)
 						[
 							MakeCollapsibleSection(LOCTEXT("SecSculpting", "SCULPTING"), bSectionSculptOpen, SculptContent, SectionHeaderFont)
 						]
 
-						// 3b. GIZMO SECTION -- shared translate/rotate/scale settings for Roads + Buildings
+						// 3b. GIZMO SECTION -- shared translate/rotate/scale settings for Buildings + Models
 						+ SScrollBox::Slot().Padding(0, 1)
 						[
 							MakeCollapsibleSection(LOCTEXT("SecGizmo", "GIZMO"), bSectionGizmoOpen, GizmoContent, SectionHeaderFont)
-						]
-
-						// 4. ROADS SECTION
-						+ SScrollBox::Slot().Padding(0, 1)
-						[
-							MakeCollapsibleSection(LOCTEXT("SecRoads", "ROADS"), bSectionRoadsOpen, RoadsContent, SectionHeaderFont)
 						]
 
 						// 5. BUILDINGS SECTION
@@ -1114,11 +1008,6 @@ void STerraDynePanel::Construct(const FArguments& InArgs)
 						]
 
 						// 5c. SCENE OUTLINER SECTION
-						+ SScrollBox::Slot().Padding(0, 1)
-						[
-							MakeCollapsibleSection(LOCTEXT("SecOSM", "OPENSTREETMAP DATA"), bSectionOSMOpen, OSMContent, SectionHeaderFont)
-						]
-
 						+ SScrollBox::Slot().Padding(0, 1)
 						[
 							MakeCollapsibleSection(LOCTEXT("SecOutliner", "SCENE OUTLINER"), bSectionOutlinerOpen, OutlinerContent, SectionHeaderFont)
@@ -1331,14 +1220,7 @@ int32 STerraDynePanel::ComputeOutlinerSignature() const
 	TArray<AActor*> BuildingActors;
 	UGameplayStatics::GetAllActorsOfClass(World, ATerraDyneBuildingActor::StaticClass(), BuildingActors);
 
-	TArray<AActor*> RoadActors;
-	if (UClass* SplineRoadClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadSplineActor")))
-	{
-		UGameplayStatics::GetAllActorsOfClass(World, SplineRoadClass, RoadActors);
-	}
-
-	return HashCombine(HashCombine(GetTypeHash(PlacedActors.Num()), GetTypeHash(BuildingActors.Num())),
-		GetTypeHash(RoadActors.Num()));
+	return HashCombine(GetTypeHash(PlacedActors.Num()), GetTypeHash(BuildingActors.Num()));
 }
 
 FCursorReply STerraDynePanel::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
@@ -2862,19 +2744,8 @@ FReply STerraDynePanel::SetToolMode(ETerraDyneToolMode NewMode)
 {
 	if (OwnerWidget.IsValid())
 	{
-		// Switching away from a road tool used to leave the previous selection's gizmo/highlight
-		// stuck on screen -- nothing but road-specific actions (delete point, load world) ever
-		// cleared it. A mode switch is exactly the point a stale selection should go away too.
-		if (IsRoadToolMode(OwnerWidget->CurrentTool) && !IsRoadToolMode(NewMode))
-		{
-			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
-			{
-				PC->ClearRoadSelection();
-			}
-		}
-
-		// Same reasoning for models: leaving a model tool should not leave its gizmo and selection
-		// outline hanging on screen while a completely different tool is active.
+		// Leaving a model tool should not leave its gizmo and selection outline hanging on screen
+		// while a completely different tool is active.
 		if (IsModelToolMode(OwnerWidget->CurrentTool) && !IsModelToolMode(NewMode))
 		{
 			if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
@@ -2925,49 +2796,6 @@ void STerraDynePanel::OnBrushStrengthChanged(float NewValue)
 	{
 		OwnerWidget->BrushStrength = FMath::Clamp(NewValue * 5.0f, 0.0f, 5.0f);
 	}
-}
-
-FReply STerraDynePanel::OnAddRoadPointClicked()
-{
-	return SetToolMode(ETerraDyneToolMode::DrawPavedRoad);
-}
-
-FReply STerraDynePanel::OnRemoveRoadPointClicked()
-{
-	return DeleteRoadPoint();
-}
-
-FReply STerraDynePanel::OnResetRoadPointsClicked()
-{
-	RoadPointCount = 0;
-	if (OwnerWidget.IsValid())
-	{
-		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
-		{
-			PC->ClearRoadSelection();
-		}
-	}
-	return FReply::Handled();
-}
-
-float STerraDynePanel::GetRoadWidth() const
-{
-	return RoadWidth / 50.0f;
-}
-
-void STerraDynePanel::OnRoadWidthChanged(float NewValue)
-{
-	RoadWidth = FMath::Clamp(NewValue * 50.0f, 1.0f, 50.0f);
-}
-
-FText STerraDynePanel::GetRoadWidthText() const
-{
-	return FText::Format(LOCTEXT("RoadWidthFmt", "{0}m"), FText::AsNumber(FMath::RoundToInt(RoadWidth)));
-}
-
-FText STerraDynePanel::GetRoadPointsText() const
-{
-	return FText::Format(LOCTEXT("RoadPointsFmt", "{0} points"), FText::AsNumber(RoadPointCount));
 }
 
 FReply STerraDynePanel::OnAddBuildingPointClicked()
@@ -3071,16 +2899,6 @@ FReply STerraDynePanel::OnUndoClicked()
 	// always failed and the button silently did nothing.
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
-		// Road edits first, so one control serves both histories without either swallowing the
-		// other's steps.
-		if (ATerraDyneEditController* EditPC = Cast<ATerraDyneEditController>(PC))
-		{
-			if (EditPC->TryRoadUndo())
-			{
-				return FReply::Handled();
-			}
-		}
-
 		if (ATerraDyneManager* Mgr = GetManager())
 		{
 			Mgr->Undo(PC);
@@ -3097,14 +2915,6 @@ FReply STerraDynePanel::OnRedoClicked()
 	if (!World) return FReply::Unhandled();
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
-		if (ATerraDyneEditController* EditPC = Cast<ATerraDyneEditController>(PC))
-		{
-			if (EditPC->TryRoadRedo())
-			{
-				return FReply::Handled();
-			}
-		}
-
 		if (ATerraDyneManager* Mgr = GetManager())
 		{
 			Mgr->Redo(PC);
@@ -3112,85 +2922,6 @@ FReply STerraDynePanel::OnRedoClicked()
 		}
 	}
 	return FReply::Unhandled();
-}
-
-FReply STerraDynePanel::DeleteRoadPoint()
-{
-	if (OwnerWidget.IsValid())
-	{
-		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
-		{
-			PC->DeleteSelectedRoadPoint();
-			return FReply::Handled();
-		}
-	}
-	return FReply::Unhandled();
-}
-
-bool STerraDynePanel::HasRoadPointSelected() const
-{
-	if (OwnerWidget.IsValid())
-	{
-		if (const ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
-		{
-			return PC->HasRoadPointSelected();
-		}
-	}
-	return false;
-}
-
-FReply STerraDynePanel::OnFocusRoadClicked()
-{
-	if (!OwnerWidget.IsValid())
-	{
-		return FReply::Unhandled();
-	}
-
-	ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer());
-	AActor* RoadActor = PC ? PC->GetSelectedRoadActor() : nullptr;
-	if (!PC || !RoadActor)
-	{
-		return FReply::Unhandled();
-	}
-
-	if (ATerraDyneEditPawn* Pawn = Cast<ATerraDyneEditPawn>(PC->GetPawn()))
-	{
-		const FBox Bounds = RoadActor->GetComponentsBoundingBox(true);
-		if (Bounds.IsValid)
-		{
-			// A road can run for kilometres, so frame it by its actual extent rather than the
-			// building Focus button's fixed distance -- a single fixed distance would either fly
-			// absurdly far back from a short road or sit too close to see a long one end to end.
-			const float Distance = FMath::Max(3500.0f, Bounds.GetExtent().Size() * 1.5f);
-			Pawn->FocusOnLocation(Bounds.GetCenter(), Distance);
-		}
-		else
-		{
-			Pawn->FocusOnLocation(RoadActor->GetActorLocation(), 3500.0f);
-		}
-	}
-
-	return FReply::Handled();
-}
-
-FText STerraDynePanel::GetRoadStatusText() const
-{
-	if (OwnerWidget.IsValid())
-	{
-		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::DrawPavedRoad)
-		{
-			return LOCTEXT("RoadStatusPaved", "Active: Click terrain to draw Paved Road.");
-		}
-		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::DrawRoughRoad)
-		{
-			return LOCTEXT("RoadStatusRough", "Active: Click terrain to draw Rough Trail.");
-		}
-		if (OwnerWidget->CurrentTool == ETerraDyneToolMode::SelectRoad)
-		{
-			return LOCTEXT("RoadStatusSelect", "Active: Click a road, then drag its points.");
-		}
-	}
-	return LOCTEXT("RoadStatusIdle", "Select a road tool above to begin.");
 }
 
 // -----------------------------------------------------------------------------
@@ -3508,20 +3239,13 @@ void STerraDynePanel::RefreshOutlinerList()
 	TArray<AActor*> BuildingActors;
 	UGameplayStatics::GetAllActorsOfClass(World, ATerraDyneBuildingActor::StaticClass(), BuildingActors);
 
-	UClass* SplineRoadClass = StaticLoadClass(AActor::StaticClass(), nullptr, TEXT("/Script/RealtimeTerrain.RealtimeRoadSplineActor"));
-	TArray<AActor*> RoadActors;
-	if (SplineRoadClass)
-	{
-		UGameplayStatics::GetAllActorsOfClass(World, SplineRoadClass, RoadActors);
-	}
-
-	const int32 TotalCount = PlacedActors.Num() + BuildingActors.Num() + RoadActors.Num();
+	const int32 TotalCount = PlacedActors.Num() + BuildingActors.Num();
 	if (TotalCount == 0)
 	{
 		OutlinerListBox->AddSlot().AutoHeight().Padding(2, 4)
 		[
 			SNew(STextBlock)
-			.Text(LOCTEXT("NoOutlinerActors", "No placed objects in scene. Place 3D models, buildings, or roads to track them here."))
+			.Text(LOCTEXT("NoOutlinerActors", "No placed objects in scene. Place 3D models or buildings to track them here."))
 			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 8))
 			.ColorAndOpacity(TerraDyneHud::Dim)
 			.AutoWrapText(true)
@@ -3561,18 +3285,6 @@ void STerraDynePanel::RefreshOutlinerList()
 		}
 	}
 
-	// 3. Roads
-	for (AActor* Actor : RoadActors)
-	{
-		if (Actor)
-		{
-			const FString Label = Actor->GetName();
-			OutlinerListBox->AddSlot().AutoHeight().Padding(0, 1)
-			[
-				MakeOutlinerRow(Actor, Label, TEXT("Road"), LabelFont, MicroFont, HudText, HudDim, HudCyan)
-			];
-		}
-	}
 }
 
 TSharedRef<SWidget> STerraDynePanel::MakeOutlinerRow(
@@ -3592,10 +3304,6 @@ TSharedRef<SWidget> STerraDynePanel::MakeOutlinerRow(
 		if (!ActorPtr.IsValid() || !OwnerWidget.IsValid()) return false;
 		if (OwnerWidget->SelectedModelActor.Get() == ActorPtr.Get()) return true;
 		if (OwnerWidget->SelectedBuilding.Get() == ActorPtr.Get()) return true;
-		if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
-		{
-			if (PC->GetSelectedRoadActor() == ActorPtr.Get()) return true;
-		}
 		return false;
 	};
 
@@ -3832,7 +3540,7 @@ FReply STerraDynePanel::OnImportOSMClicked()
 			{
 				if (ATerraDyneEditController* PC = Cast<ATerraDyneEditController>(OwnerWidget->GetOwningPlayer()))
 				{
-					PC->RequestImportOSM(OutFiles[0], OwnerWidget->bOSMImportBuildings, OwnerWidget->bOSMImportRoads);
+					PC->RequestImportOSM(OutFiles[0], OwnerWidget->bOSMImportBuildings);
 				}
 			}
 		}
@@ -3860,25 +3568,12 @@ void STerraDynePanel::OnOSMBuildingsCheckedChanged(ECheckBoxState NewState)
 	}
 }
 
-ECheckBoxState STerraDynePanel::IsOSMRoadsChecked() const
-{
-	return (OwnerWidget.IsValid() && OwnerWidget->bOSMImportRoads) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-}
-
-void STerraDynePanel::OnOSMRoadsCheckedChanged(ECheckBoxState NewState)
-{
-	if (OwnerWidget.IsValid())
-	{
-		OwnerWidget->bOSMImportRoads = (NewState == ECheckBoxState::Checked);
-	}
-}
-
 bool STerraDynePanel::IsOSMImportEnabled() const
 {
 	// Importing nothing would silently do nothing, which reads as a broken button. A second import
 	// while one is already draining is refused the same way -- disabling the button here is the
 	// visible half of the guard RequestImportOSM itself also enforces.
-	if (!OwnerWidget.IsValid() || (!OwnerWidget->bOSMImportBuildings && !OwnerWidget->bOSMImportRoads))
+	if (!OwnerWidget.IsValid() || !OwnerWidget->bOSMImportBuildings)
 	{
 		return false;
 	}
@@ -3891,7 +3586,7 @@ bool STerraDynePanel::IsOSMImportEnabled() const
 
 FText STerraDynePanel::GetOSMStatusText() const
 {
-	if (OwnerWidget.IsValid() && !OwnerWidget->bOSMImportBuildings && !OwnerWidget->bOSMImportRoads)
+	if (OwnerWidget.IsValid() && !OwnerWidget->bOSMImportBuildings)
 	{
 		return LOCTEXT("OSMNothingSelected", "Select at least one thing to import.");
 	}

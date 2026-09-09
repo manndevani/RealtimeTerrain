@@ -266,7 +266,7 @@ bool FTerraDyneOSMAsyncDrainTest::RunTest(const FString& Parameters)
 	const FString OsmPath = FPaths::Combine(TestDir, TEXT("AsyncDrainFixture.osm"));
 	FFileHelper::SaveStringToFile(Xml, *OsmPath);
 
-	Controller->RequestImportOSM(OsmPath, /*bImportBuildings*/ true, /*bImportRoads*/ false);
+	Controller->RequestImportOSM(OsmPath, /*bImportBuildings*/ true);
 
 	int32 Done = 0, Total = 0;
 	Controller->GetOSMImportProgress(Done, Total);
@@ -343,7 +343,7 @@ bool FTerraDyneOSMBatchUndoTest::RunTest(const FString& Parameters)
 	const FString OsmPath = FPaths::Combine(TestDir, TEXT("BatchUndoFixture.osm"));
 	FFileHelper::SaveStringToFile(Xml, *OsmPath);
 
-	Controller->RequestImportOSM(OsmPath, true, false);
+	Controller->RequestImportOSM(OsmPath, true);
 
 	int32 SafetyPumps = 0;
 	while (Controller->IsOSMImportInProgress() && SafetyPumps < 100)

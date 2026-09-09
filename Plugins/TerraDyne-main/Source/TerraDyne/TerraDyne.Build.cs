@@ -26,6 +26,8 @@ public class TerraDyne : ModuleRules
 		// Plugin dependencies (Must be enabled in .uproject)
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"GeometryFramework",
+			"DynamicMesh",
+			"ProceduralMeshComponent",
 			"CesiumRuntime"
 		});
 

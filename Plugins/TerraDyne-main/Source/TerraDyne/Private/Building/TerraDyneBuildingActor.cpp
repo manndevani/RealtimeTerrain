@@ -323,7 +323,9 @@ bool ATerraDyneBuildingActor::TraceGroundHeightAtXY(const FVector2D& WorldXY, fl
 	FHitResult Hit;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(BuildingPadGroundSample), false, this);
 	Params.AddIgnoredActor(this);
-	if (World->LineTraceSingleByChannel(Hit, Start, End, ECC_WorldStatic, Params))
+	Params.bTraceComplex = true;
+	if (World->LineTraceSingleByChannel(Hit, Start, End, ECC_WorldStatic, Params) ||
+		World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
 	{
 		OutHeightZ = static_cast<float>(Hit.Location.Z);
 		return true;
@@ -405,6 +407,11 @@ void ATerraDyneBuildingActor::NotifyBuildingChanged()
 	if (HasAuthority())
 	{
 		ReplicatedScale3D = GetActorScale3D();
+	}
+
+	if (!bFlattenTerrain)
+	{
+		return;
 	}
 
 	ATerraDyneManager* Manager = FindManager();
@@ -680,6 +687,8 @@ UInstancedStaticMeshComponent* ATerraDyneBuildingActor::GetOrCreateInstancer(USt
 	ISM->SetMobility(EComponentMobility::Movable);
 	ISM->SetStaticMesh(Mesh);
 	ISM->SetupAttachment(SceneRoot);
+	ISM->SetCastShadow(false); // Prevents Virtual Shadow Map (VSM) page table overflow across thousands of buildings
+	ISM->SetCullDistances(0, 40000.0f); // 400m max draw distance for fine modular building meshes
 	ISM->RegisterComponent();
 	AddInstanceComponent(ISM);
 
