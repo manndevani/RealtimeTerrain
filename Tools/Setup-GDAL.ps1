@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Installs GDAL (built from source via vcpkg) so TerraDyne's GeoTIFF importer can link
+    Installs GDAL (built from source via vcpkg) so GRT's GeoTIFF importer can link
     against it.
 
 .DESCRIPTION
-    TerraDyne's GeoTIFF/DEM importer (Plugins/TerraDyne-main/Source/ThirdParty/GDAL) links
+    GRT's GeoTIFF/DEM importer (Plugins/GRT/Source/ThirdParty/GDAL) links
     against GDAL's C API. GDAL is not bundled with Unreal Engine and there is no first-party
     UE5 GDAL plugin, so this script builds it locally with Microsoft's vcpkg -- the same MSVC
     toolchain already required to build the project -- rather than downloading a prebuilt
@@ -80,5 +80,5 @@ Write-Host "  Headers: $IncludeDir"
 Write-Host "  Import libs: $LibDir"
 Write-Host "  Runtime DLLs: $BinDir"
 Write-Host ""
-Write-Host "Plugins/TerraDyne-main/Source/ThirdParty/GDAL/GDAL.Build.cs reads GDAL from this" -ForegroundColor Cyan
+Write-Host "Plugins/GRT/Source/ThirdParty/GDAL/GDAL.Build.cs reads GDAL from this" -ForegroundColor Cyan
 Write-Host "same Tools/vcpkg/installed/x64-windows layout -- nothing else to configure." -ForegroundColor Cyan

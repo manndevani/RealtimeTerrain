@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Core/TerraDyneEditGameMode.h"
+#include "Core/GRTEditGameMode.h"
 #include "RealtimeTerrainEditGameMode.generated.h"
 
 /**
@@ -14,7 +14,7 @@
  * in this module, since that is the only place the road classes are visible.
  */
 UCLASS()
-class REALTIMETERRAIN_API ARealtimeTerrainEditGameMode : public ATerraDyneEditGameMode
+class REALTIMETERRAIN_API ARealtimeTerrainEditGameMode : public AGRTEditGameMode
 {
 	GENERATED_BODY()
 

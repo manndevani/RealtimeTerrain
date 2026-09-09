@@ -7,22 +7,22 @@
 `RoadGraphCore`/`RoadMeshBuilder`/`RoadNetwork`/`RoadCurveGraph`/`RoadElevationProfile`/`RoadSpiral`/
 `RoadPierPlacement`/`RoadStylePresets`/`RoadXodrExport`/`RoadNetworkDebugLibrary` modules, the
 third-party `RoadBuilder-master` plugin, and every UI/OSM/undo hook wired into it) was deleted at
-the user's request, along with its 45+ automation tests. `ATerraDyneEditController` and
-`STerraDynePanel` no longer reference roads at all; OpenStreetMap import now brings in buildings
+the user's request, along with its 45+ automation tests. `AGRTEditController` and
+`SGRTPanel` no longer reference roads at all; OpenStreetMap import now brings in buildings
 only. The full development history of that system (RoadBuilder port phases 1-5, the junction
 fillet-solver rewrite) is preserved in git history on the `road-system-rewrite` branch up to the
 commit before this removal, and is no longer duplicated here.
 
 ## 🎯 Gizmo System — reusable runtime transform gizmo (COMPLETE ✅)
 
-**Goal**: replace the old translate-only, per-consumer-duplicated `ATerraDyneGizmoActor` with a
+**Goal**: replace the old translate-only, per-consumer-duplicated `AGRTGizmoActor` with a
 proper reusable translate/rotate/scale gizmo system (world/local space, plane handles, rotation
 rings, mathematically precise hit testing, snapping, undo integration) shared by the building
 editor and the road-point editor instead of each reimplementing its own drag math. Full plan:
 `C:\Users\Admin\.claude\plans\adaptive-noodling-penguin.md`.
 
 ### Phase 1 — COMPLETE ✅ (manipulation core math)
-- `Plugins/TerraDyne-main/Source/TerraDyne/Public/Gizmo/GizmoTypes.h`: `EGizmoHandleType` (16
+- `Plugins/GRT/Source/GRT/Public/Gizmo/GizmoTypes.h`: `EGizmoHandleType` (16
   explicit handle identities — translate axes, planes, screen-space centre, rotation rings +
   screen rotation, scale axes + uniform), `EGizmoMode`/`EGizmoCoordinateSpace`/`EGizmoPivotMode`,
   `FGizmoInteractionRay` (device-agnostic — mouse today, a future VR controller could produce the
@@ -30,7 +30,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
 - `GizmoManipulationMath.h`/`.cpp`: pure `namespace GizmoMath`, no UObject/UWorld/component
   references anywhere — axis/plane resolution for World vs Local space; a generalized
   best-facing-drag-plane resolver (replaces this project's two previously byte-identical
-  `BestFacingVerticalPlaneNormal` copies in `TerraDyneEditController.cpp` and
+  `BestFacingVerticalPlaneNormal` copies in `GRTEditController.cpp` and
   `RealtimeRoadBuilderComponent.cpp` with one function that handles every axis via the same
   technique, not just the vertical one); translate/rotate/scale delta computation built on
   **initial transform + accumulated delta**, never compounding onto an already-modified transform;
@@ -41,7 +41,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   `SM_UniformScaleHandle.uasset` — no runtime-safe torus/scale-handle mesh ships in
   `/Engine/BasicShapes/`. Attribution recorded in `Content/THIRD_PARTY_NOTICES.md`. The repo's own
   materials were **not** migrated — this project's existing dynamic-MID coloring system
-  (`ATerraDyneGizmoActor`'s `GizmoBaseMaterial`/`ApplyGizmoColor`) is reused instead.
+  (`AGRTGizmoActor`'s `GizmoBaseMaterial`/`ApplyGizmoColor`) is reused instead.
   **Superseded by Phase 2, correction found by direct code/asset audit**: `Content/Gizmo/Materials/`
   does contain 18 real migrated `M_GizmoAxis`/`MI_XAxis`/`MI_Rotation_*`/etc. assets, and
   `ARuntimeGizmoActor.cpp`'s constructor (Phase 2, below) loads and uses them as its *primary*
@@ -50,23 +50,23 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   so that "vendor" folder isn't safe to delete. This paragraph's original claim was accurate for
   Phase 1's own scope (mesh-only migration) but was never updated once Phase 2 changed it; left
   as-is above for the historical record, corrected here instead of silently edited.
-  Test: `TerraDyne.Gizmo.*` (`AxisResolution`, `TranslateDelta`, `RotationAngle`, `ScaleDelta`,
+  Test: `GRT.Gizmo.*` (`AxisResolution`, `TranslateDelta`, `RotationAngle`, `ScaleDelta`,
   `PlaneResolutionAndRayIntersect`, `Snapping`) — includes a known-quarter-turn check (measures
   exactly π/2), a scale-crossing-the-origin check (clamps to a small positive ratio, never
   negative/zero), and a far-from-world-origin check (same result 1,000,000cm from the origin,
   standing in for "extreme camera distance" robustness).
 - **Full regression sweep after this increment: 42 tests, 0 regressions** (existing
-  `TerraDyne.Building`/every `TerraDyne.Road*` suite untouched — this phase is pure addition, no
+  `GRT.Building`/every `GRT.Road*` suite untouched — this phase is pure addition, no
   rendering or existing-code changes yet).
 
 ### Phase 2 — COMPLETE ✅ (`ARuntimeGizmoActor` — visual handle set)
-- `Plugins/TerraDyne-main/Source/TerraDyne/Public/Gizmo/RuntimeGizmoActor.h`/`.cpp`: one
+- `Plugins/GRT/Source/GRT/Public/Gizmo/RuntimeGizmoActor.h`/`.cpp`: one
   `UStaticMeshComponent` per handle (16 explicit `EGizmoHandleType` values) across all three modes.
   Every handle is tagged explicitly (`TMap` from component to handle type, built once at
   construction) — `GetHandleType`/`GetComponentForHandle` never infer identity from a mesh or
   material. `SetMode(EGizmoMode)` toggles visibility **and** collision together per handle set, so
   a handle from an inactive mode is never still hit-testable. Coloring reuses
-  `ATerraDyneGizmoActor`'s proven dynamic-MID pattern (7 shared MIDs: X/Y/Z axis colors, 3 plane
+  `AGRTGizmoActor`'s proven dynamic-MID pattern (7 shared MIDs: X/Y/Z axis colors, 3 plane
   colors, one neutral MID shared by Center/RotateScreen/ScaleUniform, since those three never
   render simultaneously — each belongs to a different, mutually exclusive mode).
 - **Three real bugs found and fixed this phase** (not left in, and not all caught by the same
@@ -78,7 +78,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   2. **Found by code review, before any test ran**: `SetHighlightedHandle`'s per-axis color-select
      lambda captured `Handle` but also took a same-named parameter, so `Handle == Handle` always
      evaluated true — every axis would have highlighted simultaneously. Fixed, and pinned by a new
-     assertion in `TerraDyne.Gizmo.ActorRuntimeAssets` reading the MID's actual emissive value back.
+     assertion in `GRT.Gizmo.ActorRuntimeAssets` reading the MID's actual emissive value back.
   3. **Found from real data, not assumption**: the migrated `SM_RotationHandle`/`SM_ScaleHandle`
      meshes' primary axis (a ring's normal; a scale handle's long arm) is local **X**, not Z like
      the engine's own Cylinder — confirmed by logging each mesh's actual bounds extent
@@ -86,7 +86,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
      the same convention as the Cylinder/Cone arrows. Every ring and scale handle originally pointed
      at the wrong world axis; fixed with a dedicated `FRotationMatrix::MakeFromX` rotation set (the
      arrows keep their own correct `MakeFromZ` set). Pinned by
-     `TerraDyne.Gizmo.ActorHandleOrientation`, which rotates each handle's real local-X through its
+     `GRT.Gizmo.ActorHandleOrientation`, which rotates each handle's real local-X through its
      assigned rotation and checks it lands exactly on the intended world axis (not just "a rotation
      exists") — all 6 (RotateX/Y/Z, ScaleX/Y/Z) land within 0.01 of their target axis.
 - **Full regression sweep after this increment: 44 tests, 0 regressions.**
@@ -110,7 +110,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   click-tolerance **threshold** on their output; the subsystem keeps a separate `ClickTolerance`
   constant for that, a distinction easy to get backwards.
 - `UGizmoManipulationSubsystem : UWorldSubsystem` (mirrors the project's existing
-  `UTerraDyneSubsystem` precedent, not a hand-rolled singleton): owns one lazily-spawned
+  `UGRTSubsystem` precedent, not a hand-rolled singleton): owns one lazily-spawned
   `ARuntimeGizmoActor` and the live `FGizmoManipulationState`. Full API: `SetTarget`/`ClearTarget`,
   `SetMode`/`SetCoordinateSpace`/`SetPivotMode`, `SetSnappingEnabled` +
   `SetTranslationSnap`/`SetRotationSnap`/`SetScaleSnap`, `UpdateHover`,
@@ -131,11 +131,11 @@ editor and the road-point editor instead of each reimplementing its own drag mat
 - **Full regression sweep after this increment: 51 tests, 0 regressions.**
 
 ### Phase 4 — COMPLETE ✅ (both consumers migrated onto the shared subsystem)
-- `ATerraDyneEditController` (buildings) and `URealtimeRoadBuilderComponent` (road points) both now
+- `AGRTEditController` (buildings) and `URealtimeRoadBuilderComponent` (road points) both now
   drive `UGizmoManipulationSubsystem`'s `Begin/Update/End/CancelManipulation` instead of their own
   duplicated raycast/plane-intersection/delta-apply code. `TraceGizmoUnderCursor`,
   `BestFacingVerticalPlaneNormal`, `IntersectCursorWithPlane`-for-axis-drag, and the whole
-  `ETerraDyneGizmoAxis`-keyed switch statements are gone from both files.
+  `EGRTGizmoAxis`-keyed switch statements are gone from both files.
 - **A necessary Phase 3 design refinement, discovered while actually attempting this migration, not
   planned in advance**: the subsystem originally hardcoded `TargetActor->SetActorTransform()`
   (`TargetActor = Target->GetOwner()`), correct for a building but wrong for a road control point — a
@@ -145,11 +145,11 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   `FGizmoSetTransform` delegates (`SetTargetTransformAccessors`), with the simple
   `SetTarget(USceneComponent*)` becoming a thin convenience wrapper around them for the whole-actor
   case. The delta math itself never changed — only where its result reads from and writes to.
-- **`ATerraDyneGizmoActor`'s real scope, found only by reading it fully rather than trusting the
+- **`AGRTGizmoActor`'s real scope, found only by reading it fully rather than trusting the
   plan's "delete this class" instruction**: it secretly served two unrelated responsibilities — the
   old axis-translate gizmo, AND the building-footprint-spline-vertex-handle spheres (an entirely
   separate feature). Deleting it outright would have broken footprint editing. Stripped instead of
-  deleted: `ETerraDyneGizmoAxis`, the arrow/tip/shaft meshes, `SetHighlightedAxis`,
+  deleted: `EGRTGizmoAxis`, the arrow/tip/shaft meshes, `SetHighlightedAxis`,
   `GetAxisFromComponent` are gone; `SplinePointMeshHandles`, `UpdateSplinePointHandles`,
   `SetHighlightedSplinePoint` and the footprint feature stay exactly as before. The class comment now
   says so explicitly, since the name is a historical artifact of this split.
@@ -158,7 +158,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   road component) and only ever calls `SetTarget`/`ClearTarget` when it actually owns the current
   binding, never unconditionally — otherwise a building-tool tick could silently steal or clear a
   road tool's active gizmo, or vice versa.
-- **Escape-to-cancel** now works for both: `ATerraDyneEditController::SetupInputComponent` binds
+- **Escape-to-cancel** now works for both: `AGRTEditController::SetupInputComponent` binds
   `EKeys::Escape` to a single `GizmoSubsystem->CancelManipulation()` call, which restores whichever
   consumer's target (if any) is mid-drag and fires `OnManipulationCancel`. Both consumers bind a
   handler to that delegate and check the passed-in target against their own binding before reacting
@@ -170,7 +170,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   Cancel just restored) and sends no RPC (buildings only ever commit via `RequestMoveBuilding` on a
   normal release, never per-tick and never on cancel, so there is nothing to undo on other machines).
 - **Full regression sweep after this increment: 83 tests found, 82 passed, 0 regressions** — the one
-  failure (`TerraDyne.Raster.Workflow`) is a pre-existing GIS raster-import test unrelated to this
+  failure (`GRT.Raster.Workflow`) is a pre-existing GIS raster-import test unrelated to this
   work (a missing satellite/ortho layer import), in a file this migration never touched.
 - **Known limitation**: this phase is verified by full headless regression + direct code
   verification of every cross-consumer ownership/cancel-identity path against the subsystem's actual
@@ -180,16 +180,16 @@ editor and the road-point editor instead of each reimplementing its own drag mat
 
 ### Phase 5 — COMPLETE ✅ (mode/space/snap live end-to-end)
 - **Mode switching**: `Shift+W`/`Shift+E`/`Shift+R` switch the shared gizmo to Translate/Rotate/Scale,
-  bound once on `ATerraDyneEditController` (works for whichever consumer currently owns the target,
+  bound once on `AGRTEditController` (works for whichever consumer currently owns the target,
   same "one call for both" pattern as Escape-cancel). Plain `W`/`E` were already claimed by this
   project's own always-on camera-flight axis mappings, and Unreal's legacy Axis Mappings have no
-  modifier-key concept — they fire on the raw key regardless of Shift — so `ATerraDyneEditPawn` now
+  modifier-key concept — they fire on the raw key regardless of Shift — so `AGRTEditPawn` now
   overrides `MoveForward`/`MoveRight`/`MoveUp_World` (inherited from `ADefaultPawn`) to no-op while
   either Shift key is held, freeing `Shift+W/E/R` (and `Shift+A/S/D/Q`) for hotkeys with zero camera
   side effect instead of a same-frame flight nudge (which, at orbital altitude, is not cosmetic — a
   single frame of this project's own altitude-scaled max speed is tens of kilometers).
 - **World/Local space**: `C` toggles `SetCoordinateSpace`, plus a "World Space" checkbox in a new
-  GIZMO section of the tool panel (`STerraDynePanel`) — both drive the same subsystem call. Verified
+  GIZMO section of the tool panel (`SGRTPanel`) — both drive the same subsystem call. Verified
   by direct code reading that `SetMode`/`SetCoordinateSpace`/`SetPivotMode` only ever touch the
   gizmo's own visual actor (`UpdateGizmoTransform`) and `FGizmoManipulationState`, never
   `SetTransformFn` — switching space genuinely cannot move the selected object, matching the plan's
@@ -201,7 +201,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   no changes) computing `bEffectiveSnapping = State.bSnappingEnabled != bInvertSnapForThisCall` once,
   used by all three mode branches instead of reading `State.bSnappingEnabled` directly. Both
   consumers now read their own controller's live Ctrl-key state every `UpdateManipulation` call.
-  New test `TerraDyne.Gizmo.SubsystemInvertSnap` walks one continuous 137-unit drag through all three
+  New test `GRT.Gizmo.SubsystemInvertSnap` walks one continuous 137-unit drag through all three
   combinations without ever re-calling `BeginManipulation` — persistent-off+Ctrl snaps to 100,
   persistent-on+Ctrl gives the raw 137, and releasing Ctrl the very next call falls straight back to
   the persistent (on) setting with no leftover state, exactly matching the logged values.
@@ -210,7 +210,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   `Begin/Update/EndManipulation` calls regardless of handle type. Reachable end-to-end as soon as
   Rotate/Scale mode can actually be selected, which this phase's hotkeys now make possible.
 - **Full regression sweep after this increment: 84 tests found, 83 passed, 0 regressions** — the same
-  pre-existing, unrelated `TerraDyne.Raster.Workflow` failure as Phase 4.
+  pre-existing, unrelated `GRT.Raster.Workflow` failure as Phase 4.
 - **Known limitation carried over from Phase 4**: still no in-editor manual verification of the full
   interactive feel (dragging every handle type, confirming the Shift/Ctrl/C/G hotkeys don't fight any
   other input in practice) — headless automation cannot exercise real mouse/keyboard interaction.
@@ -232,7 +232,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   multiplies every section vertex's `Lateral` — road surface included, not just the curb/footpath
   band beyond `BandInnerHalfWidth` the way `BandScalePerFrame` is limited to — applied first, with
   `BandScalePerFrame`'s own turn-narrowing then running against the already-widened value. Confirmed
-  by a hand-derived test (`TerraDyne.RoadMesh.WidthScaleAppliesToWholeSection`) with both options set
+  by a hand-derived test (`GRT.RoadMesh.WidthScaleAppliesToWholeSection`) with both options set
   together: an inner vertex widened just enough to cross `BandInnerHalfWidth` correctly starts
   picking up band-narrowing too, pinning down the documented composition order, not just that each
   option works alone.
@@ -259,9 +259,9 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   would have spammed `WidthKeys` with a fresh, junk 1.0-multiplier entry at the point's ever-shifting
   position on every such drag instead of only recording an actual authored width change.
 - **Full regression sweep after this increment: 87 tests found, 86 passed, 0 regressions** — the same
-  pre-existing, unrelated `TerraDyne.Raster.Workflow` failure as Phases 4-5. New tests:
-  `TerraDyne.RoadWidthProfile.WidthMath`, `TerraDyne.RoadMesh.WidthScaleAppliesToWholeSection`,
-  `TerraDyne.RoadSplineActor.WidthKeyWidensMeshAtItsOwnDistance` (spawns a real road, measures actual
+  pre-existing, unrelated `GRT.Raster.Workflow` failure as Phases 4-5. New tests:
+  `GRT.RoadWidthProfile.WidthMath`, `GRT.RoadMesh.WidthScaleAppliesToWholeSection`,
+  `GRT.RoadSplineActor.WidthKeyWidensMeshAtItsOwnDistance` (spawns a real road, measures actual
   mesh width in world space before/after a Scale-mode-equivalent write — a 2x key measured 1170 →
   2277.3 at its own station and exactly 1170 → 1170 unchanged 1900cm away, matching the falloff math
   by hand).
@@ -275,16 +275,16 @@ editor and the road-point editor instead of each reimplementing its own drag mat
 ### Phase 7 — COMPLETE ✅ (building rotate/scale wiring)
 - **The mechanical wiring turned out to already be in place, verified rather than built from
   scratch**: `RequestMoveBuilding`/`Server_MoveBuilding` already took a whole `FTransform` (not just
-  a location) since Phase 4's migration, and `ATerraDyneBuildingActor`'s footprint is already stored
+  a location) since Phase 4's migration, and `AGRTBuildingActor`'s footprint is already stored
   actor-local (`GatherSplinePointsLocal`) with `GetFootprintPolygonWorld`/terrain-pad sampling
   already correctly transforming through the actor's real rotation and scale. Because
-  `ATerraDyneEditController::UpdateMoveGizmo` already binds buildings through the subsystem's generic
+  `AGRTEditController::UpdateMoveGizmo` already binds buildings through the subsystem's generic
   `SetTarget` (whole-actor transform), and `UpdateManipulation`'s Rotate/Scale branches never
   distinguish which consumer is active, Rotate and Scale already worked mechanically as an emergent
-  consequence of Phases 4-5 — nothing needed to change in `TerraDyneEditController.cpp` at all.
+  consequence of Phases 4-5 — nothing needed to change in `GRTEditController.cpp` at all.
 - **A real, concrete multiplayer gap found while checking that emergent behavior actually holds
   end-to-end, not assumed**: `SetReplicateMovement(true)`'s `FRepMovement` (Unreal's standard actor
-  movement replication, what `ATerraDyneBuildingActor` uses) carries Location and Rotation but has
+  movement replication, what `AGRTBuildingActor` uses) carries Location and Rotation but has
   **no `Scale3D` field at all**. A gizmo Scale-mode drag would have resized a building only on
   whichever machine actually performed the drag — every other client/observer would keep rendering
   it at its old size forever, silently, with no error anywhere. Fixed with an explicit
@@ -294,10 +294,10 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   actor's real scale on the authority; `OnRep_Scale3D` applies it back out on every other machine,
   matching `OnRep_PadSettings`'s shape (reapply + re-stamp the pad, no full mesh regeneration needed
   since geometry itself never changes with scale, only the actor's overall transform).
-- `TerraDyne.Building.GizmoRotateAndScale` (new): drives a real spawned building through
+- `GRT.Building.GizmoRotateAndScale` (new): drives a real spawned building through
   `UGizmoManipulationSubsystem`'s actual `SetTarget`/`BeginManipulation`/`UpdateManipulation`/
-  `EndManipulation` calls — the same calls `ATerraDyneEditController` makes — with hand-verified rays
-  landing on `RotateZ` (ring radius 138, reusing `TerraDyne.Gizmo.DistanceRayToRing`'s geometry) and
+  `EndManipulation` calls — the same calls `AGRTEditController` makes — with hand-verified rays
+  landing on `RotateZ` (ring radius 138, reusing `GRT.Gizmo.DistanceRayToRing`'s geometry) and
   `ScaleZ` (segment reach 150). Confirms the building-specific piece Phase 3/5's generic subsystem
   tests couldn't: `GetFootprintPolygonWorld()` — what pad-leveling and everything else downstream
   actually reads — genuinely rotates every footprint point rigidly around the pivot (every point's
@@ -308,7 +308,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   the origin) from `ScaleUniform` (a point handle also exactly at the origin) — both this file's
   hand-derivation and a first failing run confirmed it — fixed by approaching `ScaleZ` with a
   horizontal ray at its far end instead, well clear of the ambiguous zone.
-- `TerraDyne.Multiplayer.BuildingScaleReplication` (new): confirms `NotifyBuildingChanged` actually
+- `GRT.Multiplayer.BuildingScaleReplication` (new): confirms `NotifyBuildingChanged` actually
   resyncs `ReplicatedScale3D` from a real scale change, matching this project's existing convention
   of checking replicated *state* in a single process rather than standing up a second network
   connection (the same shape `BuildingReplicationAndSplineSync`/`BuildingPadSync` already use).
@@ -316,7 +316,7 @@ editor and the road-point editor instead of each reimplementing its own drag mat
   reachable from a test any more than the existing ones are — its two-line body is confirmed by
   direct code reading instead.
 - **Full regression sweep after this increment: 89 tests found, 88 passed, 0 regressions** — the same
-  pre-existing, unrelated `TerraDyne.Raster.Workflow` failure as Phases 4-6.
+  pre-existing, unrelated `GRT.Raster.Workflow` failure as Phases 4-6.
 - **Known limitation**: in-editor manual drag verification (carried over from Phases 4-6) remains
   outstanding — headless automation proves the math and the replication-sync bookkeeping, not the
   real click-and-drag feel or a genuine two-machine network test.
@@ -325,12 +325,12 @@ editor and the road-point editor instead of each reimplementing its own drag mat
 **Claim to verify**: mouse and a future VR controller can share the exact same manipulation core,
 with device-specific code confined to producing an `FGizmoInteractionRay` and nothing else.
 
-**Verified by direct code reading, not assumed**: `Plugins/TerraDyne-main/Source/TerraDyne/Private/Gizmo/`
+**Verified by direct code reading, not assumed**: `Plugins/GRT/Source/GRT/Private/Gizmo/`
 (`GizmoManipulationSubsystem.cpp`, `GizmoManipulationMath.cpp`, `RuntimeGizmoActor.cpp`) contains
 **zero** references to `PlayerController`, `DeprojectMousePositionToWorld`, `GetMousePosition`,
 `InputComponent`, `IsInputKeyDown`, or `EKeys::` anywhere — confirmed by grep across the whole
 module, not by reading a few functions and generalizing. Every device-specific call lives entirely in
-the two *consumers* (`ATerraDyneEditController::BuildGizmoInteractionRay`/`GetCameraForwardVector`,
+the two *consumers* (`AGRTEditController::BuildGizmoInteractionRay`/`GetCameraForwardVector`,
 `URealtimeRoadBuilderComponent`'s identical pair), each a handful of lines translating one input
 source into `FGizmoInteractionRay{Origin, Direction}` plus a forward vector — exactly the
 "Input Device → Interaction Ray → Gizmo Hit Test → Manipulation State → Transform Result" pipeline
@@ -390,15 +390,15 @@ would each just have that same one delta applied to their own `InitialTransform`
 
 ### Phase 10 — COMPLETE ✅ (final regression + documentation)
 **Full regression sweep**: 89 automation tests found, 88 passed. The one failure
-(`TerraDyne.Raster.Workflow`) is a pre-existing GIS raster-import test relying on a satellite/ortho
+(`GRT.Raster.Workflow`) is a pre-existing GIS raster-import test relying on a satellite/ortho
 layer this environment doesn't have — present before this whole gizmo system existed, unrelated to
 any file this work touched, unchanged in every phase's sweep (Phase 4 through this one).
 
-**Architecture summary**: `Plugins/TerraDyne-main/Source/TerraDyne/{Public,Private}/Gizmo/` —
+**Architecture summary**: `Plugins/GRT/Source/GRT/{Public,Private}/Gizmo/` —
 `GizmoTypes.h` (enums + `FGizmoManipulationState`), `GizmoManipulationMath.h/.cpp` (pure, unit-tested
 math), `RuntimeGizmoActor.h/.cpp` (the visual handle set, one `UWorldSubsystem`-owned instance shared
 by every consumer), `GizmoManipulationSubsystem.h/.cpp` (the single stateful owner + clean API).
-Both `ATerraDyneEditController` (buildings) and `URealtimeRoadBuilderComponent` (road control points)
+Both `AGRTEditController` (buildings) and `URealtimeRoadBuilderComponent` (road control points)
 drive it identically; road points additionally use `SetTargetTransformAccessors` since a spline point
 has no "whole actor transform" of its own the way a building does.
 
@@ -409,12 +409,12 @@ integration needs, per Phase 8) and calls `UpdateHover`/`BeginManipulation`/`Upd
 Ring/Quad`), never physics collision. Every drag computes its delta from **initial transform plus
 accumulated delta**, never compounding onto an already-modified transform. Mode (`Shift+W/E/R`),
 coordinate space (`C`), and snapping (`G`, Ctrl-held to invert per-drag) are hotkeys on
-`ATerraDyneEditController`, calling the subsystem directly — one binding set works for whichever
+`AGRTEditController`, calling the subsystem directly — one binding set works for whichever
 consumer currently owns the shared target, the same pattern Escape-cancel already established.
 
-**Testing results**: every phase's own automation suite (`TerraDyne.Gizmo.*`, `TerraDyne.RoadWidthProfile.*`,
-`TerraDyne.RoadMesh.WidthScale*`, `TerraDyne.RoadSplineActor.WidthKey*`, `TerraDyne.Building.GizmoRotateAndScale`,
-`TerraDyne.Multiplayer.BuildingScaleReplication`) plus the full pre-existing regression suite, run
+**Testing results**: every phase's own automation suite (`GRT.Gizmo.*`, `GRT.RoadWidthProfile.*`,
+`GRT.RoadMesh.WidthScale*`, `GRT.RoadSplineActor.WidthKey*`, `GRT.Building.GizmoRotateAndScale`,
+`GRT.Multiplayer.BuildingScaleReplication`) plus the full pre-existing regression suite, run
 headlessly after every single phase — 0 regressions at any point across Phases 1-10. Every hit-test
 formula and every delta formula was hand-derived with concrete numeric predictions before the test
 that confirmed it was ever run, matching this project's own established verification discipline.
@@ -466,7 +466,7 @@ that confirmed it was ever run, matching this project's own established verifica
 - **Dynamic material instance allocation**: Restructured `EnsureDynamicMaterials` and `ApplyMaterialsToComponents`
   to ensure unique MIDs are assigned per spawned actor instance (`MatX`, `MatY`, `MatZ`, `MatPlane*`, `MatNeutral`),
   preventing shared-material state across multiple gizmos.
-- **Live Unreal MCP automation testing**: Discovered and executed all 17 `TerraDyne.Gizmo.*` automation tests live
+- **Live Unreal MCP automation testing**: Discovered and executed all 17 `GRT.Gizmo.*` automation tests live
   against the running Unreal Editor via Epic's embedded ModelContextProtocol (MCP) server on port 8000:
   **17 / 17 tests passed (100% success rate)**.
 
@@ -503,14 +503,14 @@ Medium/Low as originally rated) and 1 was a false positive, rejected with reason
 1. **Gizmo handles behind the camera were grabbable (High)** — `FindHoveredHandle` accepted any hit
    within tolerance regardless of which side of the ray's origin it fell on. Fixed with an
    `AlongRay >= 0.0` guard in
-   [GizmoManipulationSubsystem.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Gizmo/GizmoManipulationSubsystem.cpp).
-   Tested: `TerraDyne.Gizmo.SubsystemRejectsHandleBehindRay`.
+   [GizmoManipulationSubsystem.cpp](Plugins/GRT/Source/GRT/Private/Gizmo/GizmoManipulationSubsystem.cpp).
+   Tested: `GRT.Gizmo.SubsystemRejectsHandleBehindRay`.
 2. **`IsLocationTraceable` assumed a 2-sided mesh (High, worse than originally described)** — it
    divided the mesh's vertex count by 2 to estimate the top-surface grid resolution, but
-   `ATerraDyneChunk::RebuildMesh` only ever builds a single top surface (no bottom slab), so every
+   `AGRTChunk::RebuildMesh` only ever builds a single top surface (no bottom slab), so every
    resolution/index computation downstream was wrong. Fixed in
-   [TerraDyneCollision.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Physics/TerraDyneCollision.cpp)
-   by using the full vertex count. Tested: `TerraDyne.Physics.IsLocationTraceableFindsTheRightCell`.
+   [GRTCollision.cpp](Plugins/GRT/Source/GRT/Private/Physics/GRTCollision.cpp)
+   by using the full vertex count. Tested: `GRT.Physics.IsLocationTraceableFindsTheRightCell`.
 3. **OpenDRIVE header north/south vs. east/west (rejected — false positive)** — the finding assumed
    Unreal's +Y axis is North, but this project's Cesium georeferencing uses the East-South-Up (ESU)
    tangent-plane convention, where +Y is South. `-Point.Y` for the North bound is therefore the
@@ -518,19 +518,19 @@ Medium/Low as originally rated) and 1 was a false positive, rejected with reason
    [RoadXodrExport.cpp](Source/RealtimeTerrain/Private/RoadXodrExport.cpp), with a comment explaining
    why; the existing structure test now locks in the verified-correct values.
 4. **Raw `APlayerController*` risked a dangling pointer (Medium)** — `UndoStacks`/`RedoStacks`/
-   `PendingStrokeOwner` in `ATerraDyneManager` stored raw controller pointers; a controller destroyed
+   `PendingStrokeOwner` in `AGRTManager` stored raw controller pointers; a controller destroyed
    mid-stroke (e.g. a player disconnecting) would leave a dangling `PendingStrokeOwner`. Fixed by
    switching to `TWeakObjectPtr<APlayerController>` in
-   [TerraDyneManager.h](Plugins/TerraDyne-main/Source/TerraDyne/Public/Core/TerraDyneManager.h) /
-   [TerraDyneManagerUndo.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Core/TerraDyneManagerUndo.cpp).
-   Tested: `TerraDyne.Undo.BeginStrokeSurvivesDisconnectedOwner`.
+   [GRTManager.h](Plugins/GRT/Source/GRT/Public/Core/GRTManager.h) /
+   [GRTManagerUndo.cpp](Plugins/GRT/Source/GRT/Private/Core/GRTManagerUndo.cpp).
+   Tested: `GRT.Undo.BeginStrokeSurvivesDisconnectedOwner`.
 5. **Zero-length segments produced NaN (Medium)** — `RoadElevationProfile::EvaluateHeight` and
    `RoadWidthProfile::EvaluateWidth` divided by `SegmentLength` without checking for two keys authored
    at (or merged to within tolerance of) the same distance, producing 0/0 = NaN. Fixed with an
    `UE_DOUBLE_SMALL_NUMBER` guard in both
    [RoadElevationProfile.cpp](Source/RealtimeTerrain/Private/RoadElevationProfile.cpp) and
    [RoadWidthProfile.cpp](Source/RealtimeTerrain/Private/RoadWidthProfile.cpp). Tested: new cases in
-   `TerraDyne.RoadElevationProfile.HeightMath` and `TerraDyne.RoadWidthProfile.WidthMath`.
+   `GRT.RoadElevationProfile.HeightMath` and `GRT.RoadWidthProfile.WidthMath`.
 6. **Division by (near-)zero for near-180° hairpin corners (Low/edge case)** — `RoadSpiral.cpp`'s
    corner-fitting bisection divided by `Cos(Diff/2)`, which shrinks toward 0 as a corner's turn angle
    approaches ±180°. A literal near-zero epsilon on `Cos` alone wasn't a sufficient guard (at 179.99°,
@@ -538,24 +538,24 @@ Medium/Low as originally rated) and 1 was a false positive, rejected with reason
    divisor to send the corrected value into the millions). Fixed by bounding the *candidate result*
    against the corner's own arm length instead of gating on `Cos` directly, falling through to the
    already-correct bisection loop when the single-division shortcut would be unreasonable. Tested:
-   `TerraDyne.RoadSpiral.HairpinCornerStaysFinite` — note that for this specific pathological input
+   `GRT.RoadSpiral.HairpinCornerStaysFinite` — note that for this specific pathological input
    (1000cm arms, a near-full reversal, capped at a 500cm max radius) the mathematically correct answer
    is a path that collapses to a tiny curve at the corner apex (finite and bounded, just not a
    "nicely-proportioned" S-curve) — the test only requires a valid, finite, bounded path, not a
    substantial one.
 7. **`const_cast` mutated a replicated property inside a const getter (Low/architectural, worse than
-   originally described)** — `ATerraDyneBuildingActor::ResolvePadTargetWorldZ() const` used
+   originally described)** — `AGRTBuildingActor::ResolvePadTargetWorldZ() const` used
    `const_cast` to write the *replicated* `PadTargetWorldZ` on every call, not just a `mutable` cache
    field. This meant calling what looked like an innocuous query silently triggered network
    replication traffic and `OnRep_*` side effects on every client, on every caller — redundant for
    `SnapToPadHeight` (which already commits explicitly) and actively harmful for every other caller.
    Fixed by removing the write in
-   [TerraDyneBuildingActor.cpp](Plugins/TerraDyne-main/Source/TerraDyne/Private/Building/TerraDyneBuildingActor.cpp);
+   [GRTBuildingActor.cpp](Plugins/GRT/Source/GRT/Private/Building/GRTBuildingActor.cpp);
    the `mutable` cache fields remain untouched. Tested:
-   `TerraDyne.Multiplayer.ResolvePadTargetWorldZHasNoSideEffect`.
+   `GRT.Multiplayer.ResolvePadTargetWorldZHasNoSideEffect`.
 
 **Full regression sweep**: 94 automation tests found, 93 passed — the only failure is the same
-pre-existing, unrelated `TerraDyne.Raster.Workflow` GIS-import test noted throughout this README.
+pre-existing, unrelated `GRT.Raster.Workflow` GIS-import test noted throughout this README.
 
 ---
 
@@ -610,7 +610,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **Dynamic Flight Speed**: Automatically scales maximum flying speed ($\text{Altitude} \times 2.5$) for effortless navigation from centimeters to regional scales — scaled from the pawn's real WGS84 height, not raw Unreal Z, so it stays correct far from the `CesiumGeoreference` origin (e.g. after flying to a Tiled Cesium Import footprint on another part of the globe), where Unreal Z alone no longer means "altitude".
   * **Mouse Wheel Speed Control**: Scroll adjusts a flight-speed multiplier ($0.1\times$–$10\times$, exponential per notch) on top of the automatic altitude scaling above, instead of zooming/dollying the camera.
   * **Sculpt Isolation**: Left-click drag is dedicated to terrain editing and spline drawing; right-click drag orbits freely without fighting camera controls.
-  * **World Bounds Checks disabled at startup**: `AWorldSettings::bEnableWorldBoundsChecks` is forced off in `UTerraDyneSubsystem::Initialize` (before any actor's `BeginPlay`). Left on — Unreal's default — it's incompatible with Cesium's origin rebasing: a rebase shifts every actor's absolute Z, so an airborne pawn can spuriously read as having fallen below `KillZ`, get destroyed, and respawn at the default `PlayerStart` — visible as the camera snapping back mid-flight to wherever it started.
+  * **World Bounds Checks disabled at startup**: `AWorldSettings::bEnableWorldBoundsChecks` is forced off in `UGRTSubsystem::Initialize` (before any actor's `BeginPlay`). Left on — Unreal's default — it's incompatible with Cesium's origin rebasing: a rebase shifts every actor's absolute Z, so an airborne pawn can spuriously read as having fallen below `KillZ`, get destroyed, and respawn at the default `PlayerStart` — visible as the camera snapping back mid-flight to wherever it started.
 
 ### 3. Dynamic GIS Raster Layer Stack & Auto-Detection Engine
 * **Slot 1 (Master DEM)**: Fixed reference grid establishing georeferenced bounds and base 3D terrain geometry.
@@ -623,7 +623,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Dynamic Layer Cards**: Color-coded badges, resolution/band stats, `Load` / `Unload` live scene toggles, individual delete (`✕`), and `Clear All`.
 
 ### 4. Interactive Slate Runtime HUD
-* Left-anchored technical dark-theme control panel (`STerraDynePanel`):
+* Left-anchored technical dark-theme control panel (`SGRTPanel`):
   * **Live Progress Bar (`SProgressBar`)**: Real-time tile load tracking (`Loading DEM chunks: X / Total (Y%)`).
   * **Dynamic Overlay Stack**: Real-time list of added GIS layers with active emerald highlighting and `● ACTIVE` status badge.
   * **Top View Button**: One-click framing of active terrain footprints.
@@ -634,7 +634,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * Arbitrary polygon footprint definition using spline nodes.
 * Live floor count stepper controls.
 * Macro chunk step-scaled pad terraforming (`EffectiveFalloff = Max(Falloff, Step * 1.5)`) ensuring smooth foundations on all grid resolutions.
-* **Pad leveling on Tiled Cesium Import terrain**: `ResolvePadTargetWorldZ`'s footprint samples fall back to a $\pm 200\text{ km}$ line-trace-against-collision approach wherever no TerraDyne chunk covers a sample point, so a building's pad still levels correctly when placed on a locally-imported Cesium tile instead of TerraDyne's own terrain.
+* **Pad leveling on Tiled Cesium Import terrain**: `ResolvePadTargetWorldZ`'s footprint samples fall back to a $\pm 200\text{ km}$ line-trace-against-collision approach wherever no GRT chunk covers a sample point, so a building's pad still levels correctly when placed on a locally-imported Cesium tile instead of GRT's own terrain.
 * **Focus button**: frames the camera on the currently selected building from the Buildings panel section.
 
 ### 6. World Persistence & Transaction History
@@ -649,7 +649,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Multi-User Streaming**: Throttled view reporting (`Server_ReportViewLocation`) keeps server-side chunk streaming centered around all connected players.
 
 ### 8. Tiled Cesium Import (Local Quantized-Mesh Terrain & XYZ Imagery)
-* **DEM-only**: only available once a world is Imported/GIS-DEM (or already has an elevation layer) — a real-world tile pyramid has no meaningful place next to Sandbox's procedural terrain, so the panel section and the underlying `ATerraDyneManager` calls both gate on it.
+* **DEM-only**: only available once a world is Imported/GIS-DEM (or already has an elevation layer) — a real-world tile pyramid has no meaningful place next to Sandbox's procedural terrain, so the panel section and the underlying `AGRTManager` calls both gate on it.
 * **No hardcoded paths**: `Import Terrain Tileset Folder…` / `Import Imagery Overlay Folder…` open a native folder picker; the last folder picked per pyramid type is remembered across editor sessions via `GConfig` (`GEditorPerProjectIni`), never baked into source.
 * **Terrain**: points a `ACesium3DTileset` (`FromUrl`) at a local Cesium `quantized-mesh-1.0` pyramid — a folder containing `layer.json` and `{z}/{x}/{y}.terrain` tiles.
 * **Imagery**: adds a `UCesiumUrlTemplateRasterOverlay` reading a local XYZ PNG pyramid — files laid out on disk as `{z}/{x}/{y}.png`, requested via Cesium's `{reverseY}` template token (not `{y}`, which Cesium defines as TMS row-ordering — opposite of the standard XYZ/slippy-map ordering these QGIS-style exports actually use) — WebMercator projection; the zoom range is auto-detected from the pyramid's own numeric subfolder names, spawning a bare ellipsoid tileset first if no terrain has been imported yet.
@@ -657,31 +657,31 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Auto-fly-to-footprint**: each successful import reads the pyramid's own geographic extent (from its deepest zoom level's actual tile index range, not the often-boilerplate `bounds` field in `layer.json`) and flies the camera to an aerial top-down view centred over it — the same framing angle as the existing "Top View" feature, altitude scaled to the footprint's size so it fits comfortably in frame.
 * **Cuts a hole in the backdrop globe** (toggle: *Cut Out Backdrop Globe*, on by default): a successful terrain import clips every other `ACesium3DTileset` already in the world — e.g. a placed "Cesium World Terrain" used as the level's default globe backdrop — via a `UCesiumPolygonRasterOverlay` on a rectangle matching the imported footprint, so the backdrop stops rendering real terrain geometry for that ground (which would otherwise visibly overlap/z-fight with the local import) while staying fully visible everywhere else. Turn the toggle off if the computed footprint looks wrong and the cutout lands in the wrong spot. (Imagery-only imports don't touch this: the bare ellipsoid they spawn has no relief of its own to compete with the backdrop.)
 ### 9. 3D Model Importer, Placement, Asset Palette & Scene Outliner
-* **Runtime 3D Model Importers (`FTerraDyneModelImporter`)**:
+* **Runtime 3D Model Importers (`FGRTModelImporter`)**:
   * **6 Supported Formats**:
     * **Wavefront OBJ (`.obj` & `.mtl`)**: Positions, normals, UVs, n-gon fan triangulation, material groups, diffuse colors (`Kd`), and texture files (`map_Kd`).
     * **Autodesk FBX (`.fbx`)**: Runtime binary & ASCII FBX loading via the open-source **`ufbx`** library (bypassing Autodesk's editor-only SDK so FBX assets load in packaged standalone builds).
     * **glTF 2.0 & Binary glTF (`.gltf` & `.glb`)**: Complete JSON and binary container parsing via the open-source **`cgltf`** library, including PBR BaseColor materials and embedded/external PNG/JPG textures.
     * **Stereolithography STL (`.stl`)**: Both 80-byte header Binary and ASCII (`facet normal ... endfacet`).
     * **Polygon File Format PLY (`.ply`)**: Both ASCII and Binary header elements, vertex positions, normals, and face indices.
-  * **Smart Multi-Source Texture Resolution (`FTerraDyneModelImporter::ResolveTexturePath`)**:
+  * **Smart Multi-Source Texture Resolution (`FGRTModelImporter::ResolveTexturePath`)**:
     * Automatically resolves textures across FBX, glTF, and OBJ formats even when files contain broken or author-machine absolute paths (e.g. `C:\Users\Author\...`).
     * Searches candidate locations: exact path, model directory, adjacent subfolders (`textures/`, `Textures/`, `images/`, `maps/`, `materials/`), parent directories, and format fallbacks (`.png`, `.jpg`, `.bmp` for `.tga`/`.tif`/`.psd` references).
     * Embedded FBX binary textures decoded directly from internal memory blobs.
   * **Dynamic Image Wrapper**: Automatically loads `.png`, `.jpg`, and `.bmp` files (from external paths or embedded memory buffers) directly into transient `UTexture2D` instances.
   * **Textured Material Binding**: `ApplyMaterials()` dynamically binds textures across standard parameter slots (`Texture`, `BaseColorTexture`, `EmissiveTexture`, `Diffuse`, `Albedo`) onto textured base materials.
   * **Automatic Normal & Bounds Computation**: Calculates bounding dimensions, polycounts (`tris • verts`), and overlays missing vertex normals via `FMeshNormals::InitializeOverlayToPerVertexNormals`.
-* **Placed Model Actor (`ATerraDynePlacedModelActor`)**:
+* **Placed Model Actor (`AGRTPlacedModelActor`)**:
   * Runtime-spawnable, selectable 3D scene actor using `UDynamicMeshComponent` for geometry and collision raycasting.
   * **Multiplayer Replication**: Location, rotation, and `ReplicatedScale3D` synchronized across the network with `OnRep_Scale3D`.
   * **Visual State**: Custom depth stencil selection outline and scene visibility toggles (`SetVisibleInScene`).
 * **Standard Transform Gizmo Integration (`UGizmoManipulationSubsystem`)**:
   * Seamlessly connects to the project's standard transform gizmo for Translate (`Shift+W`), Rotate (`Shift+E`), and Scale (`Shift+R`).
   * Full support for Coordinate Spaces (`C` for World/Local), Snapping (`G` / Ctrl-invert), and Cancel (`Escape`).
-* **Slate HUD: 3D Models & Asset Library (`STerraDynePanel`)**:
+* **Slate HUD: 3D Models & Asset Library (`SGRTPanel`)**:
   * **Import Buttons**: `📥 Import Model...` (native OS multi-file picker for `*.obj;*.stl;*.ply;*.fbx;*.gltf;*.glb`) and `📁 Import Folder...` (batch folder import).
   * **Placeable Asset Palette**: Scrollable list of loaded models with **PNG photo thumbnails** (auto-resolved from companion `{ModelName}.png`, `{ModelName}_thumb.png`, or `preview.png`), dimensions in meters, polycount (`tris • verts`), one-click `[Place]` button, and `[X]` removal.
-  * **Terrain Placement Mode**: Shows a holographic preview ghost following the cursor projected onto terrain chunks. Clicking drops and spawns an `ATerraDynePlacedModelActor` and attaches the transform gizmo immediately.
+  * **Terrain Placement Mode**: Shows a holographic preview ghost following the cursor projected onto terrain chunks. Clicking drops and spawns an `AGRTPlacedModelActor` and attaches the transform gizmo immediately.
 * **Slate HUD: Scene Outliner / Hierarchy Panel**:
   * Live object counter header (e.g. `SCENE OUTLINER (7)`).
   * Complete hierarchy listing placed 3D models (`[Model]`) and procedural buildings (`[Building]`).
@@ -704,7 +704,7 @@ Three defects were hiding in exactly that gap:
 * **Placed models had no collision.** The constructor set collision responses but never enabled
   complex collision, and `UDynamicMeshComponent::ContainsPhysicsTriMeshData` gates entirely on
   `bEnableComplexCollision` (default `false`) — so every model was invisible to
-  `ATerraDyneEditController::TraceUnderCursor` and could not be clicked or selected. Now calls
+  `AGRTEditController::TraceUnderCursor` and could not be clicked or selected. Now calls
   `SetComplexAsSimpleCollisionEnabled(true, false)` in the constructor, plus `UpdateCollision(false)`
   after each mesh swap, since `NotifyMeshUpdated()` only resets the render proxy and never touches
   physics.
@@ -715,28 +715,28 @@ Three defects were hiding in exactly that gap:
   (`handedness_conversion_retain_winding` defaults to `false`).
 
 Two regression tests were added, because the existing nine could not see any of the above:
-`TerraDyne.ModelImport.PlacedActorCollision` (imports a closed box, calls `SetModelAsset`, then
+`GRT.ModelImport.PlacedActorCollision` (imports a closed box, calls `SetModelAsset`, then
 asserts cooked triangle geometry exists and a world line trace on `ECC_WorldStatic` — the same
 channel `TraceUnderCursor` uses — actually hits the actor) and
-`TerraDyne.ModelImport.FBXHandedness` (a fixture declaring Y-up right-handed source axes with one
+`GRT.ModelImport.FBXHandedness` (a fixture declaring Y-up right-handed source axes with one
 non-zero source-Z vertex, asserting it lands on **+Y**; under the old setting it landed on -Y).
 
 #### Gaps closed (2026-08-28)
 
-* **Persistence.** `UTerraDyneSaveGame` now carries `ModelLibrary` and `PlacedModels`. Runtime
+* **Persistence.** `UGRTSaveGame` now carries `ModelLibrary` and `PlacedModels`. Runtime
   geometry belongs to no package and cannot be serialised, so the save stores source paths and
-  re-imports on load — the same approach `FTerraDyneGeoTIFFImportState` takes with its `.tif`. The
+  re-imports on load — the same approach `FGRTGeoTIFFImportState` takes with its `.tif`. The
   catalog is restored **under its saved asset ids** before any placement spawns; minting fresh ids
   would leave every restored placement dangling. Saves written before this load as empty arrays.
-* **Client-side asset resolution.** `ATerraDynePlacedModelActor` replicates `SourceFilePath`
+* **Client-side asset resolution.** `AGRTPlacedModelActor` replicates `SourceFilePath`
   alongside `AssetId`, and `ResolveModelAsset()` (called from `BeginPlay` and both `OnRep`s, so no
   property-arrival order can miss it) falls back to
-  `UTerraDyneAssetLibrarySubsystem::ResolveOrImport`, importing the file locally under the
+  `UGRTAssetLibrarySubsystem::ResolveOrImport`, importing the file locally under the
   replicated id. A machine that never ran the original import previously drew an empty actor.
   *Limitation*: the file must exist on that machine, exactly as with GeoTIFF import.
-* **Generated thumbnails.** `FTerraDyneModelThumbnail` renders the geometry with a
+* **Generated thumbnails.** `FGRTModelThumbnail` renders the geometry with a
   `USceneCaptureComponent2D` and caches the result as a PNG under
-  `Saved/TerraDyne/ModelThumbnails/`, keyed by a hash of the full source path so two different
+  `Saved/GRT/ModelThumbnails/`, keyed by a hash of the full source path so two different
   `chair.obj` files cannot collide. A companion PNG beside the model still wins. Capture uses
   `SCS_BaseColor` so no light needs to be spawned into the live scene, and every entry point checks
   `FApp::CanEverRender()` and returns null headlessly rather than caching a black tile.
@@ -751,16 +751,16 @@ non-zero source-Z vertex, asserting it lands on **+Y**; under the old setting it
 * **Thumbnail brush leak.** The palette raw-`new`'d an `FSlateImageBrush` per tile and never freed
   it; `SImage` does not take ownership. Now panel-owned and rebuilt with the list — which the
   automatic refresh above would otherwise have turned into a continuous leak.
-* **Imported textures no longer collected.** `FTerraDyneImportedMaterial` is a `USTRUCT` and
-  `FTerraDyneImportedModelAsset::Materials` is a `UPROPERTY`, so the collector can reach the diffuse
+* **Imported textures no longer collected.** `FGRTImportedMaterial` is a `USTRUCT` and
+  `FGRTImportedModelAsset::Materials` is a `UPROPERTY`, so the collector can reach the diffuse
   textures. Previously they were collected while the catalog still held `TObjectPtr`s to them:
   models placed before a GC kept their look via the material instance's own reference, anything
   placed afterwards came up untextured.
 
-Verified by `TerraDyne.ModelImport.Persistence` (a real `BuildSaveGameInstance` →
+Verified by `GRT.ModelImport.Persistence` (a real `BuildSaveGameInstance` →
 `ApplyLoadedSaveGame` round trip asserting ids, transforms, scale and resolved geometry),
 `.LibraryDedupe`, `.ResolveOrImport` and `.MaterialTextureSurvivesGC`. Full suite: **106/107**, the
-sole failure being the pre-existing `TerraDyne.Raster.Workflow` fixture gap.
+sole failure being the pre-existing `GRT.Raster.Workflow` fixture gap.
 
 **Still open**: multiplayer needs the model file present on each machine (inherent to replicating a
 path rather than geometry); generated thumbnails need a real RHI and have not been inspected
@@ -774,7 +774,7 @@ Imports real-world buildings from an OpenStreetMap export. Export an area from
 openstreetmap.org (pan to it, click **Export**), then use **🌍 Import OpenStreetMap (.osm)…** in the
 new **OPENSTREETMAP DATA** panel section. Offline and packaged-build safe — no network dependency.
 
-* **Reader (`FTerraDyneOSMParser`)** — OSM XML via the engine's runtime `XmlParser` module, so no
+* **Reader (`FGRTOSMParser`)** — OSM XML via the engine's runtime `XmlParser` module, so no
   third-party dependency. Nodes, ways and tags; `<relation>` is deliberately ignored for now, since
   what it mainly buys is multipolygon buildings with holes and the footprint spline cannot express
   a hole. Deliberately pure — no world, no UObject, no georeferencing — so the fiddly decisions are
@@ -789,7 +789,7 @@ new **OPENSTREETMAP DATA** panel section. Offline and packaged-build safe — no
     reason a user could never act on, so the reader splits element boundaries onto their own lines
     first. Safe here specifically because OSM XML holds all its data in attributes, never in element
     text, and a literal `><` cannot occur inside a properly escaped attribute value.
-* **Geometry (`FTerraDyneOSMIngest`)** — also pure. Drops OSM's repeated closing node and any
+* **Geometry (`FGRTOSMIngest`)** — also pure. Drops OSM's repeated closing node and any
   coincident corners, centres each footprint's origin on its centroid (so moving a building stays
   one transform), and **normalises footprint winding counter-clockwise**.
   * That last one is not cosmetic. `ResetToDefaultFootprint` winds counter-clockwise deliberately,
@@ -806,9 +806,9 @@ new **OPENSTREETMAP DATA** panel section. Offline and packaged-build safe — no
   so imports stop at `MaxFeatures` (2000) and the summary says how many were left behind, alongside
   counts of anything skipped for unresolvable node refs or too few usable points.
 
-Covered by seven tests: `TerraDyne.OSM.Parse`, `.Classify`, `.TagResolution`, `.MalformedInput`,
+Covered by seven tests: `GRT.OSM.Parse`, `.Classify`, `.TagResolution`, `.MalformedInput`,
 `.FootprintWinding`, `.FootprintBuild` and `.Centreline`. Full suite **115/116**, the sole failure
-being the pre-existing `TerraDyne.Raster.Workflow` fixture gap.
+being the pre-existing `GRT.Raster.Workflow` fixture gap.
 
 **Not yet done**: downloading an area straight from the OSM API (the reader already takes a string,
 so it is additive); `.osm.pbf`; multipolygon relations; and the end-to-end spawn path has unit

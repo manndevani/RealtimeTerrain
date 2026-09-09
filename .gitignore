@@ -17,7 +17,7 @@ DDC/
 # ---------------------------------------------------------------------------
 cesium-request-cache.sqlite*
 /Content/Maps/_GENERATED/
-Plugins/TerraDyne-main/Content/Maps/_GENERATED/
+Plugins/GRT/Content/Maps/_GENERATED/
 
 # ---------------------------------------------------------------------------
 # vcpkg + the GDAL it builds (see Tools/Setup-GDAL.ps1). Locally built from
@@ -52,7 +52,7 @@ Plugins/TerraDyne-main/Content/Maps/_GENERATED/
 #
 # Leading slash matters: it anchors this to the project's own Content/ only.
 # Without it the pattern matches Content/ at ANY depth, which silently swallowed
-# Plugins/TerraDyne-main/Content/ -- the plugin's tracked assets survived only
+# Plugins/GRT/Content/ -- the plugin's tracked assets survived only
 # because ignore rules do not apply to already-tracked files, so the breakage
 # showed up as newly added plugin content being quietly dropped.
 # ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ Plugins/TerraDyne-main/Content/Maps/_GENERATED/
 #                     https://github.com/tumourlove/monolith.git. Not ours to
 #                     carry, and ~3 GB. Clone it separately.
 #
-# Plugins/TerraDyne-main is NOT ignored: it is where this project's real
+# Plugins/GRT is NOT ignored: it is where this project's real
 # development happens, so it is imported into this repository via a subtree
 # merge with its history intact.
 # ---------------------------------------------------------------------------

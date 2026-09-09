@@ -3,15 +3,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Core/TerraDyneEditController.h"
+#include "Core/GRTEditController.h"
 #include "RealtimeRoadEditController.generated.h"
 
 /**
  * Game-module player controller inheriting full road and terrain editing functionality
- * directly from the TerraDyne plugin base controller.
+ * directly from the GRT plugin base controller.
  */
 UCLASS()
-class REALTIMETERRAIN_API ARealtimeRoadEditController : public ATerraDyneEditController
+class REALTIMETERRAIN_API ARealtimeRoadEditController : public AGRTEditController
 {
 	GENERATED_BODY()
 

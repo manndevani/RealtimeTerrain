@@ -14,7 +14,7 @@ public class RealtimeTerrain : ModuleRules
 			"Engine", 
 			"InputCore", 
 			"EnhancedInput",
-			"TerraDyne"
+			"GRT"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {

@@ -17,7 +17,7 @@ Files migrated into this project:
 Only these three static mesh assets were migrated (no materials, Blueprints, or code — the
 upstream repository is a pure Blueprint content pack with no C++ source). They are used as the
 rotation-ring and scale-handle geometry for this project's own C++ runtime transform gizmo system
-(`Plugins/TerraDyne-main/Source/TerraDyne/Public/Gizmo/`); the upstream project's own materials,
+(`Plugins/GRT/Source/GRT/Public/Gizmo/`); the upstream project's own materials,
 Blueprint interaction logic, and hover/highlight system are not used — this project's existing
 dynamic-material-instance coloring system is used instead.
 
