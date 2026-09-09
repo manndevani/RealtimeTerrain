@@ -127,7 +127,7 @@ bool FGRTChunkMaterialBindingTest::RunTest(const FString& Parameters)
 	Chunk->BrushMaterialBase = LoadObject<UMaterialInterface>(nullptr,
 		TEXT("/GRT/Materials/Tools/M_HeightBrush.M_HeightBrush"));
 	UMaterialInterface* MasterMaterial = LoadObject<UMaterialInterface>(nullptr,
-		TEXT("/GRT/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain"));
+		TEXT("/GRT/Materials/VHFM/MI_GRT_Terrain.MI_GRT_Terrain"));
 	TestNotNull("Height brush material", Chunk->BrushMaterialBase.Get());
 	TestNotNull("Master material", MasterMaterial);
 	if (!Chunk->BrushMaterialBase || !MasterMaterial)

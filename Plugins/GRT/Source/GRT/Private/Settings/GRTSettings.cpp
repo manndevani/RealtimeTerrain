@@ -12,11 +12,11 @@ UGRTSettings::UGRTSettings()
 	// unless a project happens to have its own Content/GRT/ folder, so both loads silently
 	// returned null and every dependent fallback quietly did nothing.
 	//
-	// The terrain default is the INSTANCE, not M_TerraDyne_Master. The master leaves every ground
+	// The terrain default is the INSTANCE, not M_GRT_Master. The master leaves every ground
 	// texture parameter (Grass/Dirt/Rock/Stones/Snow) null, and a null texture parameter samples as
 	// the engine checkerboard — so defaulting to the master tiles the whole landscape with grey
-	// squares. MI_TerraDyne_Terrain is the same material with those five textures actually assigned.
-	MasterMaterialPath = FSoftObjectPath(TEXT("/GRT/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain"));
+	// squares. MI_GRT_Terrain is the same material with those five textures actually assigned.
+	MasterMaterialPath = FSoftObjectPath(TEXT("/GRT/Materials/VHFM/MI_GRT_Terrain.MI_GRT_Terrain"));
 	HeightBrushMaterialPath = FSoftObjectPath(TEXT("/GRT/Materials/Tools/M_HeightBrush.M_HeightBrush"));
 	HUDWidgetPath = FSoftObjectPath();
 

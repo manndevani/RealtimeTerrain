@@ -387,9 +387,9 @@ Surfaced while testing phase 3. Worth recording because each one masked the next
    not mean "no weights", it multiplies the ground blend by a checker. The layer split comes from
    vertex colours now (`ApplyLayerWeightsToMesh`), so neutral white is the identity.
 
-3. **Defaults pointed at the bare master.** `M_TerraDyne_Master` leaves all five ground textures
+3. **Defaults pointed at the bare master.** `M_GRT_Master` leaves all five ground textures
    (`Grass`/`Dirt`/`Rock`/`Stones`/`Snow`) null, and a null texture parameter also samples as
-   checkerboard — so the fallback could never render regardless of fix 2. `MI_TerraDyne_Terrain` is
+   checkerboard — so the fallback could never render regardless of fix 2. `MI_GRT_Terrain` is
    the same material with those textures assigned.
 
 Neither 2 nor 3 is sufficient alone: the instance supplies the ground textures, the code supplies

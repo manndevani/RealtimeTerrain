@@ -121,7 +121,7 @@ static void ApplyTerrainMaterialParameters(
 
 	// WeightMap has to be bound to something neutral even though the layer split now comes from
 	// vertex colors (see ApplyLayerWeightsToMesh). Every shipped terrain material still declares
-	// the parameter, and both M_TerraDyne_Master and the MI_GRT_* instances default it to
+	// the parameter, and both M_GRT_Master and the MI_GRT_* instances default it to
 	// /Engine/EngineResources/DefaultTexture — which is the engine CHECKERBOARD. Leaving it unbound
 	// therefore does not fall back to "no weights", it multiplies the ground blend by a checker and
 	// tiles the whole landscape with grey squares.

@@ -13,13 +13,13 @@ def setup_demo_level():
 
     # 3. Spawn Manager (BP)
     # We use Try/Except to handle potential path errors gracefully
-    manager_path = "/Game/GRT/Blueprints/BP_TerraDyneManager.BP_GRTManager_C"
+    manager_path = "/Game/GRT/Blueprints/BP_GRTManager.BP_GRTManager_C"
     manager_class = unreal.load_class(None, manager_path)
     
     if manager_class:
         # Spawn at 0,0,0
         actor_subsystem.spawn_actor_from_class(manager_class, unreal.Vector(0,0,0))
-        unreal.log("Spawned BP_TerraDyneManager.")
+        unreal.log("Spawned BP_GRTManager.")
     else:
         unreal.log_error(f"Could not load Blueprint: {manager_path}. Check your Content folder.")
 

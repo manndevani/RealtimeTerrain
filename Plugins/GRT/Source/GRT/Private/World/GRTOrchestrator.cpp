@@ -31,11 +31,11 @@ namespace
 	// full note. The secondary path below is deliberately left under /Game/: it is a project-supplied
 	// material, not something the plugin ships.
 	static constexpr TCHAR SHOWCASE_FALLBACK_TERRAIN_MATERIAL_PATH[] =
-		TEXT("/GRT/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain");
+		TEXT("/GRT/Materials/VHFM/MI_GRT_Terrain.MI_GRT_Terrain");
 	static constexpr TCHAR SHOWCASE_SECONDARY_TERRAIN_MATERIAL_PATH[] =
 		TEXT("/Game/M_Metal_Terrain.M_Metal_Terrain");
 	static constexpr TCHAR GRT_MASTER_MATERIAL_PATH[] =
-		TEXT("/GRT/Materials/VHFM/MI_TerraDyne_Terrain.MI_TerraDyne_Terrain");
+		TEXT("/GRT/Materials/VHFM/MI_GRT_Terrain.MI_GRT_Terrain");
 	static constexpr TCHAR BASIC_SHAPE_MATERIAL_PATH[] =
 		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial");
 
