@@ -731,6 +731,22 @@ public:
 	class UGRTSaveGame* BuildSaveGameInstance();
 	void ApplyLoadedSaveGame(class UGRTSaveGame* LoadInst, const FString& SourceLabel);
 
+	//--- Chunk eviction cache ---
+	//
+	// A dirty chunk that streams out is written to Saved/SaveGames/<ChunkSaveDir>/<session id>/ and
+	// read back when its coordinate returns. The folder belongs to one world session: it is replaced
+	// whenever the world is (load, new import, DEM mode) and deleted in EndPlay, so edits never
+	// leak into a different world. BuildSaveGameInstance folds cached chunks into the save.
+
+	void SaveChunkToCache(FIntPoint Coord, const FGRTChunkData& Data);
+	bool LoadChunkFromCache(FIntPoint Coord, FGRTChunkData& OutData);
+
+	/** True if Coord was written to this session's cache. */
+	bool IsChunkCached(FIntPoint Coord) const { return CachedChunkCoords.Contains(Coord); }
+
+	/** Deletes this session's cached chunks and starts a fresh, empty session folder. */
+	void ResetChunkCacheSession();
+
 	UFUNCTION(BlueprintCallable, Category = "GRT|Migration")
 	void SetAuthoredChunkCoordinates(const TArray<FIntPoint>& ChunkCoords, bool bWasImportedFromLandscape = true);
 
@@ -947,9 +963,19 @@ private:
 	void ProcessStreamingQueues(const TArray<FVector>& PlayerPositions);
 	void MarkChunkDirty(FIntPoint Coord);
 	AGRTChunk* SpawnConfiguredChunk(FIntPoint Coord, int32 OverrideResolution = INDEX_NONE);
+	FString GetChunkCacheRoot() const;
+	FString GetChunkCacheSessionDir() const;
 	FString GetChunkCachePath(FIntPoint Coord) const;
-	void SaveChunkToCache(FIntPoint Coord, const FGRTChunkData& Data);
-	bool LoadChunkFromCache(FIntPoint Coord, FGRTChunkData& OutData);
+
+	/** Removes pre-session loose cache files and session folders a crashed run left behind. */
+	void PurgeStaleChunkCacheSessions() const;
+
+	/** Names this session's cache folder. Not a UPROPERTY: every manager instance gets its own. */
+	FGuid ChunkCacheSessionId = FGuid::NewGuid();
+
+	/** Coordinates written to this session's cache -- the only ones LoadOrSpawnChunk will read back. */
+	TSet<FIntPoint> CachedChunkCoords;
+
 	void ApplyMaterialToActiveChunks();
 	void ClearUndoRedoState();
 	void DestroyTrackedPopulationActors();

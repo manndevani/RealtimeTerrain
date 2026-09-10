@@ -409,18 +409,29 @@ void AGRTBuildingActor::NotifyBuildingChanged()
 		ReplicatedScale3D = GetActorScale3D();
 	}
 
-	if (!bFlattenTerrain)
-	{
-		return;
-	}
-
 	AGRTManager* Manager = FindManager();
 	if (!Manager)
 	{
 		return;
 	}
 
+	// Registered whether or not it flattens: the registry is also what save-game and world-load use
+	// to find buildings, so a non-flattening building (every OSM import) must still be in it.
+	// RefreshBuildingPadsForChunk skips non-flattening entries.
 	Manager->RegisterBuilding(this);
+
+	if (!bFlattenTerrain)
+	{
+		// Flattening was just switched off, or was never on. If a pad was stamped earlier, give
+		// that ground back instead of leaving it flattened under a building that no longer asks for it.
+		if (LastPadBoundsWorld.bIsValid)
+		{
+			const FBox2D StaleArea = LastPadBoundsWorld;
+			LastPadBoundsWorld = FBox2D(ForceInit);
+			Manager->RefreshBuildingPads(StaleArea);
+		}
+		return;
+	}
 
 	// A real change to the building re-levels it; streaming does not come through here, which is
 	// what keeps the pad height stable as chunks load and unload underneath it.
@@ -1164,10 +1175,15 @@ FGRTBuildingData AGRTBuildingActor::ToData() const
 	Data.BuildingId = BuildingId;
 	Data.Origin = GetActorLocation();
 	Data.Rotation = GetActorRotation();
+	Data.Scale = GetActorScale3D();
 	Data.SplinePoints = GatherSplinePointsLocal();
 	Data.bClosedLoop = FootprintSpline ? FootprintSpline->IsClosedLoop() : true;
 	Data.FloorCount = FloorCount;
 	Data.KitAsset = Kit ? FSoftObjectPath(Kit) : FSoftObjectPath();
+	Data.bFlattenTerrain = bFlattenTerrain;
+	Data.bAutoPadHeight = bAutoPadHeight;
+	Data.PadTargetZ = PadTargetWorldZ;
+	Data.PadFalloff = PadFalloff;
 	Data.DoorSegmentIndex = DoorSegmentIndex;
 	return Data;
 }
@@ -1180,12 +1196,22 @@ void AGRTBuildingActor::ApplyData(const FGRTBuildingData& Data, bool bRegenerate
 	FloorCount = FMath::Max(1, Data.FloorCount);
 	DoorSegmentIndex = Data.DoorSegmentIndex;
 
-	SetActorLocationAndRotation(Data.Origin, Data.Rotation);
+	// A zero component would collapse the building and make its transform non-invertible.
+	const FVector SafeScale = Data.Scale.IsNearlyZero() || Data.Scale.GetMin() <= KINDA_SMALL_NUMBER
+		? FVector::OneVector
+		: Data.Scale;
+	SetActorTransform(FTransform(Data.Rotation, Data.Origin, SafeScale));
+	ReplicatedScale3D = SafeScale;
 
-	if (UObject* Loaded = Data.KitAsset.IsValid() ? Data.KitAsset.TryLoad() : nullptr)
-	{
-		Kit = Cast<UGRTBuildingKit>(Loaded);
-	}
+	// An empty path means the snapshot had no kit (the built-in default), so clear any kit this
+	// actor currently holds -- ApplyData is also how undo rewinds an existing building.
+	Kit = Data.KitAsset.IsValid() ? Cast<UGRTBuildingKit>(Data.KitAsset.TryLoad()) : nullptr;
+
+	bFlattenTerrain = Data.bFlattenTerrain;
+	bAutoPadHeight = Data.bAutoPadHeight;
+	PadTargetWorldZ = Data.PadTargetZ;
+	PadFalloff = FMath::Max(0.0f, Data.PadFalloff);
+	bPadTargetCached = false;
 
 	if (FootprintSpline)
 	{
@@ -1200,9 +1226,42 @@ void AGRTBuildingActor::ApplyData(const FGRTBuildingData& Data, bool bRegenerate
 
 	bSuppressRegenerate = false;
 
+	// Without this, remote clients keep the constructor's default rectangle: the footprint only
+	// reaches them through ReplicatedSplinePoints.
+	EnforceLinearTangents();
+	SyncSplinePointsToReplication();
+
 	if (bRegenerate)
 	{
 		RegenerateBuilding();
 		NotifyBuildingChanged();
 	}
+}
+
+AGRTBuildingActor* AGRTBuildingActor::SpawnFromData(UWorld* World, const FGRTBuildingData& Data)
+{
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	const FTransform SpawnTransform(Data.Rotation, Data.Origin);
+	AGRTBuildingActor* Building = World->SpawnActorDeferred<AGRTBuildingActor>(
+		AGRTBuildingActor::StaticClass(), SpawnTransform, nullptr, nullptr,
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	if (!Building)
+	{
+		return nullptr;
+	}
+
+	// Set before FinishSpawning: OnConstruction and BeginPlay both run NotifyBuildingChanged inside
+	// it, and would otherwise stamp a default-footprint pad for a building that should not flatten.
+	Building->bFlattenTerrain = Data.bFlattenTerrain;
+	Building->bAutoPadHeight = Data.bAutoPadHeight;
+	Building->PadTargetWorldZ = Data.PadTargetZ;
+	Building->PadFalloff = FMath::Max(0.0f, Data.PadFalloff);
+	Building->FinishSpawning(SpawnTransform);
+
+	Building->ApplyData(Data, true);
+	return Building;
 }

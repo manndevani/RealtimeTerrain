@@ -141,6 +141,7 @@ void AGRTManager::ImportInternal(ALandscapeProxy* Source, const FGRTLandscapeMig
 	ImportedChunkCoords.Empty();
 	LastStreamingHash = 0;
 	ClearUndoRedoState();
+	ResetChunkCacheSession(); // cached edits describe the terrain this import replaces
 
 	if (Options.bClearExistingChunks)
 	{

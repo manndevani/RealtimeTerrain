@@ -118,6 +118,21 @@ UGRTSaveGame* AGRTManager::BuildSaveGameInstance()
 		}
 	}
 
+	// Edited chunks that streamed out are only on disk in this session's eviction cache. Without
+	// this they would be missing from the save, and their edits lost once the session ends.
+	for (const FIntPoint& Coord : CachedChunkCoords)
+	{
+		if (SaveInst->Chunks.Contains(Coord))
+		{
+			continue; // the live chunk is newer than its cached copy
+		}
+		FGRTChunkData CachedData;
+		if (LoadChunkFromCache(Coord, CachedData))
+		{
+			SaveInst->Chunks.Add(Coord, MoveTemp(CachedData));
+		}
+	}
+
 	return SaveInst;
 }
 
@@ -205,6 +220,17 @@ void AGRTManager::ApplyLoadedSaveGame(UGRTSaveGame* LoadInst, const FString& Sou
 	ImportedChunkCoords.Empty();
 	LastStreamingHash = 0;
 	ClearUndoRedoState();
+	// The eviction cache holds edits to the world being replaced; streaming must not reload them.
+	ResetChunkCacheSession();
+	// Building/model history refers to actors this load is about to destroy. Left in place, undoing
+	// a pre-load delete would resurrect that building into the loaded world.
+	if (UWorld* HistoryWorld = GetWorld())
+	{
+		for (TActorIterator<AGRTEditController> It(HistoryWorld); It; ++It)
+		{
+			It->ResetActorHistory();
+		}
+	}
 	DestroyTrackedPopulationActors();
 	PersistentPopulationEntries.Reset();
 	ProceduralChunkStates.Reset();
@@ -295,6 +321,9 @@ void AGRTManager::ApplyLoadedSaveGame(UGRTSaveGame* LoadInst, const FString& Sou
 		if (Chunk)
 		{
 			Chunk->LoadFromData(Data);
+			// Loaded state differs from what the chunk would regenerate, so it must be cached if it
+			// streams out -- otherwise flying away and back silently reverts it.
+			DirtyChunkSet.Add(Coord);
 		}
 	}
 
@@ -367,16 +396,7 @@ void AGRTManager::ApplyLoadedSaveGame(UGRTSaveGame* LoadInst, const FString& Sou
 	{
 		for (const FGRTBuildingData& BData : LoadInst->Buildings)
 		{
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-			AGRTBuildingActor* NewBuilding = World->SpawnActor<AGRTBuildingActor>(
-				AGRTBuildingActor::StaticClass(),
-				FTransform(BData.Rotation, BData.Origin),
-				SpawnParams);
-			if (NewBuilding)
-			{
-				NewBuilding->ApplyData(BData, true);
-			}
+			AGRTBuildingActor::SpawnFromData(World, BData);
 		}
 	}
 
@@ -417,15 +437,75 @@ void AGRTManager::ApplyLoadedSaveGame(UGRTSaveGame* LoadInst, const FString& Sou
 	}
 }
 
-FString AGRTManager::GetChunkCachePath(FIntPoint Coord) const
+FString AGRTManager::GetChunkCacheRoot() const
 {
 	FString Dir = TEXT("GRT/ChunkCache");
 	if (const UGRTSettings* S = GetDefault<UGRTSettings>())
 	{
 		Dir = S->ChunkSaveDir;
 	}
-	FString SaveDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SaveGames"), Dir);
-	return FPaths::Combine(SaveDir, FString::Printf(TEXT("%d_%d.chunk"), Coord.X, Coord.Y));
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SaveGames"), Dir);
+}
+
+FString AGRTManager::GetChunkCacheSessionDir() const
+{
+	return FPaths::Combine(GetChunkCacheRoot(), ChunkCacheSessionId.ToString(EGuidFormats::Digits));
+}
+
+FString AGRTManager::GetChunkCachePath(FIntPoint Coord) const
+{
+	// Scoped to one world session. The cache used to be one flat folder shared by every session and
+	// world, and was never cleared, so a chunk sculpted and evicted in one session was loaded back
+	// over a different world -- a new procedural seed, an imported DEM, a loaded save -- whenever
+	// streaming reached the same coordinate.
+	return FPaths::Combine(GetChunkCacheSessionDir(), FString::Printf(TEXT("%d_%d.chunk"), Coord.X, Coord.Y));
+}
+
+void AGRTManager::ResetChunkCacheSession()
+{
+	IFileManager::Get().DeleteDirectory(*GetChunkCacheSessionDir(), /*RequireExists=*/false, /*Tree=*/true);
+	CachedChunkCoords.Reset();
+	ChunkCacheSessionId = FGuid::NewGuid();
+}
+
+void AGRTManager::PurgeStaleChunkCacheSessions() const
+{
+	IFileManager& FileManager = IFileManager::Get();
+	const FString Root = GetChunkCacheRoot();
+	if (!FileManager.DirectoryExists(*Root))
+	{
+		return;
+	}
+
+	// Loose files at the root are from before the cache was per-session. Nothing reads them any
+	// more, and they are exactly the stale data that leaked across worlds.
+	TArray<FString> LegacyFiles;
+	FileManager.FindFiles(LegacyFiles, *FPaths::Combine(Root, TEXT("*.chunk")), /*Files=*/true, /*Directories=*/false);
+	for (const FString& File : LegacyFiles)
+	{
+		FileManager.Delete(*FPaths::Combine(Root, File), false, true, true);
+	}
+
+	// A session folder normally goes away in EndPlay; one left behind means a crash or a killed
+	// process. Only GUID-named folders are touched, and only once they are a day old, so a second
+	// game instance running right now (multiplayer PIE, a local server) keeps its own.
+	TArray<FString> SessionDirs;
+	FileManager.FindFiles(SessionDirs, *FPaths::Combine(Root, TEXT("*")), /*Files=*/false, /*Directories=*/true);
+	const FDateTime Cutoff = FDateTime::UtcNow() - FTimespan::FromHours(24.0);
+	for (const FString& DirName : SessionDirs)
+	{
+		FGuid ParsedId;
+		if (!FGuid::Parse(DirName, ParsedId))
+		{
+			continue;
+		}
+		const FString FullDir = FPaths::Combine(Root, DirName);
+		const FFileStatData Stat = FileManager.GetStatData(*FullDir);
+		if (Stat.bIsValid && Stat.ModificationTime < Cutoff)
+		{
+			FileManager.DeleteDirectory(*FullDir, false, true);
+		}
+	}
 }
 
 void AGRTManager::SaveChunkToCache(FIntPoint Coord, const FGRTChunkData& Data)
@@ -477,6 +557,7 @@ void AGRTManager::SaveChunkToCache(FIntPoint Coord, const FGRTChunkData& Data)
 		}
 		else
 		{
+			CachedChunkCoords.Add(Coord);
 			UE_LOG(LogTemp, Verbose, TEXT("Streaming: Cached chunk [%d,%d] (%d bytes compressed)"), Coord.X, Coord.Y, CompressedSize);
 		}
 	}

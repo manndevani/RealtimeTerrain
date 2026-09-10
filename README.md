@@ -492,6 +492,81 @@ that confirmed it was ever run, matching this project's own established verifica
 
 The full 11-phase runtime transform gizmo system, as scoped, polished, and live-tested, is complete.
 
+## 🧹 Code review fixes (2026-09-10) — COMPLETE ✅
+
+A full read-through for defects ahead of a Fab release. Twelve were found and fixed. The plugin
+had just been renamed from TerraDyne to GRT, and none of the twelve came from that rename; they
+predate it.
+
+1. **Ctrl+Z after moving a building or model deleted it (High).** Only place/delete were
+   recorded, so the newest undo entry after a drag was the placement. Moves, rotations, scales,
+   footprint edits, floor count, reset and relevel are now `Modify` entries (before/after
+   snapshots) in `AGRTEditController`. A drag's before-state is captured when the drag starts, and
+   a release that changed nothing records nothing. When undo re-creates a deleted actor, older
+   entries that referenced it are retargeted at the new actor (`RemapActorReferences`).
+2. **The chunk eviction cache leaked edits across worlds (High).** Evicted chunks went to one flat
+   folder shared by every session and never cleared, and streaming read it *before* the DEM, so a
+   chunk sculpted in one session replaced terrain in a later procedural world, DEM import or load
+   at the same coordinate. The cache now lives in a per-session folder
+   (`Saved/SaveGames/<ChunkSaveDir>/<session GUID>/`). It is reset whenever the world is replaced
+   and deleted in `EndPlay`, and leftovers older than a day are purged at `BeginPlay`. Two related
+   gaps also closed: chunks that had streamed out used to be missing from saves (they are now
+   folded into `BuildSaveGameInstance`), and loaded chunks used to revert when streamed out and
+   back (they are now marked dirty).
+3. **Loading a world kept the old building/model undo history (High).** Undoing a pre-load delete
+   put that building into the newly loaded world, and an unfinished OSM import kept spawning into
+   it. `ApplyLoadedSaveGame` now calls `ResetActorHistory()` on every controller.
+4. **OSM buildings still flattened terrain (High).** `bFlattenTerrain = false` was set *after*
+   `SpawnActor`, whose construction/BeginPlay pass had already stamped a default 12×8 m pad under
+   every imported building and left it there. The spawn is now deferred, with the flag set before
+   `FinishSpawning`. Buildings that don't flatten are still registered, so they are saved and
+   cleaned up on load. Turning flattening off also now releases a pad that was already stamped.
+5. **Building scale and pad settings were not saved (Medium).** `FGRTBuildingData` gained `Scale`,
+   `bFlattenTerrain` and `bAutoPadHeight`, and `ToData` now fills in `PadTargetZ`/`PadFalloff`.
+   Old saves load with defaults. `ApplyData` also resyncs `ReplicatedSplinePoints`: without that,
+   remote clients saw loaded or undone buildings with the constructor's default rectangle.
+   `AGRTBuildingActor::SpawnFromData` is now the single restore path for load and undo.
+6. **Imported model textures never rendered (Medium).** Every slot was instanced from
+   `BasicShapeMaterial`, whose only parameter is `Color`, so all texture assignments did nothing.
+   A new lit material, `/GRT/Materials/Models/M_GRT_ImportedModel`, multiplies `BaseColor` by
+   `BaseColorTexture`. Its default texture is white, so untextured slots still show their diffuse
+   colour. It is referenced from `AGRTPlacedModelActor::ImportedModelBaseMaterial` and added to
+   `DirectoriesToAlwaysCook`.
+7. **The transform gizmo stayed on screen after its target was deleted or undone (Medium).** The
+   clear was gated on `IsValid()`, which is false for a destroyed actor. It now checks whether a
+   binding exists at all. Escape during a model drag also now ends the drag cleanly.
+8. **Clients sent local file paths to the server (Medium, security).** A client's save, load,
+   GeoTIFF, raster or OSM path meant nothing on the server's disk. `Server_SaveWorldToFile` also
+   let any client with edit rights make the server write a file anywhere. These operations are now
+   **host-only**: the five path-taking RPCs are gone, the `Request*` calls return `false` off
+   authority, and the panel explains why before opening a dialog (`CanAccessLocalFiles()`).
+9. **Remote clients could not undo building or model edits (Low).** That history lives on the
+   server, and the client only ever ran the terrain half. `RequestUndo`/`RequestRedo` now run the
+   whole chain on the server, and the panel's Undo/Redo buttons go through them too.
+10. **Outliner visibility changed only the local machine (Low).** It now goes through
+    `RequestSetActorVisible` (a server RPC), and `bIsVisibleInScene` is replicated with an OnRep
+    that also applies collision.
+11. **Stale docs.** CLAUDE.md and both CODE_REFERENCE files still described the removed road
+    system. The empty `ARealtimeRoadEditController` is now `ARealtimeTerrainEditController`,
+    with a `ClassRedirect`.
+12. **A stray 0-byte file** at the repo root, left by an earlier mis-pathed write, was deleted.
+
+Tested by the 11 tests in `GRTReviewFixesTests.cpp`: `GRT.ActorUndo.MoveBuildingUndoRedo`,
+`.ModifyEntrySurvivesRespawn`, `.FloorCountAndNoOpMove`, `.RequestUndoRunsActorHistory`,
+`.MoveModelUndoRedo`, `GRT.Persistence.LoadClearsActorHistory`, `.BuildingDataRoundTrip`,
+`GRT.Building.NonFlatteningLeavesTerrain`, `GRT.Streaming.ChunkCacheIsSessionScoped`,
+`GRT.Model.TextureReachesMaterial` and `GRT.Model.VisibilityReplicates`. **Full suite: 94 tests, 93
+pass.** The one failure is the known `GRT.Raster.Workflow` fixture gap.
+
+**Not fixed here — Fab packaging blockers.** The plugin loads content from the *project*, not from
+its own `/GRT/` mount, so on its own it would ship broken:
+- The transform gizmo meshes and materials come from `/Game/Gizmo/` and `/Game/Mytaverse/`.
+- The default building kit and the holographic building material come from `/Game/SD_Art/`.
+
+Those are third-party marketplace packs, which cannot be redistributed. Before a Fab submission,
+that content has to be replaced with plugin-owned assets under `Plugins/GRT/Content/`, or made
+optional with engine-content fallbacks.
+
 ## 🔍 Antigravity findings triage — COMPLETE ✅
 
 A third-party audit tool ("Antigravity") flagged 7 findings across the codebase. Each was verified
@@ -638,9 +713,11 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
 * **Focus button**: frames the camera on the currently selected building from the Buildings panel section.
 
 ### 6. World Persistence & Transaction History
-* Complete disk serialization format for terrain state and building transforms.
+* Complete disk serialization format for terrain state and building transforms (scale and pad settings included).
 * Multi-layer height buffers (**Base**, **Sculpt**, **Detail**).
-* Full undo and redo transaction history (`Ctrl+Z`, `Ctrl+Y`).
+* Full undo and redo transaction history (`Ctrl+Z`, `Ctrl+Y`, and the panel buttons): building/model place, delete, move/rotate/scale, footprint, floors, and OSM batches first, then terrain strokes. Loading a world clears it.
+* Edited chunks that stream out are cached per world session and included in saves; the cache never carries edits into a different world.
+* Save, load, and every file import are **host-only** — a client's path means nothing on the server's disk.
 
 ### 7. 100% Multiplayer & Network Replication
 * **Authoritative Server Architecture**: Strictly validated through `HasEditAuthority()`. Unauthorized edits are rejected on the server.
@@ -669,7 +746,7 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
     * Searches candidate locations: exact path, model directory, adjacent subfolders (`textures/`, `Textures/`, `images/`, `maps/`, `materials/`), parent directories, and format fallbacks (`.png`, `.jpg`, `.bmp` for `.tga`/`.tif`/`.psd` references).
     * Embedded FBX binary textures decoded directly from internal memory blobs.
   * **Dynamic Image Wrapper**: Automatically loads `.png`, `.jpg`, and `.bmp` files (from external paths or embedded memory buffers) directly into transient `UTexture2D` instances.
-  * **Textured Material Binding**: `ApplyMaterials()` dynamically binds textures across standard parameter slots (`Texture`, `BaseColorTexture`, `EmissiveTexture`, `Diffuse`, `Albedo`) onto textured base materials.
+  * **Textured Material Binding**: `ApplyMaterials()` instances the lit `/GRT/Materials/Models/M_GRT_ImportedModel` per slot and sets `BaseColor` (diffuse colour) and `BaseColorTexture` (diffuse texture; default white, so untextured slots show their colour). It falls back to `BasicShapeMaterial` — colour only — if that asset is missing.
   * **Automatic Normal & Bounds Computation**: Calculates bounding dimensions, polycounts (`tris • verts`), and overlays missing vertex normals via `FMeshNormals::InitializeOverlayToPerVertexNormals`.
 * **Placed Model Actor (`AGRTPlacedModelActor`)**:
   * Runtime-spawnable, selectable 3D scene actor using `UDynamicMeshComponent` for geometry and collision raycasting.
@@ -688,8 +765,8 @@ A high-performance, runtime-editable chunk terrain and GIS framework for Unreal 
   * **Row Actions**:
     * **Click Label / Row**: Selects the entity in the viewport and attaches the standard transform gizmo.
     * **`🎯` Focus**: Smoothly flies the camera to center and frame the object.
-    * **`👁️` Visibility**: Toggles actor visibility (`SetVisibleInScene` / `SetActorHiddenInGame`).
-    * **`🗑️` Delete**: Destroys the entity and removes it from the world.
+    * **`👁️` Visibility**: Toggles visibility for everyone in the session via `AGRTEditController::RequestSetActorVisible` (replicated; a hidden model also stops blocking clicks).
+    * **`🗑️` Delete**: Destroys the entity and removes it from the world (undoable).
 
 #### Runtime defects found and fixed (2026-08-28)
 

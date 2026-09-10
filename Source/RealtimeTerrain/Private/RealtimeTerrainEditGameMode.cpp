@@ -2,9 +2,9 @@
 
 #include "RealtimeTerrainEditGameMode.h"
 
-#include "RealtimeRoadEditController.h"
+#include "RealtimeTerrainEditController.h"
 
 ARealtimeTerrainEditGameMode::ARealtimeTerrainEditGameMode()
 {
-	PlayerControllerClass = ARealtimeRoadEditController::StaticClass();
+	PlayerControllerClass = ARealtimeTerrainEditController::StaticClass();
 }

@@ -25,6 +25,42 @@
 #include "Net/UnrealNetwork.h"
 #include "Camera/PlayerCameraManager.h"
 
+namespace
+{
+	/** Tolerances are far below anything a user could produce on purpose, so a click-without-drag records nothing. */
+	bool BuildingStatesEqual(const FGRTBuildingData& A, const FGRTBuildingData& B)
+	{
+		if (!A.Origin.Equals(B.Origin, 0.01) || !A.Rotation.Equals(B.Rotation, 0.01f) || !A.Scale.Equals(B.Scale, 1.0e-4))
+		{
+			return false;
+		}
+		if (A.FloorCount != B.FloorCount || A.bClosedLoop != B.bClosedLoop || A.KitAsset != B.KitAsset ||
+			A.DoorSegmentIndex != B.DoorSegmentIndex || A.bFlattenTerrain != B.bFlattenTerrain ||
+			A.bAutoPadHeight != B.bAutoPadHeight || !FMath::IsNearlyEqual(A.PadTargetZ, B.PadTargetZ, 0.01f) ||
+			!FMath::IsNearlyEqual(A.PadFalloff, B.PadFalloff, 0.01f))
+		{
+			return false;
+		}
+		if (A.SplinePoints.Num() != B.SplinePoints.Num())
+		{
+			return false;
+		}
+		for (int32 i = 0; i < A.SplinePoints.Num(); ++i)
+		{
+			if (!A.SplinePoints[i].Equals(B.SplinePoints[i], 0.01))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ModelTransformsEqual(const FGRTPlacedModelData& A, const FGRTPlacedModelData& B)
+	{
+		return A.WorldTransform.Equals(B.WorldTransform, 0.01);
+	}
+}
+
 AGRTEditController::AGRTEditController()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -305,6 +341,7 @@ void AGRTEditController::OnLeftClickStart()
 		if (TraceSplinePointUnderCursor(HitPointIndex, HitPointLoc) && HitPointIndex != INDEX_NONE)
 		{
 			DraggingSplinePointIndex = HitPointIndex;
+			PendingDragBefore = MakeActorSnapshot(ToolUI->SelectedBuilding.Get());
 			TArray<FVector> LocalPts = ToolUI->SelectedBuilding->GatherSplinePointsLocal();
 			if (LocalPts.IsValidIndex(HitPointIndex))
 			{
@@ -322,9 +359,12 @@ void AGRTEditController::OnLeftClickStart()
 			FGizmoInteractionRay Ray;
 			if (BuildGizmoInteractionRay(Ray))
 			{
+				// Snapshot first: BeginManipulation does not move anything, but the drag that follows does.
+				FGRTActorSnapshot Before = MakeActorSnapshot(ToolUI->SelectedBuilding.Get());
 				if (GizmoSubsystem->BeginManipulation(Ray, GetCameraForwardVector()) != EGizmoHandleType::None)
 				{
 					bIsGizmoAxisDrag = true;
+					PendingDragBefore = MoveTemp(Before);
 					return;
 				}
 			}
@@ -338,9 +378,11 @@ void AGRTEditController::OnLeftClickStart()
 			FGizmoInteractionRay Ray;
 			if (BuildGizmoInteractionRay(Ray))
 			{
+				FGRTActorSnapshot Before = MakeActorSnapshot(ToolUI->SelectedModelActor.Get());
 				if (GizmoSubsystem->BeginManipulation(Ray, GetCameraForwardVector()) != EGizmoHandleType::None)
 				{
 					bIsGizmoAxisDrag = true;
+					PendingDragBefore = MoveTemp(Before);
 					return;
 				}
 			}
@@ -432,6 +474,8 @@ void AGRTEditController::OnLeftClickStop()
 		{
 			ActiveMoveGizmo->SetHighlightedSplinePoint(INDEX_NONE);
 		}
+		// On the authority the request above consumed it; on a client the server takes its own.
+		PendingDragBefore.Reset();
 		return;
 	}
 
@@ -451,6 +495,7 @@ void AGRTEditController::OnLeftClickStop()
 		{
 			RequestMoveModel(ToolUI->SelectedModelActor.Get(), ToolUI->SelectedModelActor->GetActorTransform());
 		}
+		PendingDragBefore.Reset();
 		return;
 	}
 
@@ -463,19 +508,12 @@ void AGRTEditController::OnLeftClickStop()
 
 void AGRTEditController::OnUndoPressed()
 {
-	// Priority chain: building/model/OSM actor spawns, then terrain sculpting as the fallback --
-	// each tries its own history and only falls through when it had nothing to take back.
-	if (!TryActorUndo())
-	{
-		RequestUndo();
-	}
+	RequestUndo();
 }
+
 void AGRTEditController::OnRedoPressed()
 {
-	if (!TryActorRedo())
-	{
-		RequestRedo();
-	}
+	RequestRedo();
 }
 
 //-----------------------------------------------------------------------------
@@ -502,7 +540,7 @@ void AGRTEditController::DestroyActorsInEntry(FGRTActorUndoEntry& Entry)
 		{
 			Live->Destroy();
 		}
-		Snap.LiveActor = nullptr;
+		// LiveActor is left pointing at the destroyed actor on purpose -- see FGRTActorSnapshot.
 	}
 }
 
@@ -519,33 +557,170 @@ void AGRTEditController::RespawnActorsInEntry(FGRTActorUndoEntry& Entry)
 
 	for (FGRTActorSnapshot& Snap : Entry.Actors)
 	{
+		const TWeakObjectPtr<AActor> Previous = Snap.LiveActor;
+		AActor* Restored = nullptr;
+
 		switch (Snap.Kind)
 		{
 		case EGRTActorSnapshotKind::Building:
 		{
-			AGRTBuildingActor* Restored = World->SpawnActor<AGRTBuildingActor>(
-				AGRTBuildingActor::StaticClass(),
-				FTransform(Snap.BuildingData.Rotation, Snap.BuildingData.Origin), SpawnParams);
-			if (Restored)
-			{
-				Restored->ApplyData(Snap.BuildingData, true);
-			}
-			Snap.LiveActor = Restored;
+			Restored = AGRTBuildingActor::SpawnFromData(World, Snap.BuildingData);
 			break;
 		}
 		case EGRTActorSnapshotKind::Model:
 		{
-			AGRTPlacedModelActor* Restored = World->SpawnActor<AGRTPlacedModelActor>(
+			AGRTPlacedModelActor* RestoredModel = World->SpawnActor<AGRTPlacedModelActor>(
 				AGRTPlacedModelActor::StaticClass(), Snap.ModelData.WorldTransform, SpawnParams);
-			if (Restored)
+			if (RestoredModel)
 			{
-				Restored->ApplyData(Snap.ModelData); // ApplyData resolves geometry itself
+				RestoredModel->ApplyData(Snap.ModelData); // ApplyData resolves geometry itself
 			}
-			Snap.LiveActor = Restored;
+			Restored = RestoredModel;
 			break;
 		}
 		}
+
+		Snap.LiveActor = Restored;
+		if (Restored)
+		{
+			RemapActorReferences(Previous, Restored);
+		}
 	}
+}
+
+void AGRTEditController::ApplyModifyEntry(const FGRTActorUndoEntry& Entry, bool bApplyAfterState)
+{
+	for (const FGRTActorSnapshot& Snap : Entry.Actors)
+	{
+		AActor* Live = Snap.LiveActor.Get();
+		if (!Live || Live->IsActorBeingDestroyed())
+		{
+			// Removed by something that kept no history (e.g. a load that replaced the world).
+			continue;
+		}
+
+		if (Snap.Kind == EGRTActorSnapshotKind::Building)
+		{
+			if (AGRTBuildingActor* Building = Cast<AGRTBuildingActor>(Live))
+			{
+				Building->ApplyData(bApplyAfterState ? Snap.BuildingDataAfter : Snap.BuildingData, true);
+			}
+		}
+		else if (AGRTPlacedModelActor* Model = Cast<AGRTPlacedModelActor>(Live))
+		{
+			// Transform only. Visibility is not an undoable edit, so rewinding a move must not also
+			// flip a model the user has since hidden or shown.
+			Model->SetActorTransform((bApplyAfterState ? Snap.ModelDataAfter : Snap.ModelData).WorldTransform);
+			Model->NotifyScaleChanged();
+		}
+	}
+}
+
+void AGRTEditController::RemapActorReferences(const TWeakObjectPtr<AActor>& OldActor, AActor* NewActor)
+{
+	if (OldActor.IsExplicitlyNull() || !NewActor)
+	{
+		return;
+	}
+
+	// HasSameIndexAndSerialNumber, not ==: TWeakObjectPtr::operator== treats any two invalid
+	// pointers as equal, which would retarget every stale entry in the history at NewActor.
+	auto Remap = [&OldActor, NewActor](TArray<FGRTActorSnapshot>& Snapshots)
+	{
+		for (FGRTActorSnapshot& Snap : Snapshots)
+		{
+			if (Snap.LiveActor.HasSameIndexAndSerialNumber(OldActor))
+			{
+				Snap.LiveActor = NewActor;
+			}
+		}
+	};
+
+	for (FGRTActorUndoEntry& Entry : ActorUndoStack)
+	{
+		Remap(Entry.Actors);
+	}
+	for (FGRTActorUndoEntry& Entry : ActorRedoStack)
+	{
+		Remap(Entry.Actors);
+	}
+	Remap(InProgressOSMUndoEntry.Actors);
+}
+
+FGRTActorSnapshot AGRTEditController::MakeActorSnapshot(AActor* Actor)
+{
+	FGRTActorSnapshot Snap;
+	Snap.LiveActor = Actor;
+	if (const AGRTBuildingActor* Building = Cast<AGRTBuildingActor>(Actor))
+	{
+		Snap.Kind = EGRTActorSnapshotKind::Building;
+		Snap.BuildingData = Building->ToData();
+	}
+	else if (const AGRTPlacedModelActor* Model = Cast<AGRTPlacedModelActor>(Actor))
+	{
+		Snap.Kind = EGRTActorSnapshotKind::Model;
+		Snap.ModelData = Model->ToData();
+	}
+	return Snap;
+}
+
+FGRTActorSnapshot AGRTEditController::TakeBeforeSnapshot(AActor* Actor)
+{
+	if (PendingDragBefore.IsSet() && PendingDragBefore->LiveActor.Get() == Actor)
+	{
+		FGRTActorSnapshot Before = MoveTemp(PendingDragBefore.GetValue());
+		PendingDragBefore.Reset();
+		return Before;
+	}
+	return MakeActorSnapshot(Actor);
+}
+
+void AGRTEditController::RecordActorModify(FGRTActorSnapshot&& Before, AActor* Actor)
+{
+	if (!Actor || Actor->IsActorBeingDestroyed())
+	{
+		return;
+	}
+
+	const FGRTActorSnapshot After = MakeActorSnapshot(Actor);
+	if (Before.Kind != After.Kind)
+	{
+		return;
+	}
+
+	const bool bUnchanged = (After.Kind == EGRTActorSnapshotKind::Building)
+		? BuildingStatesEqual(Before.BuildingData, After.BuildingData)
+		: ModelTransformsEqual(Before.ModelData, After.ModelData);
+	if (bUnchanged)
+	{
+		return;
+	}
+
+	Before.BuildingDataAfter = After.BuildingData;
+	Before.ModelDataAfter = After.ModelData;
+	Before.LiveActor = Actor;
+
+	FGRTActorUndoEntry Entry;
+	Entry.Op = EGRTActorUndoOp::Modify;
+	Entry.Actors.Add(MoveTemp(Before));
+	PushActorUndoEntry(MoveTemp(Entry));
+}
+
+void AGRTEditController::ResetActorHistory()
+{
+	ActorUndoStack.Reset();
+	ActorRedoStack.Reset();
+	PendingDragBefore.Reset();
+
+	if (PendingOSMSpawnQueue.Num() > 0)
+	{
+		PendingOSMSpawnQueue.Reset();
+		InProgressOSMSummary.bSuccess = false;
+		InProgressOSMSummary.ErrorMessage = TEXT("OSM import stopped: a different world was loaded before it finished.");
+		LastOSMImportSummary = InProgressOSMSummary;
+	}
+	InProgressOSMUndoEntry = FGRTActorUndoEntry();
+	OSMImportTotalJobs = 0;
 }
 
 bool AGRTEditController::TryActorUndo()
@@ -556,13 +731,17 @@ bool AGRTEditController::TryActorUndo()
 	}
 
 	FGRTActorUndoEntry Entry = ActorUndoStack.Pop();
-	if (Entry.Op == EGRTActorUndoOp::Spawn)
+	switch (Entry.Op)
 	{
+	case EGRTActorUndoOp::Spawn:
 		DestroyActorsInEntry(Entry);
-	}
-	else
-	{
+		break;
+	case EGRTActorUndoOp::Delete:
 		RespawnActorsInEntry(Entry);
+		break;
+	case EGRTActorUndoOp::Modify:
+		ApplyModifyEntry(Entry, /*bApplyAfterState=*/false);
+		break;
 	}
 
 	ActorRedoStack.Add(MoveTemp(Entry));
@@ -581,13 +760,17 @@ bool AGRTEditController::TryActorRedo()
 	}
 
 	FGRTActorUndoEntry Entry = ActorRedoStack.Pop();
-	if (Entry.Op == EGRTActorUndoOp::Spawn)
+	switch (Entry.Op)
 	{
+	case EGRTActorUndoOp::Spawn:
 		RespawnActorsInEntry(Entry);
-	}
-	else
-	{
+		break;
+	case EGRTActorUndoOp::Delete:
 		DestroyActorsInEntry(Entry);
+		break;
+	case EGRTActorUndoOp::Modify:
+		ApplyModifyEntry(Entry, /*bApplyAfterState=*/true);
+		break;
 	}
 
 	ActorUndoStack.Add(MoveTemp(Entry));
@@ -653,14 +836,28 @@ void AGRTEditController::OnToggleGizmoSnappingPressed()
 
 void AGRTEditController::HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget)
 {
-	// The subsystem is shared with the road tool, so a cancel could be for a road-point drag that
-	// has nothing to do with us -- only react if it's our own bound building's drag being cancelled.
-	if (!bIsGizmoAxisDrag || !GizmoBoundBuilding.IsValid() || CancelledTarget != GizmoBoundBuilding->GetRootComponent())
+	// The subsystem may be driven by other consumers, so only react to a cancel of our own drag.
+	if (!bIsGizmoAxisDrag || !CancelledTarget)
+	{
+		return;
+	}
+
+	if (GizmoBoundModel.IsValid() && CancelledTarget == GizmoBoundModel->GetRootComponent())
+	{
+		// The subsystem already put the model back. Ending the drag here means the release that
+		// follows sends no move and records no undo entry for a drag that was taken back.
+		bIsGizmoAxisDrag = false;
+		PendingDragBefore.Reset();
+		return;
+	}
+
+	if (!GizmoBoundBuilding.IsValid() || CancelledTarget != GizmoBoundBuilding->GetRootComponent())
 	{
 		return;
 	}
 
 	bIsGizmoAxisDrag = false;
+	PendingDragBefore.Reset();
 
 	// The subsystem already restored the building's exact pre-drag transform -- resettle the
 	// pad-tracking/preview state to match, the same way a normal release would, since nothing else
@@ -914,17 +1111,26 @@ void AGRTEditController::UpdateMoveGizmo()
 		}
 	}
 
+	// IsExplicitlyNull, not IsValid, throughout the clears below: once the bound actor is destroyed
+	// (deleted, undone, replaced by a load) IsValid() is false, so gating on it skipped the clear and
+	// left the transform gizmo floating where the actor used to be.
+	auto ClearGizmoBinding = [this]()
+	{
+		if (GizmoSubsystem && (!GizmoBoundBuilding.IsExplicitlyNull() || !GizmoBoundModel.IsExplicitlyNull()))
+		{
+			GizmoSubsystem->ClearTarget();
+		}
+		GizmoBoundBuilding = nullptr;
+		GizmoBoundModel = nullptr;
+	};
+
 	if (!IsLocalController() || !IsInstructor())
 	{
 		if (ActiveMoveGizmo)
 		{
 			ActiveMoveGizmo->SetActorHiddenInGame(true);
 		}
-		if (GizmoSubsystem && GizmoBoundBuilding.IsValid())
-		{
-			GizmoSubsystem->ClearTarget();
-			GizmoBoundBuilding = nullptr;
-		}
+		ClearGizmoBinding();
 		return;
 	}
 
@@ -957,6 +1163,7 @@ void AGRTEditController::UpdateMoveGizmo()
 			{
 				GizmoSubsystem->SetTarget(Selected->GetRootComponent());
 				GizmoBoundBuilding = Selected;
+				GizmoBoundModel = nullptr;
 			}
 			else
 			{
@@ -1047,16 +1254,7 @@ void AGRTEditController::UpdateMoveGizmo()
 			ActiveMoveGizmo->SetActorHiddenInGame(true);
 			ActiveMoveGizmo->SetHighlightedSplinePoint(INDEX_NONE);
 		}
-		if (GizmoSubsystem && GizmoBoundBuilding.IsValid())
-		{
-			GizmoSubsystem->ClearTarget();
-			GizmoBoundBuilding = nullptr;
-		}
-		if (GizmoSubsystem && GizmoBoundModel.IsValid())
-		{
-			GizmoSubsystem->ClearTarget();
-			GizmoBoundModel = nullptr;
-		}
+		ClearGizmoBinding();
 	}
 }
 
@@ -1209,9 +1407,16 @@ void AGRTEditController::RequestUndo()
 {
 	if (HasAuthority())
 	{
-		if (AGRTManager* Manager = GetManager())
+		// Priority chain: building/model/OSM actor edits, then terrain sculpting as the fallback --
+		// each tries its own history and only falls through when it had nothing to take back. Both
+		// histories live on the server's copy of this controller, which is why a client routes the
+		// whole chain there rather than trying the actor half locally, where it is always empty.
+		if (!TryActorUndo())
 		{
-			Manager->Undo(this);
+			if (AGRTManager* Manager = GetManager())
+			{
+				Manager->Undo(this);
+			}
 		}
 	}
 	else
@@ -1224,19 +1429,19 @@ void AGRTEditController::Server_Undo_Implementation()
 {
 	GRT_REQUIRE_EDIT_AUTHORITY();
 
-	if (AGRTManager* Manager = GetManager())
-	{
-		Manager->Undo(this);
-	}
+	RequestUndo();
 }
 
 void AGRTEditController::RequestRedo()
 {
 	if (HasAuthority())
 	{
-		if (AGRTManager* Manager = GetManager())
+		if (!TryActorRedo())
 		{
-			Manager->Redo(this);
+			if (AGRTManager* Manager = GetManager())
+			{
+				Manager->Redo(this);
+			}
 		}
 	}
 	else
@@ -1249,10 +1454,7 @@ void AGRTEditController::Server_Redo_Implementation()
 {
 	GRT_REQUIRE_EDIT_AUTHORITY();
 
-	if (AGRTManager* Manager = GetManager())
-	{
-		Manager->Redo(this);
-	}
+	RequestRedo();
 }
 
 void AGRTEditController::Client_ReceiveChunkSync_Implementation(const FGRTChunkData& Data)
@@ -1319,6 +1521,7 @@ void AGRTEditController::RequestMoveBuilding(AGRTBuildingActor* Building, const 
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->SetActorTransform(NewTransform);
 		Building->PadTargetWorldZ = NewTransform.GetLocation().Z;
 		if (Building->bAutoPadHeight)
@@ -1326,6 +1529,7 @@ void AGRTEditController::RequestMoveBuilding(AGRTBuildingActor* Building, const 
 			Building->SnapToPadHeight();
 		}
 		Building->NotifyBuildingChanged();
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1345,7 +1549,9 @@ void AGRTEditController::RequestSetBuildingFloorCount(AGRTBuildingActor* Buildin
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->SetFloorCount(NewFloorCount);
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1365,7 +1571,9 @@ void AGRTEditController::RequestSetBuildingSplinePoints(AGRTBuildingActor* Build
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->SetSplinePoints(NewPoints);
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1385,7 +1593,9 @@ void AGRTEditController::RequestAddSplinePoint(AGRTBuildingActor* Building)
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->AddSplinePoint();
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1405,7 +1615,9 @@ void AGRTEditController::RequestRemoveSplinePoint(AGRTBuildingActor* Building, i
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->RemoveSplinePoint(PointIndex);
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1425,7 +1637,9 @@ void AGRTEditController::RequestResetFootprint(AGRTBuildingActor* Building)
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->ResetToDefaultFootprint();
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1445,8 +1659,10 @@ void AGRTEditController::RequestRelevelBuilding(AGRTBuildingActor* Building)
 	if (!Building) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(Building);
 		Building->RelevelToTerrain();
 		Building->SnapToPadHeight();
+		RecordActorModify(MoveTemp(Before), Building);
 	}
 	else
 	{
@@ -1469,6 +1685,7 @@ void AGRTEditController::RequestDeleteBuilding(AGRTBuildingActor* Building)
 		FGRTActorSnapshot Snap;
 		Snap.Kind = EGRTActorSnapshotKind::Building;
 		Snap.BuildingData = Building->ToData(); // taken before Destroy() -- this IS the restore payload
+		Snap.LiveActor = Building; // goes stale on Destroy; undo remaps older entries from it
 		FGRTActorUndoEntry UndoEntry;
 		UndoEntry.Op = EGRTActorUndoOp::Delete;
 		UndoEntry.Actors.Add(MoveTemp(Snap));
@@ -1533,93 +1750,71 @@ void AGRTEditController::Server_SetPopulationDestroyed_Implementation(FGuid Popu
 	RequestSetPopulationDestroyed(PopulationId, bDestroyed);
 }
 
-void AGRTEditController::RequestSaveWorldToFile(const FString& FilePath)
+namespace
 {
-	if (HasAuthority())
+	/** Shared refusal for the file-based requests on a remote client. See CanAccessLocalFiles. */
+	bool RejectRemoteFileRequest(const TCHAR* What, const FString& FilePath)
 	{
-		if (AGRTManager* Manager = GetManager())
-		{
-			Manager->SaveWorldToFile(FilePath);
-		}
-	}
-	else
-	{
-		Server_SaveWorldToFile(FilePath);
+		UE_LOG(LogGRT, Warning,
+			TEXT("GRT: %s refused for '%s' -- only the session host can use files from its own disk."),
+			What, *FilePath);
+		return false;
 	}
 }
 
-void AGRTEditController::Server_SaveWorldToFile_Implementation(const FString& FilePath)
+bool AGRTEditController::RequestSaveWorldToFile(const FString& FilePath)
 {
-	GRT_REQUIRE_EDIT_AUTHORITY();
-
-	RequestSaveWorldToFile(FilePath);
+	if (!CanAccessLocalFiles())
+	{
+		return RejectRemoteFileRequest(TEXT("Save"), FilePath);
+	}
+	AGRTManager* Manager = GetManager();
+	return Manager && Manager->SaveWorldToFile(FilePath);
 }
 
-void AGRTEditController::RequestLoadWorldFromFile(const FString& FilePath)
+bool AGRTEditController::RequestLoadWorldFromFile(const FString& FilePath)
 {
-	if (HasAuthority())
+	if (!CanAccessLocalFiles())
 	{
-		if (AGRTManager* Manager = GetManager())
-		{
-			Manager->LoadWorldFromFile(FilePath);
-		}
+		return RejectRemoteFileRequest(TEXT("Load"), FilePath);
 	}
-	else
-	{
-		Server_LoadWorldFromFile(FilePath);
-	}
+	AGRTManager* Manager = GetManager();
+	return Manager && Manager->LoadWorldFromFile(FilePath);
 }
 
-void AGRTEditController::Server_LoadWorldFromFile_Implementation(const FString& FilePath)
+bool AGRTEditController::RequestImportGeoTIFF(const FString& FilePath)
 {
-	GRT_REQUIRE_EDIT_AUTHORITY();
-
-	RequestLoadWorldFromFile(FilePath);
+	if (!CanAccessLocalFiles())
+	{
+		return RejectRemoteFileRequest(TEXT("GeoTIFF import"), FilePath);
+	}
+	AGRTManager* Manager = GetManager();
+	if (!Manager)
+	{
+		return false;
+	}
+	Manager->ImportGeoTIFF(FilePath);
+	return true;
 }
 
-void AGRTEditController::RequestImportGeoTIFF(const FString& FilePath)
+bool AGRTEditController::RequestImportRasterLayer(EGRTRasterLayer Layer, const FString& FilePath)
 {
-	if (HasAuthority())
+	if (!CanAccessLocalFiles())
 	{
-		if (AGRTManager* Manager = GetManager())
-		{
-			Manager->ImportGeoTIFF(FilePath);
-		}
+		return RejectRemoteFileRequest(TEXT("Raster layer import"), FilePath);
 	}
-	else
+	AGRTManager* Manager = GetManager();
+	if (!Manager)
 	{
-		Server_ImportGeoTIFF(FilePath);
+		return false;
 	}
-}
-
-void AGRTEditController::Server_ImportGeoTIFF_Implementation(const FString& FilePath)
-{
-	GRT_REQUIRE_EDIT_AUTHORITY();
-
-	RequestImportGeoTIFF(FilePath);
-}
-
-void AGRTEditController::RequestImportRasterLayer(EGRTRasterLayer Layer, const FString& FilePath)
-{
-	if (HasAuthority())
+	FString OutError;
+	if (!Manager->ImportRasterLayer(Layer, FilePath, OutError))
 	{
-		if (AGRTManager* Manager = GetManager())
-		{
-			FString OutError;
-			Manager->ImportRasterLayer(Layer, FilePath, OutError);
-		}
+		UE_LOG(LogGRT, Error, TEXT("GRT: Raster layer import of '%s' failed: %s"), *FilePath, *OutError);
+		return false;
 	}
-	else
-	{
-		Server_ImportRasterLayer(Layer, FilePath);
-	}
-}
-
-void AGRTEditController::Server_ImportRasterLayer_Implementation(EGRTRasterLayer Layer, const FString& FilePath)
-{
-	GRT_REQUIRE_EDIT_AUTHORITY();
-
-	RequestImportRasterLayer(Layer, FilePath);
+	return true;
 }
 
 void AGRTEditController::RequestUnloadRasterLayer(EGRTRasterLayer Layer)
@@ -1964,8 +2159,10 @@ void AGRTEditController::RequestMoveModel(AGRTPlacedModelActor* ModelActor, cons
 	if (!ModelActor) return;
 	if (HasAuthority())
 	{
+		FGRTActorSnapshot Before = TakeBeforeSnapshot(ModelActor);
 		ModelActor->SetActorTransform(NewTransform);
 		ModelActor->NotifyScaleChanged();
+		RecordActorModify(MoveTemp(Before), ModelActor);
 	}
 	else
 	{
@@ -1995,6 +2192,7 @@ void AGRTEditController::RequestDeleteModel(AGRTPlacedModelActor* ModelActor)
 		FGRTActorSnapshot Snap;
 		Snap.Kind = EGRTActorSnapshotKind::Model;
 		Snap.ModelData = ModelActor->ToData(); // taken before Destroy()
+		Snap.LiveActor = ModelActor; // goes stale on Destroy; undo remaps older entries from it
 		FGRTActorUndoEntry UndoEntry;
 		UndoEntry.Op = EGRTActorUndoOp::Delete;
 		UndoEntry.Actors.Add(MoveTemp(Snap));
@@ -2014,6 +2212,33 @@ void AGRTEditController::Server_DeleteModel_Implementation(AGRTPlacedModelActor*
 	RequestDeleteModel(ModelActor);
 }
 
+void AGRTEditController::RequestSetActorVisible(AActor* Actor, bool bVisible)
+{
+	if (!Actor) return;
+	if (HasAuthority())
+	{
+		if (AGRTPlacedModelActor* Model = Cast<AGRTPlacedModelActor>(Actor))
+		{
+			Model->SetVisibleInScene(bVisible);
+		}
+		else if (Cast<AGRTBuildingActor>(Actor))
+		{
+			// bHidden is replicated, so this reaches every client.
+			Actor->SetActorHiddenInGame(!bVisible);
+		}
+	}
+	else
+	{
+		Server_SetActorVisible(Actor, bVisible);
+	}
+}
+
+void AGRTEditController::Server_SetActorVisible_Implementation(AActor* Actor, bool bVisible)
+{
+	GRT_REQUIRE_EDIT_AUTHORITY();
+	RequestSetActorVisible(Actor, bVisible);
+}
+
 //-----------------------------------------------------------------------------
 // OpenStreetMap ingestion
 //-----------------------------------------------------------------------------
@@ -2023,35 +2248,32 @@ FGRTOSMImportSummary AGRTEditController::GetLastOSMImportSummary() const
 	return LastOSMImportSummary;
 }
 
-void AGRTEditController::RequestImportOSM(const FString& FilePath, bool bImportBuildings)
+bool AGRTEditController::RequestImportOSM(const FString& FilePath, bool bImportBuildings)
 {
-	if (HasAuthority())
+	if (!CanAccessLocalFiles())
 	{
-		if (IsOSMImportInProgress())
-		{
-			// Reported through the same summary the status line already reads, rather than a
-			// silently-dropped click -- the UX rule is "never leave a button press unresponsive
-			// without clear error messaging."
-			FGRTOSMImportSummary Busy;
-			Busy.ErrorMessage = TEXT("An OSM import is already in progress -- wait for it to finish before starting another.");
-			LastOSMImportSummary = Busy;
-			return;
-		}
-
-		FGRTOSMImportOptions Options;
-		Options.bImportBuildings = bImportBuildings;
-		LastOSMImportSummary = ImportOSMInternal(FilePath, Options);
+		// Reported through the summary the panel's status line already reads.
+		FGRTOSMImportSummary Refused;
+		Refused.ErrorMessage = TEXT("Only the session host can import OpenStreetMap files.");
+		LastOSMImportSummary = Refused;
+		return RejectRemoteFileRequest(TEXT("OSM import"), FilePath);
 	}
-	else
+
+	if (IsOSMImportInProgress())
 	{
-		Server_ImportOSM(FilePath, bImportBuildings);
+		// Reported through the same summary the status line already reads, rather than a
+		// silently-dropped click -- the UX rule is "never leave a button press unresponsive
+		// without clear error messaging."
+		FGRTOSMImportSummary Busy;
+		Busy.ErrorMessage = TEXT("An OSM import is already in progress -- wait for it to finish before starting another.");
+		LastOSMImportSummary = Busy;
+		return false;
 	}
-}
 
-void AGRTEditController::Server_ImportOSM_Implementation(const FString& FilePath, bool bImportBuildings)
-{
-	GRT_REQUIRE_EDIT_AUTHORITY();
-	RequestImportOSM(FilePath, bImportBuildings);
+	FGRTOSMImportOptions Options;
+	Options.bImportBuildings = bImportBuildings;
+	LastOSMImportSummary = ImportOSMInternal(FilePath, Options);
+	return LastOSMImportSummary.bSuccess;
 }
 
 FGRTOSMImportSummary AGRTEditController::ImportOSMInternal(const FString& FilePath, const FGRTOSMImportOptions& Options)
@@ -2174,9 +2396,6 @@ void AGRTEditController::ProcessOSMSpawnQueue()
 		return;
 	}
 
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
 	const double StartTimeSec = FPlatformTime::Seconds();
 	const double MaxBudgetSec = MaxOSMMillisecondsPerTick * 0.001;
 
@@ -2184,11 +2403,18 @@ void AGRTEditController::ProcessOSMSpawnQueue()
 	{
 		const FGRTOSMSpawnJob Job = PendingOSMSpawnQueue.Pop();
 
-		AGRTBuildingActor* NewBuilding = World->SpawnActor<AGRTBuildingActor>(
-			AGRTBuildingActor::StaticClass(), FTransform(Job.Origin), SpawnParams);
+		// Deferred so bFlattenTerrain is off BEFORE the construction script and BeginPlay run inside
+		// the spawn -- both call NotifyBuildingChanged, and with the flag still at its default they
+		// stamped a default-footprint pad under every imported building (the expensive pass this
+		// flag exists to skip) and left it there.
+		const FTransform SpawnTransform(Job.Origin);
+		AGRTBuildingActor* NewBuilding = World->SpawnActorDeferred<AGRTBuildingActor>(
+			AGRTBuildingActor::StaticClass(), SpawnTransform, nullptr, nullptr,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 		if (NewBuilding)
 		{
-			NewBuilding->bFlattenTerrain = false; // Prevents triggering heavy terrain distance-field pad stamping thousands of times!
+			NewBuilding->bFlattenTerrain = false;
+			NewBuilding->FinishSpawning(SpawnTransform);
 			NewBuilding->SetFloorCount(Job.Levels);
 			NewBuilding->SetSplinePoints(Job.LocalFootprint);
 			NewBuilding->SnapToPadHeight();

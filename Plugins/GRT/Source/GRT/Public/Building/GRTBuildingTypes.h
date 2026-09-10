@@ -26,6 +26,10 @@ struct FGRTBuildingData
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
 	FRotator Rotation = FRotator::ZeroRotator;
 
+	/** Actor scale. Defaults to one so saves written before this field existed load unscaled. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
+	FVector Scale = FVector::OneVector;
+
 	/** Footprint points, local to Origin. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
 	TArray<FVector> SplinePoints;
@@ -39,7 +43,15 @@ struct FGRTBuildingData
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
 	FSoftObjectPath KitAsset;
 
-	/** World Z the footprint flattens to. Phase 2. */
+	/** Mirrors AGRTBuildingActor::bFlattenTerrain. Defaults true, matching the actor default. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
+	bool bFlattenTerrain = true;
+
+	/** Mirrors AGRTBuildingActor::bAutoPadHeight. When false, PadTargetZ is the pad height. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
+	bool bAutoPadHeight = true;
+
+	/** World Z the footprint flattens to (AGRTBuildingActor::PadTargetWorldZ). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GRT|Building")
 	float PadTargetZ = 0.0f;
 

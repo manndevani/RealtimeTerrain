@@ -49,8 +49,18 @@ public:
 	UPROPERTY(ReplicatedUsing = OnRep_Scale3D, VisibleAnywhere, BlueprintReadOnly, Category = "Model")
 	FVector ReplicatedScale3D = FVector(1.0f);
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Model")
+	/** Replicated so the outliner's hide/show reaches every machine, collision included. */
+	UPROPERTY(ReplicatedUsing = OnRep_VisibleInScene, VisibleAnywhere, BlueprintReadOnly, Category = "Model")
 	bool bIsVisibleInScene = true;
+
+	/**
+	 * Lit base material every imported slot is instanced from. It exposes a "BaseColor" vector and a
+	 * "BaseColorTexture" texture (default white) multiplied together, so untextured slots show their
+	 * diffuse colour and textured slots show the texture. Null falls back to BasicShapeMaterial,
+	 * which has no texture parameter.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Model")
+	TObjectPtr<class UMaterialInterface> ImportedModelBaseMaterial;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Model")
 	bool bIsSelectedInEditor = false;
@@ -94,6 +104,9 @@ protected:
 
 	UFUNCTION()
 	void OnRep_CustomLabel();
+
+	UFUNCTION()
+	void OnRep_VisibleInScene();
 
 private:
 	void ApplyMaterials(const TArray<FGRTImportedMaterial>& Materials);

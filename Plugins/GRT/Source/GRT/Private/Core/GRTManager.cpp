@@ -88,6 +88,8 @@ void AGRTManager::BeginPlay()
 
 	UE_LOG(LogTemp, Log, TEXT("GRTManager: Starting initialization..."));
 
+	PurgeStaleChunkCacheSessions();
+
 	// Register with subsystem
 	if (UGRTSubsystem* Subsystem = GetWorld()->GetSubsystem<UGRTSubsystem>())
 	{
@@ -378,6 +380,7 @@ void AGRTManager::StartDEMImportMode()
 	PendingLoadQueue.Reset();
 	PendingUnloadQueue.Reset();
 	DirtyChunkSet.Reset();
+	ResetChunkCacheSession();
 
 	// Destroy all existing chunk actors so DEM session is completely empty
 	if (UWorld* World = GetWorld())
@@ -1667,6 +1670,9 @@ void AGRTManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	DestroyTrackedPopulationActors();
 
+	// The eviction cache only lives as long as the session; anything worth keeping is in a save.
+	ResetChunkCacheSession();
+
 	// [C-5] Unregister so the subsystem does not hold a stale pointer after destruction
 	if (UWorld* World = GetWorld())
 	{
@@ -1769,7 +1775,7 @@ void AGRTManager::LoadOrSpawnChunk(FIntPoint Coord)
 
 	// Try loading cached data (previously sculpted/painted chunk)
 	FGRTChunkData CachedData;
-	if (LoadChunkFromCache(Coord, CachedData))
+	if (CachedChunkCoords.Contains(Coord) && LoadChunkFromCache(Coord, CachedData))
 	{
 		Chunk->LoadFromData(CachedData);
 		// LoadFromData re-initializes the chunk when the cached resolution differs, which resizes

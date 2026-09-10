@@ -77,6 +77,7 @@ void AGRTManager::ImportGeoTIFFInternal(const FString& FilePath, const FGRTGeoTI
 		}
 		ActiveChunkMap.Reset();
 		ImportedChunkCoords.Reset();
+		ResetChunkCacheSession(); // cached edits describe the terrain this import replaces
 	}
 
 	const FBox2D Footprint = NewSource->GetWorldFootprintXY();
@@ -577,6 +578,7 @@ void AGRTManager::UnloadAllRasterLayers()
 		}
 	}
 	ActiveChunkMap.Reset();
+	ResetChunkCacheSession();
 	if (GetWorld())
 	{
 		RebuildChunkMap();

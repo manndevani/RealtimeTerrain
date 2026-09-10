@@ -1620,6 +1620,20 @@ FReply SGRTPanel::StartPersistenceTest()
 
 FReply SGRTPanel::SaveToFile()
 {
+	// Checked before the dialog opens: the host is the only machine that can use a local path.
+	if (OwnerWidget.IsValid())
+	{
+		if (const AGRTEditController* PC = Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			if (!PC->CanAccessLocalFiles())
+			{
+				ShowNotificationModal(LOCTEXT("HostOnlyTitle", "Host only"),
+					LOCTEXT("HostOnlySave", "Only the session host can save the world to a file."), true);
+				return FReply::Handled();
+			}
+		}
+	}
+
 	const FString DefaultFolder = FPaths::ConvertRelativePathToFull(
 		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("GRTExports")));
 	IFileManager::Get().MakeDirectory(*DefaultFolder, true);
@@ -1656,7 +1670,12 @@ FReply SGRTPanel::SaveToFile()
 	{
 		if (AGRTEditController* PC = Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()))
 		{
-			PC->RequestSaveWorldToFile(TargetPath);
+			if (!PC->RequestSaveWorldToFile(TargetPath))
+			{
+				ShowNotificationModal(LOCTEXT("SaveFailedTitle", "Save failed"),
+					FText::Format(LOCTEXT("SaveFailedMsg", "Could not save the world to {0}. See the output log for details."),
+						FText::FromString(TargetPath)), true);
+			}
 			return FReply::Handled();
 		}
 	}
@@ -1670,6 +1689,19 @@ FReply SGRTPanel::SaveToFile()
 
 FReply SGRTPanel::LoadFromFile()
 {
+	if (OwnerWidget.IsValid())
+	{
+		if (const AGRTEditController* PC = Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()))
+		{
+			if (!PC->CanAccessLocalFiles())
+			{
+				ShowNotificationModal(LOCTEXT("HostOnlyTitle", "Host only"),
+					LOCTEXT("HostOnlyLoad", "Only the session host can load a world from a file."), true);
+				return FReply::Handled();
+			}
+		}
+	}
+
 	const FString DefaultFolder = FPaths::ConvertRelativePathToFull(
 		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("GRTExports")));
 
@@ -1705,7 +1737,12 @@ FReply SGRTPanel::LoadFromFile()
 	{
 		if (AGRTEditController* PC = Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()))
 		{
-			PC->RequestLoadWorldFromFile(TargetPath);
+			if (!PC->RequestLoadWorldFromFile(TargetPath))
+			{
+				ShowNotificationModal(LOCTEXT("LoadFailedTitle", "Load failed"),
+					FText::Format(LOCTEXT("LoadFailedMsg", "Could not load a world from {0}. See the output log for details."),
+						FText::FromString(TargetPath)), true);
+			}
 			return FReply::Handled();
 		}
 	}
@@ -2866,6 +2903,14 @@ bool SGRTPanel::IsUndoEnabled() const
 	if (!World) return false;
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		if (const AGRTEditController* EditPC = Cast<AGRTEditController>(PC))
+		{
+			// A client's histories live on the server, so it cannot know; let the server decide.
+			if (!EditPC->HasAuthority() || EditPC->HasActorUndo())
+			{
+				return true;
+			}
+		}
 		if (AGRTManager* Mgr = GetManager())
 		{
 			return Mgr->CanUndo(PC);
@@ -2881,6 +2926,13 @@ bool SGRTPanel::IsRedoEnabled() const
 	if (!World) return false;
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		if (const AGRTEditController* EditPC = Cast<AGRTEditController>(PC))
+		{
+			if (!EditPC->HasAuthority() || EditPC->HasActorRedo())
+			{
+				return true;
+			}
+		}
 		if (AGRTManager* Mgr = GetManager())
 		{
 			return Mgr->CanRedo(PC);
@@ -2894,11 +2946,16 @@ FReply SGRTPanel::OnUndoClicked()
 	if (!OwnerWidget.IsValid()) return FReply::Unhandled();
 	UWorld* World = OwnerWidget->GetWorld();
 	if (!World) return FReply::Unhandled();
-	// Straight to the manager rather than through a player-controller cast. This used to require
-	// AGRTEditController, which is not the controller the game actually spawns — so the cast
-	// always failed and the button silently did nothing.
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		// Same path as Ctrl+Z: building/model edits first, then terrain, run on the server. Going
+		// straight to Mgr->Undo skipped the building/model history entirely.
+		if (AGRTEditController* EditPC = Cast<AGRTEditController>(PC))
+		{
+			EditPC->RequestUndo();
+			return FReply::Handled();
+		}
+		// Terrain-only fallback for a game mode whose controller is not an AGRTEditController.
 		if (AGRTManager* Mgr = GetManager())
 		{
 			Mgr->Undo(PC);
@@ -2915,6 +2972,11 @@ FReply SGRTPanel::OnRedoClicked()
 	if (!World) return FReply::Unhandled();
 	if (APlayerController* PC = World->GetFirstPlayerController())
 	{
+		if (AGRTEditController* EditPC = Cast<AGRTEditController>(PC))
+		{
+			EditPC->RequestRedo();
+			return FReply::Handled();
+		}
 		if (AGRTManager* Mgr = GetManager())
 		{
 			Mgr->Redo(PC);
@@ -3457,13 +3519,24 @@ FReply SGRTPanel::OnToggleOutlinerVisibilityClicked(TWeakObjectPtr<AActor> Actor
 {
 	if (!ActorPtr.IsValid()) return FReply::Unhandled();
 
-	if (AGRTPlacedModelActor* ModelActor = Cast<AGRTPlacedModelActor>(ActorPtr.Get()))
+	AActor* Target = ActorPtr.Get();
+	AGRTEditController* EditPC = OwnerWidget.IsValid() ? Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()) : nullptr;
+	const bool bIsGRTActor = Cast<AGRTPlacedModelActor>(Target) || Cast<AGRTBuildingActor>(Target);
+
+	if (EditPC && bIsGRTActor)
+	{
+		// Through the controller so the change is made on the server and reaches every machine.
+		const AGRTPlacedModelActor* ModelActor = Cast<AGRTPlacedModelActor>(Target);
+		const bool bCurrentlyVisible = ModelActor ? ModelActor->bIsVisibleInScene : !Target->IsHidden();
+		EditPC->RequestSetActorVisible(Target, !bCurrentlyVisible);
+	}
+	else if (AGRTPlacedModelActor* ModelActor = Cast<AGRTPlacedModelActor>(Target))
 	{
 		ModelActor->SetVisibleInScene(!ModelActor->bIsVisibleInScene);
 	}
 	else
 	{
-		ActorPtr->SetActorHiddenInGame(!ActorPtr->IsHidden());
+		Target->SetActorHiddenInGame(!Target->IsHidden());
 	}
 	return FReply::Handled();
 }
@@ -3579,7 +3652,7 @@ bool SGRTPanel::IsOSMImportEnabled() const
 	}
 	if (const AGRTEditController* PC = Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()))
 	{
-		return !PC->IsOSMImportInProgress();
+		return PC->CanAccessLocalFiles() && !PC->IsOSMImportInProgress();
 	}
 	return true;
 }
@@ -3594,6 +3667,11 @@ FText SGRTPanel::GetOSMStatusText() const
 	if (const AGRTEditController* PC = OwnerWidget.IsValid()
 		? Cast<AGRTEditController>(OwnerWidget->GetOwningPlayer()) : nullptr)
 	{
+		if (!PC->CanAccessLocalFiles())
+		{
+			return LOCTEXT("OSMHostOnly", "Only the session host can import OpenStreetMap files.");
+		}
+
 		if (PC->IsOSMImportInProgress())
 		{
 			int32 Done = 0, Total = 0;

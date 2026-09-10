@@ -1,7 +1,9 @@
 # RealtimeTerrain — Unreal Engine 5.8
 
 Runtime-editable chunk terrain + GIS framework: procedural/GDAL DEM terrain, Cesium georeferencing,
-spline road networks, modular buildings, full multiplayer replication, and a reusable runtime transform gizmo.
+modular buildings, runtime 3D-model import, OpenStreetMap import, full multiplayer replication, and a
+reusable runtime transform gizmo. (The spline road system was removed on 2026-08-31; it survives only in
+git history.)
 Full status and historical record live in [README.md](README.md) — that file is the source of truth for
 what's done, what's known-limited, and why; don't duplicate it here.
 
@@ -19,9 +21,8 @@ substitute.
 - **Read the actual file before proposing a change to it.** Not a grep snippet, not memory of a
   prior session. If asked to analyze specific code, open it in full first.
 - **Verify API/behavior claims against real source**, not general UE knowledge. This codebase has
-  custom systems (`AGRTEditController`, `RuntimeGizmoActor`, the road solver) that don't match
-  stock UE patterns, and the RoadBuilder plugin has been locally patched (see README's Requirements
-  section) — don't assume the vanilla plugin behavior.
+  custom systems (`AGRTEditController`, `RuntimeGizmoActor`, the building pad layer) that don't
+  match stock UE patterns.
 - **Check what a fix could break elsewhere** before calling it done — a caller, another mode, or
   replication. A green build is not the same as "no regression."
 - **Always use native OS file dialogs for importing/exporting.** Always use `IDesktopPlatform::OpenFileDialog`, `OpenDirectoryDialog`, and `SaveFileDialog` (via `FDesktopPlatformModule::Get()`) for all file and folder browsing (GeoTIFF, DEM, OSM, 3D Models, level saves). NEVER default to or pop up in-game Slate file picker UIs (`SGRTFilePickerPanel`) in editor/desktop workflows.
@@ -141,34 +142,34 @@ Then inspect `Saved/Logs/RealtimeTerrain.log` (grep for `Test Started`/`Test Com
 ## 🗺️ Architecture Map
 
 - **`Source/RealtimeTerrain/`** — game module.
-  Contains project-specific game mode (`RealtimeTerrainEditGameMode`) and edit controller (`RealtimeRoadEditController`) inheriting directly from `AGRTEditController`.
-- **`Plugins/GRT/Source/GRT/`** (157 files across `GRT` + `GRTEditor` —
-  full detail in its `CODE_REFERENCE.md`), organized by subfolder:
-  - `Road/` — complete, self-contained runtime road network and geometry system: `ARealtimeRoadSplineActor` (swept solid cross-section road actor with dynamic conform, elevation/width keys, spiral centreline, piers, and scatter HISM), `ARealtimeRoadJunctionActor` (multi-way N-arm junction solver, gore markings, fillet arcs, and ramp classification), `URealtimeRoadBuilderComponent` (runtime click-and-drag road drafting), `RoadCurveGraph` (Hermite offset curve graph & lane boundaries), `RoadNetwork` (spatial intersection sweeps & auto-junction creation), `RoadNetworkSolver` (fillet geometry, ray-intersection fallback, gore apex, lane routing), `RoadMeshBuilder` (style-driven cross-section sweeping & gore fill), `RoadElevationProfile` (cubic-Hermite elevation keys & auto-flyovers), `RoadWidthProfile` (Scale-mode width keys), `RoadSpiral` (Euler-spiral/clothoid Fresnel integrals), `RoadPierPlacement`, `RoadStylePresets`, `RoadXodrExport` (OpenDRIVE export), `RoadEditOverlayActor`/`RoadNetworkDebugLibrary`.
+  Contains project-specific game mode (`RealtimeTerrainEditGameMode`) and edit controller (`RealtimeTerrainEditController`, renamed from `RealtimeRoadEditController` with a ClassRedirect) inheriting directly from `AGRTEditController`.
+- **`Plugins/GRT/Source/GRT/`** (`GRT` + `GRTEditor` modules — full detail in its
+  `CODE_REFERENCE.md`), organized by subfolder. There is no `Road/` folder: the road system was
+  deleted on 2026-08-31 (see README's status).
   - `Building/` — `AGRTBuildingActor`, `AGRTPlacedModelActor` (runtime placed 3D model instance with `UDynamicMeshComponent`, replicated `Scale3D`, visibility toggles, and selection highlight), `AGRTGizmoActor` (footprint-spline-vertex handles only), `GRTModelTypes.h` (`FGRTModelLibraryEntryData`/`FGRTPlacedModelData` — the save-game and undo-snapshot shapes for the model catalog and its placements), `GRTBuildingKit.h`/`GRTBuildingTypes.h` (building-kit data types).
-  - `Gizmo/` — the reusable transform gizmo: `GizmoTypes.h` (enums/state), `GizmoManipulationMath.h/.cpp` (pure math, no UObject refs), `ARuntimeGizmoActor` (visual handles for Translate, Rotate, Scale with screen-rotation ring), `UGizmoManipulationSubsystem` (`UWorldSubsystem`, single stateful owner). Drives buildings, placed 3D models, and road points identically.
-  - `IO/` — `GRTModelImporter` (zero-external-dependency runtime loader for `.obj`, `.stl`, `.ply`, `.fbx`, `.gltf`, `.glb` + `.mtl` diffuse colors and companion `.png`/`.jpg` textures into `FDynamicMesh3`, via vendored `ufbx`/`cgltf` under `Private/ThirdParty/`), `GRTModelThumbnail` (runtime scene-capture thumbnail generation, cached to `Saved/GRT/ModelThumbnails/`), `GRTOSMParser`/`GRTOSMIngest` (OpenStreetMap `.osm` XML parsing + geometry ingest — buildings and drivable roads, pure/world-free), `GRTSerializer`/`GRTAsyncSaver`/`GRTArchiveHelper` (save-game I/O), `GRTGeoTIFFReader`/`GRTGeoTIFFHeightSource`/`GRTDEMMeshBuilder`/`GRTRasterLayers` (GDAL/DEM import pipeline).
-  - `Core/` — `AGRTManager`, `UGRTAssetLibrarySubsystem` (`UWorldSubsystem` catalog of imported 3D models with PNG thumbnail resolution, dimensions, and polycounts), `UGRTSubsystem`, `AGRTEditController` (runtime placement tool `PlaceModel`, raycast selection of placed models, holographic terrain ghosting, gizmo integration, OpenStreetMap import — frame-time budgeted 4.0ms tick draining, O(1) DEM height lookups, deferred batch junction resolution, its own building/model/road/OSM undo stack), `AGRTEditPawn`, `AGRTWorldPreset`, `AGRTProceduralGenerator`, `UGRTSaveGame`/`GRTWorldTypes.h`.
+  - `Gizmo/` — the reusable transform gizmo: `GizmoTypes.h` (enums/state), `GizmoManipulationMath.h/.cpp` (pure math, no UObject refs), `ARuntimeGizmoActor` (visual handles for Translate, Rotate, Scale with screen-rotation ring), `UGizmoManipulationSubsystem` (`UWorldSubsystem`, single stateful owner). Drives buildings and placed 3D models identically.
+  - `IO/` — `GRTModelImporter` (zero-external-dependency runtime loader for `.obj`, `.stl`, `.ply`, `.fbx`, `.gltf`, `.glb` + `.mtl` diffuse colors and companion `.png`/`.jpg` textures into `FDynamicMesh3`, via vendored `ufbx`/`cgltf` under `Private/ThirdParty/`), `GRTModelThumbnail` (runtime scene-capture thumbnail generation, cached to `Saved/GRT/ModelThumbnails/`), `GRTOSMParser`/`GRTOSMIngest` (OpenStreetMap `.osm` XML parsing + geometry ingest — buildings only, pure/world-free), `GRTSerializer`/`GRTAsyncSaver`/`GRTArchiveHelper` (save-game I/O), `GRTGeoTIFFReader`/`GRTGeoTIFFHeightSource`/`GRTDEMMeshBuilder`/`GRTRasterLayers` (GDAL/DEM import pipeline).
+  - `Core/` — `AGRTManager`, `UGRTAssetLibrarySubsystem` (`UWorldSubsystem` catalog of imported 3D models with PNG thumbnail resolution, dimensions, and polycounts), `UGRTSubsystem`, `AGRTEditController` (runtime placement tool `PlaceModel`, raycast selection of placed models, holographic terrain ghosting, gizmo integration, OpenStreetMap import — frame-time budgeted 4.0ms tick draining, its own building/model/OSM undo stack covering place, delete, and in-place edits (move/rotate/scale, footprint, floors); file-based requests are host-only), `AGRTEditPawn`, `AGRTWorldPreset`, `AGRTProceduralGenerator`, `UGRTSaveGame`/`GRTWorldTypes.h`.
   - `World/` — `AGRTChunk` (the sculptable `FDynamicMesh3` + VHFM chunk actor),
     `AGRTOrchestrator`, `GRTSceneSetup`, `GRTDemoMarkerActor`/`GRTProjectile`.
   - `UI/` — `SGRTPanel` (the left-anchored Slate HUD with collapsible **"3D Models & Assets"** palette displaying **PNG photo thumbnails** and **"Scene Outliner"** with live item count, focus `🎯`, visibility `👁️`, and deletion `🗑️`, plus **"OpenStreetMap Data"** import with a progress bar), `SGRTFilePickerPanel` (extension-filterable — GeoTIFF and OSM both reuse it), `SGRTWorldModeChoicePanel`.
   - `Physics/` — `GRTCollision` (chunk raycast/traceability), `GRTMeshUtils`.
   - `Settings/` — `UGRTSettings`. Module entry: `GRTModule.cpp`.
   - `GRTEditor/` (separate module) — `GRTBaker`, `GRTFactory`, `SGRTTools`.
-  - `Private/Tests/` — all `GRT.*` automation tests (45 test files, including 37 `GRT.Road.*` tests, `GRTModelImportTests.cpp`, `GRTOSMParserTests.cpp`, `GRTOSMIngestTests.cpp`, `GRTActorUndoTests.cpp`).
+  - `Private/Tests/` — all `GRT.*` automation tests (22 test files, 94 tests as of 2026-09-10, including `GRTModelImportTests.cpp`, `GRTOSMParserTests.cpp`, `GRTOSMIngestTests.cpp`, `GRTActorUndoTests.cpp`, `GRTReviewFixesTests.cpp`).
+  - **Fab packaging gotcha**: the plugin still loads project content — gizmo meshes/materials from
+    `/Game/Gizmo/` + `/Game/Mytaverse/`, the default building kit and holographic material from
+    `/Game/SD_Art/`. Those are third-party packs; the plugin is not self-contained until they are
+    replaced with plugin-owned assets under `Plugins/GRT/Content/`.
   - **Content dependency gotcha, verified by reading the actual asset binaries**: the Gizmo materials
     (`Content/Gizmo/Materials/M_GizmoAxis.uasset`, `M_ScreenRotation.uasset`) reference
     `MF_OccludedPixels`, which lives in `Content/Mytaverse/` — the third-party demo pack. Deleting
     `Mytaverse/` as "unused vendor content" would silently break gizmo rendering.
-- **`Plugins/RoadBuilder-master/`** — third-party plugin, retargeted from UE 5.3 to 5.8 with local
-  patches scoped entirely to this directory (renamed headers/classes to dodge UHT collisions — see
-  README's Requirements section for the exact list before touching it). Its marking-style content
-  ships separately as `Content.zip`, not in source control.
 - **`Content/`** — mostly third-party marketplace packs (`SD_Art` modular buildings: 749 assets,
   `UnrealDrive_CitySample`: 252, `MWLandscapeAutoMaterial`: 97, `Mytaverse`: 44), not this project's
-  own work. Project-original folders are `Content/Gizmo/`, `Content/Roads/`, `Content/Materials/`,
-  `Content/CesiumSettings/` — their Blueprint/Material assets are documented in the two
-  `CODE_REFERENCE.md` files above. **Git LFS gotcha**: some assets (12 found in
+  own work. Project-original folders are `Content/Gizmo/`, `Content/Materials/`,
+  `Content/CesiumSettings/`, plus `Content/Roads/` (orphaned: its Blueprints/materials belong to
+  the removed road system and nothing in code references them any more). **Git LFS gotcha**: some assets (12 found in
   `Plugins/GRT/Content/` alone) can sit as never-downloaded LFS pointer stubs (~130-byte
   text files, not real content) rather than actual binaries — check `git lfs ls-files` (`-` = not
   downloaded) before assuming a `.uasset` on disk is real, and run `git lfs pull --include="<path>"`
@@ -178,8 +179,8 @@ Then inspect `Saved/Logs/RealtimeTerrain.log` (grep for `Test Started`/`Test Com
 
 ## 🔒 Established Conventions
 
-- Every new road/gizmo feature defaults to prior behavior when unset — no existing road/building
-  changes behavior as a side effect of new work.
+- Every new gizmo/building feature defaults to prior behavior when unset — no existing building or
+  model changes behavior as a side effect of new work.
 - Drags/deltas use **initial transform + accumulated delta**, never compounding onto an
   already-modified transform.
 - Undo is delegate-based (`OnManipulationBegin/End/Cancel`), not `FScopedTransaction` — that's

@@ -19,12 +19,15 @@ class UGizmoManipulationSubsystem;
  * "backward". Spawn: the action created actor(s) -- Undo destroys them, Redo re-creates them from
  * the snapshot taken right after they were spawned. Delete: the action removed actor(s) -- Undo
  * re-creates them from a snapshot taken just before the delete, Redo destroys them again.
+ * Modify: the action changed live actor(s) in place (move/rotate/scale, footprint, floors) -- Undo
+ * applies the before-state, Redo the after-state.
  */
 UENUM()
 enum class EGRTActorUndoOp : uint8
 {
 	Spawn,
-	Delete
+	Delete,
+	Modify
 };
 
 /** Which actor type (and therefore which data member) a snapshot describes. */
@@ -57,7 +60,18 @@ struct FGRTActorSnapshot
 	UPROPERTY()
 	FGRTPlacedModelData ModelData;
 
-	/** Valid while the actor this snapshot describes currently exists in the world. */
+	/** Modify entries only: the state after the edit. BuildingData/ModelData hold the state before it. */
+	UPROPERTY()
+	FGRTBuildingData BuildingDataAfter;
+
+	UPROPERTY()
+	FGRTPlacedModelData ModelDataAfter;
+
+	/**
+	 * The actor this snapshot describes. Deliberately left pointing at a destroyed actor rather than
+	 * cleared: when undo/redo re-creates that actor, RemapActorReferences matches this stale pointer
+	 * to hand every other history entry the new actor, so an older move entry still has a target.
+	 */
 	UPROPERTY()
 	TWeakObjectPtr<AActor> LiveActor;
 };
@@ -145,19 +159,33 @@ public:
 	/** Close the current stroke so it becomes a single undo entry. */
 	void RequestCommitStroke();
 
+	/**
+	 * Undo/redo the most recent edit by this player: building/model/OSM actor edits first, then
+	 * terrain sculpting as the fallback. Runs on the server, where both histories live, so remote
+	 * clients can undo their own building and model edits too.
+	 */
 	void RequestUndo();
 	void RequestRedo();
 
-	//--- Save / Load Requests ---
-	void RequestSaveWorldToFile(const FString& FilePath);
-	void RequestLoadWorldFromFile(const FString& FilePath);
+	//--- File-based requests (host only) ---
+	//
+	// Each takes a path picked from this machine's own file dialog, and only the authority can act on
+	// it: a remote client's path means nothing on the server's disk, and letting a client name a path
+	// the server writes to would let it overwrite any file the server process can reach. On a remote
+	// client these return false without sending anything; the UI checks CanAccessLocalFiles() first
+	// and tells the player why.
 
-	/** Runs Manager->ImportGeoTIFF(FilePath) on the server -- the client-facing entry point the
-	 *  runtime file-picker widget calls, since ImportGeoTIFF itself only does anything on authority. */
-	void RequestImportGeoTIFF(const FString& FilePath);
+	/** True where file-based requests (save, load, GeoTIFF/raster/OSM import) can run -- the host or standalone. */
+	bool CanAccessLocalFiles() const { return HasAuthority(); }
 
-	/** Multi-layer raster import / unload / scene loading */
-	void RequestImportRasterLayer(EGRTRasterLayer Layer, const FString& FilePath);
+	bool RequestSaveWorldToFile(const FString& FilePath);
+	bool RequestLoadWorldFromFile(const FString& FilePath);
+
+	/** Runs Manager->ImportGeoTIFF(FilePath). Host only -- see the block comment above. */
+	bool RequestImportGeoTIFF(const FString& FilePath);
+
+	/** Multi-layer raster import / unload / scene loading. Import is host only; unload/load are routed. */
+	bool RequestImportRasterLayer(EGRTRasterLayer Layer, const FString& FilePath);
 	void RequestUnloadRasterLayer(EGRTRasterLayer Layer);
 	void RequestLoadSpecificRasterLayer(EGRTRasterLayer Layer);
 	void RequestUnloadSpecificRasterLayer(EGRTRasterLayer Layer);
@@ -206,17 +234,32 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "GRT|Model")
 	void RequestDeleteModel(class AGRTPlacedModelActor* ModelActor);
 
+	/**
+	 * Shows or hides a building or placed model for everyone in the session (the outliner's eye
+	 * toggle). Routed through the server so every machine agrees; other actor types are ignored.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "GRT|Model")
+	void RequestSetActorVisible(AActor* Actor, bool bVisible);
+
 	void SelectModelActor(class AGRTPlacedModelActor* ModelActor);
 	void ClearModelSelection();
+
+	/**
+	 * Drops this player's building/model undo and redo history and stops any OSM import still
+	 * draining. Called when a different world is loaded: the history describes actors from the
+	 * previous world, and undoing a pre-load delete would otherwise resurrect that building into
+	 * the new one.
+	 */
+	void ResetActorHistory();
 
 	//--- OpenStreetMap ingestion ---
 
 	/**
-	 * Imports a .osm document, spawning buildings for the ways it contains. Routed through
-	 * the server like every other world edit; the summary of the last run is left in
-	 * LastOSMImportSummary for the panel to display.
+	 * Imports a .osm document, spawning buildings for the ways it contains. Host only (the path
+	 * comes from this machine's file dialog); on a remote client it returns false and leaves the
+	 * reason in LastOSMImportSummary for the panel to display.
 	 */
-	void RequestImportOSM(const FString& FilePath, bool bImportBuildings);
+	bool RequestImportOSM(const FString& FilePath, bool bImportBuildings);
 
 	/** Result of the most recent (or in-progress) OSM import, for UI display. */
 	struct FGRTOSMImportSummary GetLastOSMImportSummary() const;
@@ -286,7 +329,7 @@ private:
 	bool TraceSplinePointUnderCursor(int32& OutPointIndex, FVector& OutHitPoint) const;
 	bool IntersectCursorWithPlane(const FPlane& Plane, FVector& OutIntersection) const;
 
-	/** Bound to GizmoSubsystem->OnManipulationCancel -- reacts only if the cancelled target is our own bound building (the subsystem is shared with the road tool). */
+	/** Bound to GizmoSubsystem->OnManipulationCancel -- reacts only if the cancelled target is our own bound building or model. */
 	void HandleGizmoManipulationCancelled(USceneComponent* CancelledTarget);
 
 	/** Builds an FGizmoInteractionRay from the current cursor position, or returns false if the mouse can't be deprojected right now. */
@@ -341,6 +384,28 @@ private:
 	/** Undo of a Delete, or redo of a Spawn: reconstructs every actor from its snapshot data. */
 	void RespawnActorsInEntry(FGRTActorUndoEntry& Entry);
 
+	/** Undo/redo of a Modify: writes the before- (or after-) state back onto each live actor. */
+	void ApplyModifyEntry(const FGRTActorUndoEntry& Entry, bool bApplyAfterState);
+
+	/** Points every history entry that referenced OldActor (now destroyed) at NewActor instead. */
+	void RemapActorReferences(const TWeakObjectPtr<AActor>& OldActor, AActor* NewActor);
+
+	/** A building or placed-model snapshot of Actor's current state. Kind follows the actor's class. */
+	static FGRTActorSnapshot MakeActorSnapshot(AActor* Actor);
+
+	/**
+	 * The state Actor had before the edit now being committed. For a drag on this machine that is
+	 * the snapshot taken when the drag began (the actor has been moving live since); otherwise it is
+	 * Actor's current state, because nothing has been applied to it yet.
+	 */
+	FGRTActorSnapshot TakeBeforeSnapshot(AActor* Actor);
+
+	/** Pushes a Modify entry from Before to Actor's current state, unless nothing actually changed. */
+	void RecordActorModify(FGRTActorSnapshot&& Before, AActor* Actor);
+
+	/** Set when a gizmo or footprint-vertex drag starts; consumed by the request that commits it. */
+	TOptional<FGRTActorSnapshot> PendingDragBefore;
+
 	/** Shift+W/E/R -- switches the shared gizmo's mode. One binding serves both consumers, same as OnCancelManipulationPressed. */
 	void OnSetGizmoModeTranslate();
 	void OnSetGizmoModeRotate();
@@ -373,6 +438,10 @@ public:
 	 */
 	bool TryActorUndo();
 	bool TryActorRedo();
+
+	/** Whether this controller's building/model history has anything to undo/redo. Meaningful on the authority only. */
+	bool HasActorUndo() const { return ActorUndoStack.Num() > 0; }
+	bool HasActorRedo() const { return ActorRedoStack.Num() > 0; }
 
 protected:
 	/** Traces the cursor against terrain and buildings. Returns false when nothing was hit. */
@@ -440,16 +509,7 @@ private:
 	void Server_SetPopulationDestroyed(FGuid PopulationId, bool bDestroyed);
 
 	UFUNCTION(Server, Reliable)
-	void Server_SaveWorldToFile(const FString& FilePath);
-
-	UFUNCTION(Server, Reliable)
-	void Server_LoadWorldFromFile(const FString& FilePath);
-
-	UFUNCTION(Server, Reliable)
-	void Server_ImportGeoTIFF(const FString& FilePath);
-
-	UFUNCTION(Server, Reliable)
-	void Server_ImportRasterLayer(EGRTRasterLayer Layer, const FString& FilePath);
+	void Server_SetActorVisible(AActor* Actor, bool bVisible);
 
 	UFUNCTION(Server, Reliable)
 	void Server_UnloadRasterLayer(EGRTRasterLayer Layer);
@@ -468,9 +528,6 @@ private:
 
 	UFUNCTION(Server, Reliable)
 	void Server_StartSandboxMode();
-
-	UFUNCTION(Server, Reliable)
-	void Server_ImportOSM(const FString& FilePath, bool bImportBuildings);
 
 	/**
 	 * One already-fully-resolved OSM feature waiting to be spawned. All the CPU-only work --

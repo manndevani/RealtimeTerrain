@@ -186,6 +186,13 @@ public:
 	FGRTBuildingData ToData() const;
 	void ApplyData(const FGRTBuildingData& Data, bool bRegenerate = true);
 
+	/**
+	 * Spawns a building and restores Data onto it. The pad settings are written before
+	 * FinishSpawning, so a building saved with bFlattenTerrain off never stamps a pad in the
+	 * construction/BeginPlay pass that runs inside the spawn. Used by save-game load and undo.
+	 */
+	static AGRTBuildingActor* SpawnFromData(UWorld* World, const FGRTBuildingData& Data);
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;

@@ -4,10 +4,15 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Engine/World.h"
+#include "UObject/ConstructorHelpers.h"
 #include "GRTModule.h"
 
 AGRTPlacedModelActor::AGRTPlacedModelActor()
 {
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> ImportedModelMaterialFinder(
+		TEXT("/GRT/Materials/Models/M_GRT_ImportedModel.M_GRT_ImportedModel"));
+	ImportedModelBaseMaterial = ImportedModelMaterialFinder.Object;
+
 	PrimaryActorTick.bCanEverTick = false;
 	bReplicates = true;
 	SetReplicateMovement(true);
@@ -41,6 +46,7 @@ void AGRTPlacedModelActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	DOREPLIFETIME(AGRTPlacedModelActor, SourceFilePath);
 	DOREPLIFETIME(AGRTPlacedModelActor, CustomLabel);
 	DOREPLIFETIME(AGRTPlacedModelActor, ReplicatedScale3D);
+	DOREPLIFETIME(AGRTPlacedModelActor, bIsVisibleInScene);
 }
 
 void AGRTPlacedModelActor::BeginPlay()
@@ -81,44 +87,39 @@ void AGRTPlacedModelActor::ApplyMaterials(const TArray<FGRTImportedMaterial>& Ma
 {
 	if (!DynamicMeshComponent) return;
 
-	// A single lit base for every slot, textured or not. EmissiveTexturedMaterial (tried here
-	// previously) is MSM_Unlit -- confirmed by inspecting the shipped asset -- so routing a
-	// model's ordinary diffuse texture through it, plus unconditionally writing EmissiveColor
-	// below, made every textured imported model self-illuminate: fully bright regardless of scene
-	// lighting, casting no shaded response to a directional light, "glowing" in shadow or at
-	// night. BasicShapeMaterial is the one base this function already used, successfully, before
-	// a textured variant was added -- reusing it for both cases removes the glow with no new,
-	// unverified engine asset in the mix.
-	UMaterialInterface* BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	// A lit base, never an unlit one: an MSM_Unlit base (EmissiveTexturedMaterial, tried earlier)
+	// made every textured model self-illuminate regardless of scene lighting.
+	// M_GRT_ImportedModel is lit and declares BaseColor x BaseColorTexture. BasicShapeMaterial is
+	// only the fallback -- it declares "Color" and no texture at all, which is why textured models
+	// used to render as flat colour.
+	UMaterialInterface* BaseMat = ImportedModelBaseMaterial.Get();
+	if (!BaseMat)
+	{
+		UE_LOG(LogGRT, Warning, TEXT("GRT: M_GRT_ImportedModel is missing; imported models fall back to BasicShapeMaterial and show no textures."));
+		BaseMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	}
+	if (!BaseMat)
+	{
+		return;
+	}
 
 	for (int32 SlotIdx = 0; SlotIdx < Materials.Num(); ++SlotIdx)
 	{
 		const FGRTImportedMaterial& MatInfo = Materials[SlotIdx];
-		if (BaseMat)
+		UMaterialInstanceDynamic* DMI = UMaterialInstanceDynamic::Create(BaseMat, this);
+		if (!DMI)
 		{
-			UMaterialInstanceDynamic* DMI = UMaterialInstanceDynamic::Create(BaseMat, this);
-			if (DMI)
-			{
-				// Parameter names tried on spec: SetVectorParameterValue/SetTextureParameterValue
-				// are safe no-ops on a name the material doesn't declare, so trying several common
-				// conventions costs nothing when they don't match and helps if a future base
-				// material does declare one of them. Deliberately no EmissiveColor -- an ordinary
-				// diffuse/base color has no business driving self-illumination.
-				DMI->SetVectorParameterValue(TEXT("Color"), MatInfo.DiffuseColor);
-				DMI->SetVectorParameterValue(TEXT("BaseColor"), MatInfo.DiffuseColor);
-				DMI->SetVectorParameterValue(TEXT("DiffuseColor"), MatInfo.DiffuseColor);
-
-				if (MatInfo.DiffuseTexture)
-				{
-					DMI->SetTextureParameterValue(TEXT("Texture"), MatInfo.DiffuseTexture);
-					DMI->SetTextureParameterValue(TEXT("BaseColorTexture"), MatInfo.DiffuseTexture);
-					DMI->SetTextureParameterValue(TEXT("Diffuse"), MatInfo.DiffuseTexture);
-					DMI->SetTextureParameterValue(TEXT("DiffuseTexture"), MatInfo.DiffuseTexture);
-					DMI->SetTextureParameterValue(TEXT("Albedo"), MatInfo.DiffuseTexture);
-				}
-				DynamicMeshComponent->SetMaterial(SlotIdx, DMI);
-			}
+			continue;
 		}
+
+		// No EmissiveColor -- an ordinary diffuse colour has no business driving self-illumination.
+		DMI->SetVectorParameterValue(TEXT("BaseColor"), MatInfo.DiffuseColor); // M_GRT_ImportedModel
+		DMI->SetVectorParameterValue(TEXT("Color"), MatInfo.DiffuseColor);     // BasicShapeMaterial fallback
+		if (MatInfo.DiffuseTexture)
+		{
+			DMI->SetTextureParameterValue(TEXT("BaseColorTexture"), MatInfo.DiffuseTexture);
+		}
+		DynamicMeshComponent->SetMaterial(SlotIdx, DMI);
 	}
 }
 
@@ -221,4 +222,11 @@ void AGRTPlacedModelActor::ApplyData(const FGRTPlacedModelData& Data)
 
 void AGRTPlacedModelActor::OnRep_CustomLabel()
 {
+}
+
+void AGRTPlacedModelActor::OnRep_VisibleInScene()
+{
+	// bHidden replicates on its own; collision does not, so a hidden model would still block traces
+	// and selection on every client without this.
+	SetVisibleInScene(bIsVisibleInScene);
 }
