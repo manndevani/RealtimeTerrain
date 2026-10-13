@@ -2,11 +2,12 @@
 
 > **Architecture Note**: The runtime road system that used to live here (road/junction actors, the
 > builder component, the curve-graph/solver/mesh/spiral/profile/pier/style/XODR libraries, the edit
-> overlay, and their ~20 test files) was deleted on 2026-08-31 — see README's status section; it
+> overlay, and their ~20 test files) was deleted on 2026-08-31 — see [docs/DEVELOPMENT_HISTORY.md](../../docs/DEVELOPMENT_HISTORY.md); it
 > survives in git history only. `Source/RealtimeTerrain/` is now a thin project game module: a game
 > mode and an edit controller over the `GRT` plugin.
 
-Architecture summary, conventions, and current project status live in [README.md](../../README.md)
+Architecture summary, conventions, and current project status live in [README.md](../../README.md),
+[docs/FEATURES.md](../../docs/FEATURES.md), [docs/DEVELOPMENT_HISTORY.md](../../docs/DEVELOPMENT_HISTORY.md)
 and [CLAUDE.md](../../CLAUDE.md) — this file documents the game module.
 
 ---

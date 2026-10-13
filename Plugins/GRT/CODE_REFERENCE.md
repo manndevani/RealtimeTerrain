@@ -8,9 +8,11 @@ something actually read in the source at the time this was written; if the code 
 re-verify rather than trust this file blindly (see CLAUDE.md's ground rules).
 
 Architecture summary, conventions, and current project status live in
-[README.md](../../README.md) and [CLAUDE.md](../../CLAUDE.md) — this file is the detailed
+[README.md](../../README.md), [docs/FEATURES.md](../../docs/FEATURES.md),
+[docs/DEVELOPMENT_HISTORY.md](../../docs/DEVELOPMENT_HISTORY.md) and [CLAUDE.md](../../CLAUDE.md) — this file is the detailed
 per-file drill-down those point to, not a replacement for them. One real discrepancy against
-README was found while assembling this and is called out inline below (Gizmo materials).
+the README (now docs/DEVELOPMENT_HISTORY.md) was found while assembling this and is called out inline
+below (Gizmo materials).
 
 ---
 

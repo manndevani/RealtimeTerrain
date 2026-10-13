@@ -4,8 +4,10 @@ Runtime-editable chunk terrain + GIS framework: procedural/GDAL DEM terrain, Ces
 modular buildings, runtime 3D-model import, OpenStreetMap import, full multiplayer replication, and a
 reusable runtime transform gizmo. (The spline road system was removed on 2026-08-31; it survives only in
 git history.)
-Full status and historical record live in [README.md](README.md) — that file is the source of truth for
-what's done, what's known-limited, and why; don't duplicate it here.
+Full status and historical record live in [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) — that file is the source of truth for
+what's done, what's known-limited, and why; don't duplicate it here. The detailed feature reference is
+[docs/FEATURES.md](docs/FEATURES.md); [README.md](README.md) is the short public overview and setup guide —
+new history entries go in DEVELOPMENT_HISTORY.md, not the README.
 
 **Exhaustive per-file code reference** (every `.cpp`/`.h` in both modules, plus project-original
 Blueprint/Material Content assets, documented from actually reading each one — not summarized here):
@@ -145,7 +147,7 @@ Then inspect `Saved/Logs/RealtimeTerrain.log` (grep for `Test Started`/`Test Com
   Contains project-specific game mode (`RealtimeTerrainEditGameMode`) and edit controller (`RealtimeTerrainEditController`, renamed from `RealtimeRoadEditController` with a ClassRedirect) inheriting directly from `AGRTEditController`.
 - **`Plugins/GRT/Source/GRT/`** (`GRT` + `GRTEditor` modules — full detail in its
   `CODE_REFERENCE.md`), organized by subfolder. There is no `Road/` folder: the road system was
-  deleted on 2026-08-31 (see README's status).
+  deleted on 2026-08-31 (see docs/DEVELOPMENT_HISTORY.md).
   - `Building/` — `AGRTBuildingActor`, `AGRTPlacedModelActor` (runtime placed 3D model instance with `UDynamicMeshComponent`, replicated `Scale3D`, visibility toggles, and selection highlight), `AGRTGizmoActor` (footprint-spline-vertex handles only), `GRTModelTypes.h` (`FGRTModelLibraryEntryData`/`FGRTPlacedModelData` — the save-game and undo-snapshot shapes for the model catalog and its placements), `GRTBuildingKit.h`/`GRTBuildingTypes.h` (building-kit data types).
   - `Gizmo/` — the reusable transform gizmo: `GizmoTypes.h` (enums/state), `GizmoManipulationMath.h/.cpp` (pure math, no UObject refs), `ARuntimeGizmoActor` (visual handles for Translate, Rotate, Scale with screen-rotation ring), `UGizmoManipulationSubsystem` (`UWorldSubsystem`, single stateful owner). Drives buildings and placed 3D models identically.
   - `IO/` — `GRTModelImporter` (zero-external-dependency runtime loader for `.obj`, `.stl`, `.ply`, `.fbx`, `.gltf`, `.glb` + `.mtl` diffuse colors and companion `.png`/`.jpg` textures into `FDynamicMesh3`, via vendored `ufbx`/`cgltf` under `Private/ThirdParty/`), `GRTModelThumbnail` (runtime scene-capture thumbnail generation, cached to `Saved/GRT/ModelThumbnails/`), `GRTOSMParser`/`GRTOSMIngest` (OpenStreetMap `.osm` XML parsing + geometry ingest — buildings only, pure/world-free), `GRTSerializer`/`GRTAsyncSaver`/`GRTArchiveHelper` (save-game I/O), `GRTGeoTIFFReader`/`GRTGeoTIFFHeightSource`/`GRTDEMMeshBuilder`/`GRTRasterLayers` (GDAL/DEM import pipeline).
